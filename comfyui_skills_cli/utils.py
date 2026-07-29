@@ -5,7 +5,7 @@ from typing import Any
 
 import typer
 
-from .client import ComfyUIClient
+from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 from .config import get_base_dir, get_default_server_id, get_server, load_config
 from .output import output_error
 

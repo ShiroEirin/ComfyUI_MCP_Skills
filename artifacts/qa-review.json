@@ -1,72 +1,70 @@
 {
-  "qaMode": "deep",
+  "qaMode": "deep-release",
+  "version": "1.1.0",
   "protocol": "MCP 2026-07-28",
-  "scope": [
-    "src/comfyui_mcp_skills/adapters/mcp",
-    "src/comfyui_mcp_skills/adapters/http",
-    "src/comfyui_mcp_skills/domain",
-    "src/comfyui_mcp_skills/infrastructure/persistence",
-    "tests"
-  ],
-  "outcome": "passed",
-  "conclusion": "The reported MCP 2026-07-28 findings were reproduced where applicable and corrected. Strict schema publication, monotonic progress, resource error mapping, terminal-state precedence, stateless HTTP behavior, admin protocol errors, static-token semantics, streaming concurrency, ResourceLink output, and raw HTTP wire behavior are covered by regression tests.",
-  "findings": [],
-  "resolved": [
-    {
-      "severity": "P0",
-      "summary": "Invalid workflow JSON Schema is rejected and the workflow is isolated"
-    },
-    {
-      "severity": "P0",
-      "summary": "Progress notifications use a request-wide strictly increasing sequence"
-    },
-    {
-      "severity": "P0",
-      "summary": "Missing and unsupported resources return JSON-RPC -32602"
-    },
-    {
-      "severity": "P0",
-      "summary": "Failure terminal states cannot be overwritten by completed"
-    },
-    {
-      "severity": "P1",
-      "summary": "HTTP runs stateless and rejects requests missing the 2026 protocol header without creating sessions"
-    },
-    {
-      "severity": "P1",
-      "summary": "Unknown admin tools raise protocol Invalid Params"
-    },
-    {
-      "severity": "P1",
-      "summary": "Static bearer-token mode no longer advertises OAuth Protected Resource Metadata"
-    },
-    {
-      "severity": "P1",
-      "summary": "Pure ASGI concurrency control holds its slot through the final streaming body frame"
-    },
-    {
-      "severity": "P2",
-      "summary": "Completed job outputs include native MCP ResourceLink blocks"
-    },
-    {
-      "severity": "P2",
-      "summary": "Raw HTTP tests cover 2026 headers, resultType, statelessness, methods, and resource errors"
-    }
+  "outcome": "pass",
+  "conclusion": "Migration, security hardening, persistence recovery, deployment safeguards, tests, packaging, and documentation passed release review. Independent code review found no remaining P0/P1 after the subscription-stream denial-of-service fix.",
+  "severityCounts": {
+    "P0": 0,
+    "P1": 0,
+    "P2": 0
+  },
+  "verifiedFixes": [
+    "CLI and MCP share the in-process ComfyUI client; the legacy duplicate client was removed",
+    "workflow, asset, job, and output resources are addressable and output resources can be reused without download/re-upload",
+    "server, node, and model discovery is paginated, deterministic, and URL-encodes path segments",
+    "network calls use explicit connect/read or execution deadlines",
+    "running job cancellation is rejected instead of using ComfyUI global interrupt",
+    "static bearer tokens map to stable principal_id owners across rotation and reject malformed token, principal, and scope configurations",
+    "request IDs and bearer headers are bounded and validated",
+    "ordinary HTTP requests and long-lived subscriptions/listen streams use separate fail-fast concurrency pools with per-principal subscription quotas",
+    "subscription scanning is offloaded from the event loop and SDK subscription capacity is bounded",
+    "retention cleanup uses bounded lock batches and does not delete assets referenced by non-terminal jobs",
+    "management mutations use durable intent/success/failure audit records, operation fingerprints, audit-only recovery, and no-reexecution retry semantics",
+    "structured logs, process metrics, maintenance pruning, multi-worker guardrails, pinned Actions, Dependabot, lockfile, build, install, and Trusted Publishing release workflows are present"
   ],
   "commands": [
     {
-      "command": "python -m pytest --cov --cov-report=term-missing -q",
-      "result": "151 passed; 84.91% coverage; 80% gate passed"
+      "command": "uv run python -m pytest --cov --cov-report=term-missing -q",
+      "result": "218 passed; 84.24% statement coverage; 80% gate passed"
     },
     {
-      "command": "python -m compileall -q src/comfyui_mcp_skills comfyui_skills_cli",
+      "command": "uv run ruff check src/comfyui_mcp_skills",
       "result": "passed"
+    },
+    {
+      "command": "uv run mypy src/comfyui_mcp_skills",
+      "result": "passed"
+    },
+    {
+      "command": "uv run python -m compileall -q src/comfyui_mcp_skills comfyui_skills_cli",
+      "result": "passed"
+    },
+    {
+      "command": "uv run pip-audit --timeout 60",
+      "result": "no known third-party vulnerabilities; unpublished local project skipped"
+    },
+    {
+      "command": "uv build",
+      "result": "sdist and universal wheel built successfully"
+    },
+    {
+      "command": "isolated wheel install, import, comfyui-skill --version, comfyui-mcp-maintain",
+      "result": "installed version 1.1.0; CLI version 1.1.0; maintenance command completed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed; Windows line-ending conversion warnings only"
     }
   ],
-  "sources": [
-    "https://modelcontextprotocol.io/specification/2026-07-28/basic",
-    "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http",
-    "https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/progress",
-    "https://modelcontextprotocol.io/specification/2026-07-28/server/resources"
+  "independentReview": {
+    "reviewer": "code-reviewer",
+    "initialFinding": "P1: long-lived subscriptions/listen streams could exhaust the shared HTTP request semaphore",
+    "repair": "separate global subscription pool, stable-principal quota, fail-fast saturation responses, shielded release, and reduced SDK subscription/buffer limits",
+    "finalResult": "P0: 0; P1: 0"
+  },
+  "nonBlockingNotes": [
+    "No live external ComfyUI server was available for an end-to-end generation probe; gateway, execution, HTTP, MCP, persistence, and packaging contracts were exercised by the repository test suite.",
+    "Repeated local archives were structurally equivalent but not byte-for-byte identical because build timestamps are not normalized; the release workflow does not claim reproducible-build guarantees."
   ]
 }

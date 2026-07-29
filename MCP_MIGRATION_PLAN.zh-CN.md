@@ -1,8 +1,8 @@
 # ComfyUI Skill CLI → MCP 2026-07-28 迁移方案与架构审查
 
-> 状态：方案草案  
+> 状态：已实施（v1.1.0 Beta）
 > 目标读者：项目维护者、MCP 服务实现者、安全审查者  
-> 审查基线：`comfyui-skill-cli` 0.2.13  
+> 迁移输入基线：`comfyui-skill-cli` 0.2.13
 > 协议目标：MCP `2026-07-28`，MCP Python SDK v2
 
 ## 1. 摘要
@@ -776,7 +776,7 @@ UnsupportedMediaType
 优先提供：
 
 ```text
-comfyui-skill-mcp
+comfyui-mcp
 ```
 
 stdio 最符合当前本地 Agent 调用方式，不需要额外端口和 OAuth，也能安全支持经授权的本地文件上传。
@@ -841,6 +841,8 @@ POST /mcp
 文件上传属于执行面，不归入管理面，也不能因管理面默认关闭而不可用。
 
 ## 14. 迁移阶段
+
+> v1.1.0 已完成阶段 A–F 的代码落地。公网认证当前明确限定为静态 Bearer Token；OAuth 2.1 和跨 worker 全局限流不在本版本实现范围。多 worker 仅允许在部署方声明已有外部全局限流时启动。
 
 ### 阶段 A：修复安全和正确性阻断项
 
@@ -975,29 +977,27 @@ mcp = ">=2,<3"
 
 ## 16. 当前验证基线
 
-已执行：
+v1.1.0 已执行：
 
 ```text
-python -m comfyui_skills_cli --help
+uv run ruff check src/comfyui_mcp_skills
+uv run mypy src/comfyui_mcp_skills
+uv run python -m pytest --cov --cov-report=term-missing -q
+uv run pip-audit
+uv build
 ```
 
-CLI 入口正常，顶层命令可以注册和显示。
+当前结果：
 
-已执行：
+- 218 个测试全部通过；MCP 包语句覆盖率为 84.24%。
+- Ruff 与 Mypy 通过。
+- `pip-audit` 未发现第三方依赖已知漏洞；项目自身尚未发布到 PyPI，因此被审计器跳过。
+- sdist 与 wheel 构建成功；wheel 包含 MCP 和兼容 CLI 两套入口。
+- `comfyui-skill --version`、`comfyui-mcp-maintain` 和隔离 wheel 安装完成进程级冒烟验证。
+- CI 覆盖 Ubuntu / Windows 与 Python 3.10–3.13，并复验 wheel 导入和版本。
+- 独立代码复审确认无 P0/P1 发布阻断项。
 
-```text
-python -m unittest discover -s tests -v
-```
-
-结果：
-
-- 共 72 个测试。
-- 71 个通过。
-- 1 个失败：`test_run.UploadMediaTests.test_expands_tilde_path`。
-
-该失败源于 Windows 下测试只修改 `HOME`，而 `os.path.expanduser("~")` 使用 Windows 用户目录解析。迁移时应将路径解析封装为可测试的平台适配器，并保留 Windows 回归。
-
-仓库当前没有随包提供用于真实 ComfyUI 调用的 `config.json`、工作流数据和集成环境，因此该基线不代表真实 GPU 工作流端到端验证。
+仓库未包含可公开复现的真实 ComfyUI GPU 环境、模型和工作流资产。因此以上验证覆盖协议、应用服务、安全边界、持久化和打包，不宣称已完成真实 GPU 推理端到端验证。
 
 ## 17. 最终决策
 

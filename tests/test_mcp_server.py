@@ -4,16 +4,19 @@ from __future__ import annotations
 
 import base64
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 from typing import Any
 
+import anyio
 import pytest
 from mcp import Client
 from mcp.shared.exceptions import MCPError
 
 from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
 from comfyui_mcp_skills.adapters.mcp.server import create_server
+from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 
 
 class FakeGateway:
@@ -27,10 +30,12 @@ class FakeGateway:
         self.queued.append(workflow)
         return {"prompt_id": "prompt-mcp", "client_id": "client-mcp"}
 
-    def get_history(self, prompt_id: str) -> dict[str, Any] | None:
+    def get_history(
+        self, prompt_id: str, timeout_seconds: float | None = None
+    ) -> dict[str, Any] | None:
         return self.histories.get(prompt_id)
 
-    def get_queue(self) -> dict[str, Any]:
+    def get_queue(self, timeout_seconds: float | None = None) -> dict[str, Any]:
         return {"queue_running": [], "queue_pending": []}
 
     def interrupt(self, prompt_id: str = "") -> dict[str, Any]:
@@ -40,9 +45,7 @@ class FakeGateway:
     def queue_delete(self, prompt_ids: list[str]) -> dict[str, Any]:
         return {"success": True}
 
-    def upload_file(
-        self, path: str, *, purpose: str, original_ref: str
-    ) -> dict[str, Any]:
+    def upload_file(self, path: str, *, purpose: str, original_ref: str) -> dict[str, Any]:
         self.uploaded.append(path)
         return {
             "name": Path(path).name,
@@ -63,6 +66,26 @@ class FakeGateway:
             raise ValueError("output too large")
         return payload
 
+    def get_system_stats(self) -> dict[str, Any]:
+        return {"system": {"os": "test"}, "devices": [{"name": "GPU"}]}
+
+    def get_object_info(self) -> dict[str, Any]:
+        return {
+            "KSampler": {"display_name": "KSampler", "category": "sampling"},
+            "CLIPTextEncode": {"display_name": "CLIP Text Encode", "category": "conditioning"},
+        }
+
+    def get_object_info_node(self, node_class: str) -> dict[str, Any] | None:
+        return self.get_object_info().get(node_class)
+
+    def get_model_folders(self) -> list[str]:
+        return ["checkpoints", "loras"]
+
+    def get_models(self, folder: str) -> list[str]:
+        return {"checkpoints": ["sdxl.safetensors"], "loras": ["detail.safetensors"]}.get(
+            folder, []
+        )
+
 
 def _project(tmp_path: Path) -> None:
     directory = tmp_path / "data" / "local" / "txt2img"
@@ -71,9 +94,7 @@ def _project(tmp_path: Path) -> None:
         json.dumps(
             {
                 "default_server": "local",
-                "servers": [
-                    {"id": "local", "name": "Local", "url": "http://127.0.0.1:8188"}
-                ],
+                "servers": [{"id": "local", "name": "Local", "url": "http://127.0.0.1:8188"}],
             }
         ),
         encoding="utf-8",
@@ -203,11 +224,7 @@ async def test_dynamic_workflow_tool_and_resources(tmp_path: Path) -> None:
         gateway.histories["prompt-mcp"] = {
             "status": {"completed": True, "status_str": "success"},
             "outputs": {
-                "2": {
-                    "images": [
-                        {"filename": "out.png", "subfolder": "", "type": "output"}
-                    ]
-                }
+                "2": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}
             },
         }
         completed = await client.call_tool(
@@ -217,13 +234,14 @@ async def test_dynamic_workflow_tool_and_resources(tmp_path: Path) -> None:
         assert completed.structured_content["status"] == "completed"
         job_uri = "comfyui://jobs/local/prompt-mcp"
         output_uri = completed.structured_content["outputs"][0]["resource_uri"]
-        output_link = next(
-            block for block in completed.content if block.type == "resource_link"
-        )
+        output_link = next(block for block in completed.content if block.type == "resource_link")
         assert str(output_link.uri) == output_uri
         assert output_link.mime_type == "image/png"
         assert json.loads((await client.read_resource(asset_uri)).contents[0].text)["name"]
-        assert json.loads((await client.read_resource(job_uri)).contents[0].text)["status"] == "completed"
+        assert (
+            json.loads((await client.read_resource(job_uri)).contents[0].text)["status"]
+            == "completed"
+        )
         output_resource = await client.read_resource(output_uri)
         assert base64.b64decode(output_resource.contents[0].blob) == b"generated-image"
 
@@ -251,6 +269,146 @@ async def test_dynamic_workflow_tool_and_resources(tmp_path: Path) -> None:
     assert gateway.queued[0]["1"]["inputs"]["text"] == "a white cat"
 
 
+@pytest.mark.anyio
+async def test_resource_templates_describe_addressable_entities(tmp_path: Path) -> None:
+    _project(tmp_path)
+    server = create_server(tmp_path, gateway_factory=lambda _config: FakeGateway())
+
+    async with Client(server) as client:
+        templates = await client.list_resource_templates()
+
+    uris = {template.uri_template for template in templates.resource_templates}
+    assert {
+        "comfyui://workflows/{server_id}/{workflow_id}",
+        "comfyui://assets/{server_id}/{asset_id}",
+        "comfyui://jobs/{server_id}/{prompt_id}",
+        "comfyui://outputs/{server_id}/{prompt_id}/{index}",
+    } <= uris
+
+
+@pytest.mark.anyio
+async def test_read_only_discovery_tools_are_paginated(tmp_path: Path) -> None:
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert {
+            "comfyui.server.health",
+            "comfyui.node.list",
+            "comfyui.node.describe",
+            "comfyui.model.list",
+        } <= names
+        health = await client.call_tool("comfyui.server.health", {"server_id": "local"})
+        nodes = await client.call_tool(
+            "comfyui.node.list",
+            {"server_id": "local", "query": "clip", "limit": 1},
+        )
+        node = await client.call_tool(
+            "comfyui.node.describe",
+            {"server_id": "local", "node_class": "KSampler"},
+        )
+        models = await client.call_tool(
+            "comfyui.model.list",
+            {"server_id": "local", "kind": "checkpoints", "limit": 1},
+        )
+
+    assert health.structured_content["status"] == "online"
+    assert health.structured_content["cancel_running_supported"] is False
+    assert nodes.structured_content["items"][0]["class"] == "CLIPTextEncode"
+    assert node.structured_content["node"]["category"] == "sampling"
+    assert models.structured_content["items"] == ["sdxl.safetensors"]
+
+    async with Client(server) as client:
+        ordered_nodes = await client.call_tool(
+            "comfyui.node.list",
+            {"server_id": "local", "limit": 1},
+        )
+
+    assert ordered_nodes.structured_content["items"][0]["class"] == "CLIPTextEncode"
+
+
+@pytest.mark.anyio
+async def test_workflow_change_monitor_publishes_list_events(tmp_path: Path) -> None:
+    _project(tmp_path)
+
+    class RecordingBus:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        async def publish(self, event: object) -> None:
+            self.events.append(event)
+
+    bus = RecordingBus()
+    monitor = WorkflowChangeMonitor(tmp_path, bus)
+    schema_path = tmp_path / "data" / "local" / "txt2img" / "schema.json"
+    schema_path.write_text(schema_path.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+
+    assert await monitor.check() is True
+    assert [type(event).__name__ for event in bus.events] == [
+        "ToolsListChanged",
+        "ResourcesListChanged",
+    ]
+    assert await monitor.check() is False
+
+
+@pytest.mark.anyio
+async def test_workflow_change_scan_does_not_block_event_loop(tmp_path: Path) -> None:
+    _project(tmp_path)
+
+    class RecordingBus:
+        async def publish(self, _event: object) -> None:
+            return None
+
+    monitor = WorkflowChangeMonitor(tmp_path, RecordingBus())
+    order: list[str] = []
+
+    def slow_scan() -> tuple[tuple[str, str], ...]:
+        time.sleep(0.05)
+        order.append("scan")
+        return monitor._fingerprint
+
+    monitor._scan = slow_scan  # type: ignore[method-assign]
+
+    async with anyio.create_task_group() as task_group:
+        task_group.start_soon(monitor.check)
+        await anyio.sleep(0.01)
+        order.append("tick")
+
+    assert order == ["tick", "scan"]
+
+
+@pytest.mark.anyio
+async def test_config_change_monitor_publishes_list_events_once(tmp_path: Path) -> None:
+    _project(tmp_path)
+
+    class RecordingBus:
+        def __init__(self) -> None:
+            self.events: list[object] = []
+
+        async def publish(self, event: object) -> None:
+            self.events.append(event)
+
+    bus = RecordingBus()
+    monitor = WorkflowChangeMonitor(tmp_path, bus)
+    config_path = tmp_path / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["servers"][0]["name"] = "Updated"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    assert await monitor.check() is True
+    assert [type(event).__name__ for event in bus.events] == [
+        "ToolsListChanged",
+        "ResourcesListChanged",
+    ]
+    assert await monitor.check() is False
+    assert [type(event).__name__ for event in bus.events] == [
+        "ToolsListChanged",
+        "ResourcesListChanged",
+    ]
+
+
 def test_admin_server_requires_explicit_enablement(tmp_path: Path) -> None:
     with pytest.raises(PermissionError):
         create_admin_server(tmp_path)
@@ -265,6 +423,8 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
         assert {tool.name for tool in listed.tools} == {
             "comfyui.admin.workflow.set_enabled",
             "comfyui.admin.workflow.delete",
+            "comfyui.admin.audit.get",
+            "comfyui.admin.audit.retry",
         }
         disabled = await client.call_tool(
             "comfyui.admin.workflow.set_enabled",
@@ -277,6 +437,7 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
                 "server_id": "local",
                 "workflow_id": "txt2img",
                 "confirmation": "wrong",
+                "request_id": "delete-refused",
             },
         )
         invalid_enabled = await client.call_tool(
@@ -291,10 +452,18 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
                 "server_id": "local",
                 "workflow_id": "txt2img",
                 "confirmation": "delete:local/txt2img",
+                "request_id": "delete-committed",
             },
         )
         assert deleted.structured_content["deleted"] is True
+        audit = await client.call_tool(
+            "comfyui.admin.audit.get",
+            {"request_id": "delete-committed"},
+        )
+        assert audit.structured_content["committed"] is True
+        assert audit.structured_content["audit_status"] == "audited"
     assert not (tmp_path / "data" / "local" / "txt2img").exists()
+
 
 @pytest.mark.anyio
 async def test_admin_unknown_tool_returns_invalid_params(tmp_path: Path) -> None:
@@ -332,7 +501,6 @@ async def test_admin_unexpected_failure_returns_structured_error(
     assert json.loads(result.content[0].text)["code"] == "INTERNAL_ERROR"
 
 
-
 @pytest.mark.anyio
 async def test_wait_progress_is_strictly_increasing(tmp_path: Path) -> None:
     _project(tmp_path)
@@ -343,7 +511,9 @@ async def test_wait_progress_is_strictly_increasing(tmp_path: Path) -> None:
             yield {"type": "progress", "data": {"node": "1", "value": 5, "max": 10}}
             yield {"type": "executing", "data": {"node": None}}
 
-        def get_history(self, prompt_id: str) -> dict[str, Any] | None:
+        def get_history(
+            self, prompt_id: str, timeout_seconds: float | None = None
+        ) -> dict[str, Any] | None:
             return {"status": {"completed": True}, "outputs": {}}
 
     gateway = ProgressGateway()
@@ -354,7 +524,11 @@ async def test_wait_progress_is_strictly_increasing(tmp_path: Path) -> None:
         observed.append((progress, total, message))
 
     async with Client(server) as client:
-        tool = next(tool for tool in (await client.list_tools()).tools if tool.name.startswith("comfyui.run."))
+        tool = next(
+            tool
+            for tool in (await client.list_tools()).tools
+            if tool.name.startswith("comfyui.run.")
+        )
         await client.call_tool(
             tool.name,
             {
@@ -381,7 +555,8 @@ async def test_wait_progress_is_strictly_increasing(tmp_path: Path) -> None:
     ],
 )
 async def test_missing_resource_returns_invalid_params(
-    tmp_path: Path, uri: str,
+    tmp_path: Path,
+    uri: str,
 ) -> None:
     _project(tmp_path)
     server = create_server(tmp_path, gateway_factory=lambda _config: FakeGateway())
@@ -395,7 +570,8 @@ async def test_missing_resource_returns_invalid_params(
 
 @pytest.mark.anyio
 async def test_bad_schema_is_isolated_and_legacy_ui_parameters_are_exposed(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     _project(tmp_path)
     bad = tmp_path / "data" / "local" / "bad"
@@ -499,8 +675,7 @@ async def test_bad_schema_is_isolated_and_legacy_ui_parameters_are_exposed(
     names = {tool.name for tool in listed.tools}
     assert "comfyui.job.get" in names
     assert not any(
-        name.endswith((".bad", ".bad-target", ".invalid-schema", ".reserved"))
-        for name in names
+        name.endswith((".bad", ".bad-target", ".invalid-schema", ".reserved")) for name in names
     )
     legacy_tool = next(tool for tool in listed.tools if tool.name.endswith(".legacy"))
     assert "Skipping workflow local/bad" in caplog.text

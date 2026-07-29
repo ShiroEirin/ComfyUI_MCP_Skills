@@ -18,7 +18,7 @@ import requests
 from comfyui_mcp_skills.domain.errors import WorkflowArgumentsError
 from comfyui_mcp_skills.domain.workflow_schema import normalize_parameters, validate_arguments
 
-from ..client import ComfyUIClient
+from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 from ..config import get_base_dir, get_default_server_id, get_server, load_config
 from ..history_writer import (
     claim_job,

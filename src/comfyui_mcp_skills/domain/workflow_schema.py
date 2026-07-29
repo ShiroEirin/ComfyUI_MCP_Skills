@@ -9,7 +9,6 @@ from jsonschema.exceptions import SchemaError
 
 from .errors import WorkflowArgumentsError
 
-
 WorkflowArgumentsError = WorkflowArgumentsError
 
 _TYPE_MAP = {
@@ -73,16 +72,13 @@ def normalize_parameters(schema: Any) -> dict[str, dict[str, Any]]:
 
     for name, metadata in parameters.items():
         if metadata.get("exposed", True) and (
-            not str(metadata.get("node_id", ""))
-            or not str(metadata.get("field", ""))
+            not str(metadata.get("node_id", "")) or not str(metadata.get("field", ""))
         ):
             raise ValueError(f'Workflow parameter "{name}" requires node_id and field')
     return parameters
 
 
-def validate_parameter_targets(
-    parameters: dict[str, dict[str, Any]], graph: Any
-) -> None:
+def validate_parameter_targets(parameters: dict[str, dict[str, Any]], graph: Any) -> None:
     """Ensure every exposed parameter targets an existing workflow input."""
     if not isinstance(graph, dict):
         raise ValueError("Workflow graph must be an object")
@@ -95,8 +91,7 @@ def validate_parameter_targets(
         inputs = node.get("inputs") if isinstance(node, dict) else None
         if not isinstance(inputs, dict) or field not in inputs:
             raise ValueError(
-                f'Workflow parameter "{name}" targets missing input '
-                f'"{node_id}.{field}"'
+                f'Workflow parameter "{name}" targets missing input "{node_id}.{field}"'
             )
 
 

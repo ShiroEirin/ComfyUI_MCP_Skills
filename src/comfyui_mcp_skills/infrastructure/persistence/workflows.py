@@ -60,7 +60,9 @@ class FileWorkflowRepository:
             logger.warning("Skipping unreadable workflow %s/%s: %s", server_id, workflow_id, exc)
             return None
         if not isinstance(schema, dict) or not isinstance(graph, dict):
-            logger.warning("Skipping workflow %s/%s: schema and graph must be objects", server_id, workflow_id)
+            logger.warning(
+                "Skipping workflow %s/%s: schema and graph must be objects", server_id, workflow_id
+            )
             return None
         try:
             parameters = normalize_parameters(schema)

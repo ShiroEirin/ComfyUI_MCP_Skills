@@ -14,7 +14,6 @@ from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.errors import JobNotFound, ServerOffline, UnsafeCancel
 from comfyui_mcp_skills.domain.models import Job
 
-
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {"completed", "error", "interrupted", "cancelled"}
@@ -34,12 +33,28 @@ class JobService:
         self._gateway_factory = gateway_factory
 
     def get(self, server_id: str, prompt_id: str, *, owner_id: str = "") -> Job:
+        return self._get_until(server_id, prompt_id, owner_id=owner_id)
+
+    def _get_until(
+        self,
+        server_id: str,
+        prompt_id: str,
+        *,
+        owner_id: str,
+        deadline: float | None = None,
+    ) -> Job:
         if not prompt_id:
             raise JobNotFound("prompt_id must not be empty")
         saved = self._runs.get(server_id, prompt_id)
         self._authorize_owner(saved, prompt_id, owner_id)
         gateway = self._gateway_factory(self._servers.connection(server_id))
-        history = gateway.get_history(prompt_id)
+        if deadline is None:
+            history = gateway.get_history(prompt_id)
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self._persisted_or_raise(saved, prompt_id)
+            history = gateway.get_history(prompt_id, timeout_seconds=remaining)
         if history:
             status_info = history.get("status", {})
             status = str(status_info.get("status_str", "")).lower()
@@ -53,9 +68,7 @@ class JobService:
                     owner_id=owner_id,
                 )
             elif status_info.get("completed", False) or history.get("outputs"):
-                outputs = tuple(
-                    self._outputs(server_id, prompt_id, history.get("outputs", {}))
-                )
+                outputs = tuple(self._outputs(server_id, prompt_id, history.get("outputs", {})))
                 job = self._copy(
                     saved,
                     server_id,
@@ -65,27 +78,25 @@ class JobService:
                     owner_id=owner_id,
                 )
             else:
-                job = self._copy(
-                    saved, server_id, prompt_id, "running", owner_id=owner_id
-                )
+                job = self._copy(saved, server_id, prompt_id, "running", owner_id=owner_id)
             self._runs.save(job)
             return job
-        queue = gateway.get_queue()
+        if deadline is None:
+            queue = gateway.get_queue()
+        else:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return self._persisted_or_raise(saved, prompt_id)
+            queue = gateway.get_queue(timeout_seconds=remaining)
         if self._in_queue(queue.get("queue_running", []), prompt_id):
-            job = self._copy(
-                saved, server_id, prompt_id, "running", owner_id=owner_id
-            )
+            job = self._copy(saved, server_id, prompt_id, "running", owner_id=owner_id)
             self._runs.save(job)
             return job
         if self._in_queue(queue.get("queue_pending", []), prompt_id):
-            job = self._copy(
-                saved, server_id, prompt_id, "queued", owner_id=owner_id
-            )
+            job = self._copy(saved, server_id, prompt_id, "queued", owner_id=owner_id)
             self._runs.save(job)
             return job
-        if saved is not None:
-            return saved
-        raise JobNotFound(f"Job not found: {prompt_id}")
+        return self._persisted_or_raise(saved, prompt_id)
 
     def wait(
         self,
@@ -112,19 +123,26 @@ class JobService:
                     max(0.0, deadline - time.monotonic()),
                     cancel_check,
                 ):
+                    if time.monotonic() >= deadline:
+                        return self._persisted_or_raise(saved, prompt_id)
                     if cancel_check is not None:
                         cancel_check()
                     if progress is not None:
                         progress(event)
-                    if time.monotonic() >= deadline:
-                        return saved
                     event_type = str(event.get("type", ""))
                     data = event.get("data", {})
                     if event_type in {"execution_error", "execution_interrupted"}:
                         break
                     if event_type == "executing" and data.get("node") is None:
                         break
-                job = self.get(server_id, prompt_id, owner_id=owner_id)
+                if time.monotonic() >= deadline:
+                    return self._persisted_or_raise(saved, prompt_id)
+                job = self._get_until(
+                    server_id,
+                    prompt_id,
+                    owner_id=owner_id,
+                    deadline=deadline,
+                )
                 if job.status in _TERMINAL_STATUSES:
                     return job
             except ServerOffline:
@@ -135,15 +153,18 @@ class JobService:
         while time.monotonic() < deadline:
             if cancel_check is not None:
                 cancel_check()
-            job = self.get(server_id, prompt_id, owner_id=owner_id)
+            job = self._get_until(
+                server_id,
+                prompt_id,
+                owner_id=owner_id,
+                deadline=deadline,
+            )
             if job.status in _TERMINAL_STATUSES:
                 return job
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-        return saved or self.get(server_id, prompt_id, owner_id=owner_id)
+        return self._persisted_or_raise(saved, prompt_id)
 
-    def cancel(
-        self, server_id: str, prompt_id: str, *, owner_id: str = ""
-    ) -> Job:
+    def cancel(self, server_id: str, prompt_id: str, *, owner_id: str = "") -> Job:
         if not prompt_id:
             raise JobNotFound("prompt_id must not be empty")
         existing = self._runs.get(server_id, prompt_id)
@@ -164,16 +185,18 @@ class JobService:
             return self.get(server_id, prompt_id, owner_id=owner_id)
         queue = gateway.get_queue()
         if self._in_queue(queue.get("queue_running", []), prompt_id):
-            return self._copy(
-                current, server_id, prompt_id, "running", owner_id=owner_id
-            )
+            return self._copy(current, server_id, prompt_id, "running", owner_id=owner_id)
         if self._in_queue(queue.get("queue_pending", []), prompt_id):
             return current
-        job = self._copy(
-            current, server_id, prompt_id, "cancelled", owner_id=owner_id
-        )
+        job = self._copy(current, server_id, prompt_id, "cancelled", owner_id=owner_id)
         self._runs.save(job)
         return job
+
+    def _persisted_or_raise(self, fallback: Job | None, prompt_id: str) -> Job:
+        persisted = self._runs.get(fallback.server_id, prompt_id) if fallback is not None else None
+        if persisted is not None:
+            return persisted
+        raise JobNotFound(f"Job not found: {prompt_id}")
 
     @staticmethod
     def _authorize_owner(saved: Job | None, prompt_id: str, owner_id: str) -> None:
@@ -209,9 +232,7 @@ class JobService:
         return any(len(item) > 1 and item[1] == prompt_id for item in items)
 
     @staticmethod
-    def _outputs(
-        server_id: str, prompt_id: str, outputs: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    def _outputs(server_id: str, prompt_id: str, outputs: dict[str, Any]) -> list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for node_output in outputs.values():
             if not isinstance(node_output, dict):

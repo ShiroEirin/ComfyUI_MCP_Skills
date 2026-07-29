@@ -9,6 +9,7 @@ import anyio
 from mcp.server.stdio import stdio_server
 
 from .adapters.mcp.admin import create_admin_server
+from .observability import configure_logging
 
 
 async def _run(base_dir: Path, actor: str) -> None:
@@ -22,6 +23,7 @@ async def _run(base_dir: Path, actor: str) -> None:
 
 
 def main() -> None:
+    configure_logging(os.environ.get("COMFYUI_MCP_LOG_LEVEL", "INFO"))
     if os.environ.get("COMFYUI_MCP_ENABLE_ADMIN") != "1":
         raise PermissionError("Set COMFYUI_MCP_ENABLE_ADMIN=1 to run the admin server")
     base_dir = Path(os.environ.get("COMFYUI_MCP_DIR", os.getcwd())).resolve()

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import os
-import uuid
 import tempfile
+import uuid
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
+from comfyui_mcp_skills.application.ports import AssetRepository
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
     ComfyUISkillsError,
@@ -18,16 +19,15 @@ from comfyui_mcp_skills.domain.errors import (
     UploadFailed,
 )
 from comfyui_mcp_skills.domain.models import Asset
-from comfyui_mcp_skills.application.ports import AssetRepository
 
 
 class AssetGateway(Protocol):
-    def upload_file(
-        self, path: str, *, purpose: str, original_ref: str
-    ) -> dict[str, Any]: ...
+    def upload_file(self, path: str, *, purpose: str, original_ref: str) -> dict[str, Any]: ...
 
 
-_SIGNATURES: tuple[tuple[bytes, str, str], ...] = (
+MediaType = Literal["image", "audio", "video"]
+
+_SIGNATURES: tuple[tuple[bytes, str, MediaType], ...] = (
     (b"\x89PNG\r\n\x1a\n", "image/png", "image"),
     (b"\xff\xd8\xff", "image/jpeg", "image"),
     (b"GIF87a", "image/gif", "image"),
@@ -120,9 +120,7 @@ class AssetService:
                 prefix = source_file.read(16)
                 mime_type, media_type = self._detect_media(source, prefix)
                 if media_type != expected_media:
-                    raise UnsupportedMediaType(
-                        f"{purpose} requires a {expected_media} file"
-                    )
+                    raise UnsupportedMediaType(f"{purpose} requires a {expected_media} file")
                 with staged.open("xb") as staged_file:
                     staged_file.write(prefix)
                     digest.update(prefix)
@@ -146,9 +144,7 @@ class AssetService:
                 or not self._same_file(opened, current)
             ):
                 raise UnsafePath("Upload file was replaced while being read")
-            uploaded = gateway.upload_file(
-                str(staged), purpose=purpose, original_ref=original_ref
-            )
+            uploaded = gateway.upload_file(str(staged), purpose=purpose, original_ref=original_ref)
         except ComfyUISkillsError:
             raise
         except Exception as exc:
@@ -199,7 +195,8 @@ class AssetService:
         )
 
     @staticmethod
-    def _detect_media(path: Path, prefix: bytes) -> tuple[str, str]:
+    def _detect_media(path: Path, prefix: bytes) -> tuple[str, MediaType]:
+        detected: tuple[str, MediaType] | None
         if prefix.startswith(b"RIFF") and prefix[8:12] == b"WEBP":
             detected = ("image/webp", "image")
         elif prefix.startswith(b"RIFF") and prefix[8:12] == b"WAVE":
@@ -210,14 +207,16 @@ class AssetService:
             detected = ("audio/mpeg", "audio")
         else:
             detected = next(
-                ((mime, media) for signature, mime, media in _SIGNATURES if prefix.startswith(signature)),
+                (
+                    (mime, media)
+                    for signature, mime, media in _SIGNATURES
+                    if prefix.startswith(signature)
+                ),
                 None,
             )
         expected = _EXTENSION_MIME.get(path.suffix.lower())
         if detected is None or expected != detected[0]:
-            raise UnsupportedMediaType(
-                "File content does not match a supported media extension"
-            )
+            raise UnsupportedMediaType("File content does not match a supported media extension")
         return detected
 
     @staticmethod

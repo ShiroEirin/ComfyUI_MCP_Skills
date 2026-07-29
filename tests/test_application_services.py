@@ -35,10 +35,12 @@ class FakeGateway:
         self.queued.append(workflow)
         return {"prompt_id": "prompt-1", "client_id": "client-1"}
 
-    def get_history(self, prompt_id: str) -> dict[str, Any] | None:
+    def get_history(
+        self, prompt_id: str, timeout_seconds: float | None = None
+    ) -> dict[str, Any] | None:
         return self.histories.get(prompt_id)
 
-    def get_queue(self) -> dict[str, Any]:
+    def get_queue(self, timeout_seconds: float | None = None) -> dict[str, Any]:
         return {"queue_running": [], "queue_pending": []}
 
     def ws_events(
@@ -56,6 +58,7 @@ class FakeGateway:
             "type": "executing",
             "data": {"prompt_id": prompt_id, "node": None},
         }
+
     def interrupt(self, prompt_id: str = "") -> dict[str, Any]:
         self.interrupted.append(prompt_id)
         return {"success": True}
@@ -182,24 +185,16 @@ def test_catalog_registry_execution_and_job_lifecycle(tmp_path: Path) -> None:
     gateway.histories["prompt-1"] = {
         "status": {"completed": True, "status_str": "success"},
         "outputs": {
-            "3": {
-                "images": [
-                    {"filename": "result.png", "subfolder": "", "type": "output"}
-                ]
-            }
+            "3": {"images": [{"filename": "result.png", "subfolder": "", "type": "output"}]}
         },
     }
     jobs = JobService(registry, run_repository, gateway_factory)
     progress: list[dict[str, Any]] = []
-    completed = jobs.wait(
-        "local", "prompt-1", timeout_seconds=5, progress=progress.append
-    )
+    completed = jobs.wait("local", "prompt-1", timeout_seconds=5, progress=progress.append)
     cancelled = jobs.cancel("local", "prompt-1")
 
     assert completed.status == "completed"
-    assert completed.outputs[0]["resource_uri"].startswith(
-        "comfyui://outputs/local/prompt-1/"
-    )
+    assert completed.outputs[0]["resource_uri"].startswith("comfyui://outputs/local/prompt-1/")
     assert cancelled.status == "completed"
     assert gateway.interrupted == []
 
@@ -235,12 +230,10 @@ def test_unknown_submission_is_reconciled_by_client_id(tmp_path: Path) -> None:
             self.client_id = str(kwargs["client_id"])
             raise ServerOffline("response was lost")
 
-        def get_queue(self) -> dict[str, Any]:
+        def get_queue(self, timeout_seconds: float | None = None) -> dict[str, Any]:
             return {
                 "queue_running": [],
-                "queue_pending": [
-                    [0, "prompt-recovered", {}, {"client_id": self.client_id}]
-                ],
+                "queue_pending": [[0, "prompt-recovered", {}, {"client_id": self.client_id}]],
             }
 
         def get_history_list(self, max_items: int = 20, offset: int = 0):
@@ -252,9 +245,7 @@ def test_unknown_submission_is_reconciled_by_client_id(tmp_path: Path) -> None:
 
     with pytest.raises(ServerOffline):
         execution.submit("local", "img2img", arguments, idempotency_key="recover-1")
-    recovered = execution.submit(
-        "local", "img2img", arguments, idempotency_key="recover-1"
-    )
+    recovered = execution.submit("local", "img2img", arguments, idempotency_key="recover-1")
 
     assert recovered.prompt_id == "prompt-recovered"
     assert gateway.calls == 1
@@ -369,11 +360,7 @@ def test_job_outputs_include_gifs_and_media_metadata(tmp_path: Path) -> None:
     gateway.histories["prompt-video"] = {
         "status": {"completed": True, "status_str": "success"},
         "outputs": {
-            "9": {
-                "gifs": [
-                    {"filename": "clip.mp4", "subfolder": "video", "type": "output"}
-                ]
-            }
+            "9": {"gifs": [{"filename": "clip.mp4", "subfolder": "video", "type": "output"}]}
         },
     }
     service = JobService(ServerRegistry(tmp_path), runs, lambda _config: gateway)
@@ -404,7 +391,5 @@ def test_wait_zero_returns_handle_and_callback_errors_propagate(tmp_path: Path) 
             "local",
             "prompt-wait",
             timeout_seconds=1,
-            progress=lambda _event: (_ for _ in ()).throw(
-                ValueError("callback failed")
-            ),
+            progress=lambda _event: (_ for _ in ()).throw(ValueError("callback failed")),
         )

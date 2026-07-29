@@ -9,6 +9,7 @@ import anyio
 from mcp.server.stdio import stdio_server
 
 from .adapters.mcp.server import create_server
+from .observability import configure_logging
 
 
 def _configured_upload_roots(base_dir: Path) -> list[Path]:
@@ -40,6 +41,7 @@ async def _run_stdio(base_dir: Path) -> None:
 
 def main() -> None:
     """Run the local stdio MCP server without writing non-protocol stdout."""
+    configure_logging(os.environ.get("COMFYUI_MCP_LOG_LEVEL", "INFO"))
     base_dir = Path(os.environ.get("COMFYUI_MCP_DIR", os.getcwd())).resolve()
     anyio.run(_run_stdio, base_dir)
 

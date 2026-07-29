@@ -25,6 +25,23 @@ class ServerRegistry:
             output_dir=str(config.get("output_dir", "./outputs")),
         )
 
+    def list(self) -> list[Server]:
+        result: list[Server] = []
+        for item in self._load().get("servers", []):
+            if not isinstance(item, dict) or item.get("enabled", True) is not True:
+                continue
+            server_id = validate_identifier(str(item.get("id", "")), field="server_id")
+            result.append(
+                Server(
+                    server_id=server_id,
+                    name=str(item.get("name", server_id)),
+                    url=str(item.get("url", "http://127.0.0.1:8188")),
+                    enabled=True,
+                    output_dir=str(item.get("output_dir", "./outputs")),
+                )
+            )
+        return result
+
     def default_server_id(self) -> str:
         data = self._load()
         return str(data.get("default_server", "local"))

@@ -3,24 +3,30 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from threading import Event, Lock
+import os
 from pathlib import Path
+from threading import Event
 from unittest.mock import MagicMock, patch
 
 import anyio
 import pytest
-from starlette.testclient import TestClient
 from starlette.applications import Starlette
-from starlette.responses import StreamingResponse
+from starlette.responses import PlainTextResponse, StreamingResponse
 from starlette.routing import Route
+from starlette.testclient import TestClient
 
 from comfyui_mcp_skills.adapters.http.security import SafeHTTPSDownloader
 from comfyui_mcp_skills.adapters.http.server import (
     RequestControlMiddleware,
+    StaticTokenVerifier,
     create_http_app,
 )
-from comfyui_mcp_skills.http_main import _default_allowed_hosts
 from comfyui_mcp_skills.domain.errors import UnsafePath
+from comfyui_mcp_skills.http_main import (
+    _default_allowed_hosts,
+    _validate_worker_limits,
+    main as http_main,
+)
 
 
 def _project(root: Path) -> None:
@@ -30,6 +36,17 @@ def _project(root: Path) -> None:
         '"url":"http://127.0.0.1:8188","enabled":true}]}',
         encoding="utf-8",
     )
+
+
+def _tokens(
+    token: str = "secret", principal_id: str = "test-principal"
+) -> dict[str, dict[str, object]]:
+    return {
+        token: {
+            "principal_id": principal_id,
+            "scopes": ["comfyui:execute"],
+        }
+    }
 
 
 def test_safe_downloader_rejects_non_https_and_private_networks(tmp_path: Path) -> None:
@@ -49,7 +66,7 @@ def test_http_upload_requires_token_and_origin(tmp_path: Path) -> None:
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=upload_root,
     )
 
@@ -58,6 +75,15 @@ def test_http_upload_requires_token_and_origin(tmp_path: Path) -> None:
             "/assets?server_id=local&filename=cat.png",
             content=b"not-an-image",
             headers={"content-type": "image/png", "origin": "https://agent.example"},
+        )
+        lowercase_bearer = client.post(
+            "/assets?server_id=local&filename=cat.png",
+            content=b"not-an-image",
+            headers={
+                "authorization": "bearer secret",
+                "content-type": "image/png",
+                "origin": "https://agent.example",
+            },
         )
         bad_origin = client.post(
             "/mcp",
@@ -69,6 +95,7 @@ def test_http_upload_requires_token_and_origin(tmp_path: Path) -> None:
         )
 
     assert unauthorized.status_code == 401
+    assert lowercase_bearer.status_code != 401
     assert bad_origin.status_code == 403
 
 
@@ -80,14 +107,12 @@ def test_http_upload_and_fetch_are_bounded(tmp_path: Path) -> None:
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=upload_root,
         requests_per_minute=2,
     )
     gateway = MagicMock()
-    gateway.upload_file.return_value = {
-        "name": "cat.png", "subfolder": "agent", "type": "input"
-    }
+    gateway.upload_file.return_value = {"name": "cat.png", "subfolder": "agent", "type": "input"}
     remote = upload_root / "remote.png"
     headers = {
         "authorization": "Bearer secret",
@@ -136,9 +161,7 @@ def test_https_downloader_connects_to_validated_ip(tmp_path: Path) -> None:
     response.stream.return_value = [b"12345678"]
     pool = MagicMock()
     pool.request.return_value = response
-    downloader = SafeHTTPSDownloader(
-        allowed_hosts=["cdn.example"], max_bytes=16
-    )
+    downloader = SafeHTTPSDownloader(allowed_hosts=["cdn.example"], max_bytes=16)
 
     with (
         patch(
@@ -150,9 +173,7 @@ def test_https_downloader_connects_to_validated_ip(tmp_path: Path) -> None:
             return_value=pool,
         ) as pool_class,
     ):
-        downloaded = downloader.download(
-            "https://cdn.example/cat.png?version=1", tmp_path
-        )
+        downloaded = downloader.download("https://cdn.example/cat.png?version=1", tmp_path)
 
     assert downloaded.read_bytes() == b"12345678"
     assert pool_class.call_args.args[0] == "93.184.216.34"
@@ -168,7 +189,7 @@ def test_http_unknown_server_and_fetch_body_limit(tmp_path: Path) -> None:
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=tmp_path / "uploads",
         max_fetch_body_bytes=32,
     )
@@ -223,15 +244,13 @@ def test_http_2026_is_stateless_and_rejects_missing_version_header(tmp_path: Pat
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=tmp_path / "uploads",
     )
     request = _modern_mcp_request("tools/list")
 
     with TestClient(app) as client:
-        modern = client.post(
-            "/mcp", json=request, headers=_modern_mcp_headers("tools/list")
-        )
+        modern = client.post("/mcp", json=request, headers=_modern_mcp_headers("tools/list"))
         missing_version = client.post(
             "/mcp",
             json=request,
@@ -250,6 +269,130 @@ def test_http_2026_is_stateless_and_rejects_missing_version_header(tmp_path: Pat
     assert "mcp-session-id" not in missing_version.headers
 
 
+def test_multi_worker_deployment_requires_external_global_limits() -> None:
+    with pytest.raises(ValueError, match="external global rate limiting"):
+        _validate_worker_limits(2, "process")
+
+    _validate_worker_limits(2, "external")
+
+
+def test_multi_worker_main_uses_uvicorn_import_factory() -> None:
+    environment = {
+        "COMFYUI_MCP_TOKENS": (
+            '{"secret":{"principal_id":"test-principal","scopes":["comfyui:execute"]}}'
+        ),
+        "COMFYUI_MCP_WORKERS": "2",
+        "COMFYUI_MCP_LIMIT_MODE": "external",
+    }
+
+    with (
+        patch.dict(os.environ, environment, clear=True),
+        patch("comfyui_mcp_skills.http_main.configure_logging"),
+        patch("comfyui_mcp_skills.http_main.uvicorn.run") as run,
+    ):
+        http_main()
+
+    run.assert_called_once_with(
+        "comfyui_mcp_skills.http_main:create_app",
+        host="127.0.0.1",
+        port=8765,
+        log_level="info",
+        workers=2,
+        factory=True,
+    )
+
+
+def test_token_rotation_preserves_principal_owner_id() -> None:
+    first = StaticTokenVerifier(_tokens("first-secret", "stable-principal"))
+    rotated = StaticTokenVerifier(_tokens("rotated-secret", "stable-principal"))
+
+    first_access = anyio.run(first.verify_token, "first-secret")
+    rotated_access = anyio.run(rotated.verify_token, "rotated-secret")
+
+    assert first_access is not None
+    assert rotated_access is not None
+    assert first_access.client_id == rotated_access.client_id == "stable-principal"
+
+
+def test_overlapping_rotation_tokens_share_stable_principal() -> None:
+    verifier = StaticTokenVerifier(
+        {
+            "old-secret": {
+                "principal_id": "stable-principal",
+                "scopes": ["comfyui:execute"],
+            },
+            "new-secret": {
+                "principal_id": "stable-principal",
+                "scopes": ["comfyui:execute"],
+            },
+        }
+    )
+
+    old_access = anyio.run(verifier.verify_token, "old-secret")
+    new_access = anyio.run(verifier.verify_token, "new-secret")
+
+    assert old_access is not None
+    assert new_access is not None
+    assert old_access.client_id == new_access.client_id == "stable-principal"
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        [],
+        {"secret": None},
+        {"secret": {"principal_id": "principal"}},
+        {"secret": {"principal_id": "principal", "scopes": [42]}},
+        {"secret": ["comfyui:execute"]},
+        {"": {"principal_id": "principal", "scopes": ["comfyui:execute"]}},
+        {"secret": {"principal_id": "", "scopes": ["comfyui:execute"]}},
+        {"secret": {"principal_id": "unsafe principal", "scopes": ["comfyui:execute"]}},
+        {" secret": {"principal_id": "principal", "scopes": ["comfyui:execute"]}},
+        {"secret\n": {"principal_id": "principal", "scopes": ["comfyui:execute"]}},
+        {
+            "secret": {
+                "principal_id": "p" * 129,
+                "scopes": ["comfyui:execute"],
+            }
+        },
+        {"secret": {"principal_id": 42, "scopes": ["comfyui:execute"]}},
+        {"secret": {"principal_id": "principal", "scopes": []}},
+        {"secret": {"principal_id": "principal", "scopes": "comfyui:execute"}},
+        {"secret": {"principal_id": "principal", "scopes": ["other:scope"]}},
+        {
+            "secret": {
+                "principal_id": "principal",
+                "scopes": ["comfyui:execute", "comfyui:execute"],
+            }
+        },
+    ],
+)
+def test_http_rejects_invalid_static_token_configuration(tmp_path: Path, tokens: object) -> None:
+    with pytest.raises(ValueError):
+        create_http_app(
+            tmp_path,
+            host="127.0.0.1",
+            allowed_hosts=["testserver"],
+            allowed_origins=["https://agent.example"],
+            tokens=tokens,  # type: ignore[arg-type]
+            upload_root=tmp_path / "uploads",
+        )
+
+
+def test_http_rejects_unimplemented_auth_modes(tmp_path: Path) -> None:
+    _project(tmp_path)
+    with pytest.raises(ValueError, match="Only static bearer-token authentication"):
+        create_http_app(
+            tmp_path,
+            host="127.0.0.1",
+            allowed_hosts=["testserver"],
+            allowed_origins=["https://agent.example"],
+            tokens=_tokens(),
+            upload_root=tmp_path / "uploads",
+            auth_mode="oauth",
+        )
+
+
 def test_static_token_mode_does_not_advertise_oauth_metadata(tmp_path: Path) -> None:
     _project(tmp_path)
     app = create_http_app(
@@ -257,7 +400,7 @@ def test_static_token_mode_does_not_advertise_oauth_metadata(tmp_path: Path) -> 
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=tmp_path / "uploads",
     )
 
@@ -285,7 +428,7 @@ def test_http_2026_wire_headers_methods_and_resource_errors(tmp_path: Path) -> N
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=tmp_path / "uploads",
     )
     base_headers = _modern_mcp_headers("tools/list")
@@ -335,7 +478,7 @@ def test_missing_version_requests_are_rate_limited(tmp_path: Path) -> None:
         host="127.0.0.1",
         allowed_hosts=["testserver"],
         allowed_origins=["https://agent.example"],
-        tokens={"secret": ["comfyui:execute"]},
+        tokens=_tokens(),
         upload_root=tmp_path / "uploads",
         requests_per_minute=1,
     )
@@ -346,38 +489,22 @@ def test_missing_version_requests_are_rate_limited(tmp_path: Path) -> None:
     }
 
     with TestClient(app) as client:
-        first = client.post(
-            "/mcp", json=_modern_mcp_request("tools/list"), headers=headers
-        )
-        second = client.post(
-            "/mcp", json=_modern_mcp_request("tools/list"), headers=headers
-        )
+        first = client.post("/mcp", json=_modern_mcp_request("tools/list"), headers=headers)
+        second = client.post("/mcp", json=_modern_mcp_request("tools/list"), headers=headers)
 
     assert first.status_code == 400
     assert second.status_code == 429
 
 
-def test_request_concurrency_slot_covers_stream_lifetime() -> None:
+def test_request_concurrency_saturation_fails_fast() -> None:
     first_started = Event()
     release = Event()
-    overlap = Event()
-    state_lock = Lock()
-    active = 0
 
     async def endpoint(_request: object) -> StreamingResponse:
         async def body():
-            nonlocal active
-            with state_lock:
-                active += 1
-                if active > 1:
-                    overlap.set()
-                first_started.set()
-            try:
-                await anyio.to_thread.run_sync(release.wait)
-                yield b"ok"
-            finally:
-                with state_lock:
-                    active -= 1
+            first_started.set()
+            await anyio.to_thread.run_sync(release.wait)
+            yield b"ok"
 
         return StreamingResponse(body())
 
@@ -392,8 +519,72 @@ def test_request_concurrency_slot_covers_stream_lifetime() -> None:
         first = pool.submit(client.get, "/")
         assert first_started.wait(timeout=2)
         second = pool.submit(client.get, "/")
-        did_overlap = overlap.wait(timeout=0.2)
+        assert second.result(timeout=2).status_code == 503
         release.set()
         assert first.result(timeout=2).status_code == 200
-        assert second.result(timeout=2).status_code == 200
-        assert not did_overlap
+
+
+def test_subscription_streams_use_separate_per_principal_quota() -> None:
+    subscription_started = Event()
+    release = Event()
+
+    async def endpoint(request: object):
+        if request.headers.get("mcp-method") != "subscriptions/listen":
+            return PlainTextResponse("ok")
+
+        async def body():
+            subscription_started.set()
+            await anyio.to_thread.run_sync(release.wait)
+            yield b"event"
+
+        return StreamingResponse(body(), media_type="text/event-stream")
+
+    app = Starlette(routes=[Route("/mcp", endpoint, methods=["POST"])])
+    app.add_middleware(
+        RequestControlMiddleware,
+        requests_per_minute=10,
+        max_concurrent_requests=1,
+        max_subscription_streams=2,
+        max_subscriptions_per_principal=1,
+        bearer_tokens=("secret",),
+        bearer_principals={"secret": "principal"},
+    )
+    subscription_headers = {
+        "authorization": "Bearer secret",
+        "mcp-method": "subscriptions/listen",
+    }
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.post, "/mcp", headers=subscription_headers)
+        assert subscription_started.wait(timeout=2)
+        assert client.post("/mcp").status_code == 200
+        limited = client.post("/mcp", headers=subscription_headers)
+        assert limited.status_code == 429
+        release.set()
+        assert first.result(timeout=2).status_code == 200
+
+
+def test_http_replaces_oversized_request_id(tmp_path: Path) -> None:
+    _project(tmp_path)
+    app = create_http_app(
+        tmp_path,
+        host="127.0.0.1",
+        allowed_hosts=["testserver"],
+        allowed_origins=["https://agent.example"],
+        tokens=_tokens(),
+        upload_root=tmp_path / "uploads",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/mcp",
+            json=_modern_mcp_request("tools/list"),
+            headers={
+                **_modern_mcp_headers("tools/list"),
+                "x-request-id": "x" * 1024,
+            },
+        )
+
+    request_id = response.headers["x-request-id"]
+    assert response.status_code == 200
+    assert request_id != "x" * 1024
+    assert len(request_id) == 32

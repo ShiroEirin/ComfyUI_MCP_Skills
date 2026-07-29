@@ -29,7 +29,11 @@ _STATUS_PRIORITY = {
 
 class FileRunRepository:
     def __init__(self, base_dir: Path) -> None:
-        self._root = (base_dir / "data" / "runs").resolve()
+        data_root = (base_dir.resolve() / "data").resolve()
+        data_root.mkdir(parents=True, exist_ok=True)
+        self._root = data_root / "runs"
+        self._retention_lock = FileLock(str(data_root / ".retention.lock"), timeout=10)
+        self._generation_path = data_root / ".retention-generation"
 
     def claim(
         self,
@@ -45,42 +49,40 @@ class FileRunRepository:
         path = self._idempotency_path(server_id, idempotency_key, owner_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         request_digest = self.request_digest(workflow_id, arguments)
-        with self._lock(path):
-            existing = self._read_record(path)
-            if existing is not None:
-                claimed_at = float(existing.get("claimed_at", 0))
-                active = (
-                    existing.get("status") != "reserved"
-                    or time.time() - claimed_at <= 300
-                )
-                if active:
-                    return None
-                path.unlink(missing_ok=True)
-            lease_token = uuid.uuid4().hex
-            record = {
-                "server_id": server_id,
-                "workflow_id": workflow_id,
-                "idempotency_key": idempotency_key,
-                "owner_id": owner_id,
-                "prompt_id": "",
-                "status": "reserved",
-                "request_digest": request_digest,
-                "claimed_at": time.time(),
-                "client_id": client_id,
-                "lease_token": lease_token,
-            }
-            with path.open("x", encoding="utf-8") as file:
-                json.dump(record, file, ensure_ascii=False)
-                file.flush()
-                os.fsync(file.fileno())
-            return lease_token
+        with self._retention_lock:
+            with self._lock(path):
+                existing = self._read_record(path)
+                if existing is not None:
+                    claimed_at = float(existing.get("claimed_at", 0))
+                    active = existing.get("status") != "reserved" or time.time() - claimed_at <= 300
+                    if active:
+                        return None
+                    path.unlink(missing_ok=True)
+                lease_token = uuid.uuid4().hex
+                record = {
+                    "server_id": server_id,
+                    "workflow_id": workflow_id,
+                    "idempotency_key": idempotency_key,
+                    "owner_id": owner_id,
+                    "prompt_id": "",
+                    "status": "reserved",
+                    "request_digest": request_digest,
+                    "claimed_at": time.time(),
+                    "client_id": client_id,
+                    "lease_token": lease_token,
+                }
+                with path.open("x", encoding="utf-8") as file:
+                    json.dump(record, file, ensure_ascii=False)
+                    file.flush()
+                    os.fsync(file.fileno())
+                self._bump_generation()
+                return lease_token
 
-    def get_claim(
-        self, server_id: str, key: str, owner_id: str = ""
-    ) -> dict[str, Any] | None:
+    def get_claim(self, server_id: str, key: str, owner_id: str = "") -> dict[str, Any] | None:
         path = self._idempotency_path(server_id, key, owner_id)
-        with self._lock(path):
-            return self._read_record(path)
+        with self._retention_lock:
+            with self._lock(path):
+                return self._read_record(path)
 
     def release_claim(
         self,
@@ -93,15 +95,17 @@ class FileRunRepository:
         if not key:
             return
         path = self._idempotency_path(server_id, key, owner_id)
-        with self._lock(path):
-            record = self._read_record(path)
-            if (
-                record
-                and not record.get("prompt_id")
-                and record.get("request_digest") == request_digest
-                and record.get("lease_token") == lease_token
-            ):
-                path.unlink(missing_ok=True)
+        with self._retention_lock:
+            with self._lock(path):
+                record = self._read_record(path)
+                if (
+                    record
+                    and not record.get("prompt_id")
+                    and record.get("request_digest") == request_digest
+                    and record.get("lease_token") == lease_token
+                ):
+                    path.unlink(missing_ok=True)
+                    self._bump_generation()
 
     def mark_submission_unknown(
         self,
@@ -113,11 +117,13 @@ class FileRunRepository:
         if not key:
             return
         path = self._idempotency_path(server_id, key, owner_id)
-        with self._lock(path):
-            record = self._read_record(path)
-            if record and record.get("lease_token") == lease_token:
-                record["status"] = "submission_unknown"
-                self._atomic_write(path, record)
+        with self._retention_lock:
+            with self._lock(path):
+                record = self._read_record(path)
+                if record and record.get("lease_token") == lease_token:
+                    record["status"] = "submission_unknown"
+                    self._atomic_write(path, record)
+                    self._bump_generation()
 
     @staticmethod
     def request_digest(workflow_id: str, arguments: dict[str, Any]) -> str:
@@ -130,6 +136,11 @@ class FileRunRepository:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def save(self, job: Job, *, lease_token: str = "") -> None:
+        with self._retention_lock:
+            self._save_locked(job, lease_token=lease_token)
+            self._bump_generation()
+
+    def _save_locked(self, job: Job, *, lease_token: str) -> None:
         prompt_path = self._prompt_path(job.server_id, job.prompt_id)
         if job.idempotency_key:
             idempotency_path = self._idempotency_path(
@@ -150,9 +161,7 @@ class FileRunRepository:
                         raise RuntimeError("Idempotency lease is no longer owned")
                 elif current is not None:
                     if not same_finalized:
-                        raise RuntimeError(
-                            "Idempotency record was finalized differently"
-                        )
+                        raise RuntimeError("Idempotency record was finalized differently")
                     if lease_token:
                         return
                 elif current is None:
@@ -175,10 +184,18 @@ class FileRunRepository:
     def get(self, server_id: str, prompt_id: str) -> Job | None:
         return self._read_job(self._prompt_path(server_id, prompt_id))
 
-    def get_by_idempotency(
-        self, server_id: str, key: str, owner_id: str = ""
-    ) -> Job | None:
+    def get_by_idempotency(self, server_id: str, key: str, owner_id: str = "") -> Job | None:
         return self._read_job(self._idempotency_path(server_id, key, owner_id))
+
+    def _bump_generation(self) -> None:
+        temporary = self._generation_path.with_name(
+            f".{self._generation_path.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            temporary.write_text(uuid.uuid4().hex, encoding="ascii")
+            os.replace(temporary, self._generation_path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     @staticmethod
     def _serialize(job: Job) -> dict[str, Any]:
@@ -200,13 +217,7 @@ class FileRunRepository:
         if not data or not data.get("prompt_id"):
             return None
         data["outputs"] = tuple(data.get("outputs", []))
-        return Job(
-            **{
-                key: data[key]
-                for key in Job.__dataclass_fields__
-                if key in data
-            }
-        )
+        return Job(**{key: data[key] for key in Job.__dataclass_fields__ if key in data})
 
     @staticmethod
     def _read_record(path: Path) -> dict[str, Any] | None:
@@ -230,22 +241,12 @@ class FileRunRepository:
             temporary.unlink(missing_ok=True)
 
     def _prompt_path(self, server_id: str, prompt_id: str) -> Path:
-        return (
-            self._root
-            / self._digest(server_id)
-            / "prompts"
-            / f"{self._digest(prompt_id)}.json"
-        )
+        return self._root / self._digest(server_id) / "prompts" / f"{self._digest(prompt_id)}.json"
 
-    def _idempotency_path(
-        self, server_id: str, key: str, owner_id: str = ""
-    ) -> Path:
+    def _idempotency_path(self, server_id: str, key: str, owner_id: str = "") -> Path:
         namespace = f"{owner_id}\0{key}"
         return (
-            self._root
-            / self._digest(server_id)
-            / "idempotency"
-            / f"{self._digest(namespace)}.json"
+            self._root / self._digest(server_id) / "idempotency" / f"{self._digest(namespace)}.json"
         )
 
     @staticmethod

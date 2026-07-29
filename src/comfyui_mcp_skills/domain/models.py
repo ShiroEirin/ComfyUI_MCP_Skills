@@ -19,9 +19,7 @@ class Asset:
     size_bytes: int
     sha256: str
     owner_id: str = ""
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     @property
     def resource_uri(self) -> str:

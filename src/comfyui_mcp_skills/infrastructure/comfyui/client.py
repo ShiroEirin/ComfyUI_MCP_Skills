@@ -1,15 +1,15 @@
 """ComfyUI HTTP client — all server communication goes through here."""
 
 from __future__ import annotations
-from collections.abc import Callable, Iterator
 
 import json
 import mimetypes
 import os
 import time
 import uuid
+from collections.abc import Callable, Generator, Iterator
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 from urllib.parse import quote
 
 import requests
@@ -48,22 +48,21 @@ def _multipart_file_part(
         f"--{boundary}\r\n"
         f'Content-Disposition: form-data; name="{field}"; filename="{filename}"\r\n'
         f"Content-Type: {content_type}\r\n\r\n"
-    ).encode("utf-8")
+    ).encode()
     return header, path, suffix
 
 
 def _multipart_text_part(
     field: str, value: str, boundary: str, suffix: bytes
 ) -> tuple[bytes, None, bytes]:
-    header = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="{field}"\r\n\r\n'
-    ).encode("utf-8")
+    header = (f'--{boundary}\r\nContent-Disposition: form-data; name="{field}"\r\n\r\n').encode()
     return header, None, value.encode("utf-8") + suffix
 
 
 class ComfyUIClient:
-    def __init__(self, server_url: str, auth: str = "", comfy_api_key: str = "", timeout: float = 30.0):
+    def __init__(
+        self, server_url: str, auth: str = "", comfy_api_key: str = "", timeout: float = 30.0
+    ):
         self.server_url = server_url.rstrip("/")
         self.auth = auth
         self.comfy_api_key = comfy_api_key
@@ -111,7 +110,13 @@ class ComfyUIClient:
 
     # -- Prompt execution --
 
-    def queue_prompt(self, workflow: dict[str, Any], client_id: str | None = None, targets: list[str] | None = None, priority: float | None = None) -> dict[str, Any]:
+    def queue_prompt(
+        self,
+        workflow: dict[str, Any],
+        client_id: str | None = None,
+        targets: list[str] | None = None,
+        priority: float | None = None,
+    ) -> dict[str, Any]:
         cid = client_id or str(uuid.uuid4())
         payload: dict[str, Any] = {
             "prompt": workflow,
@@ -129,8 +134,13 @@ class ComfyUIClient:
         data["client_id"] = cid
         return data
 
-    def get_history(self, prompt_id: str) -> dict[str, Any] | None:
-        resp = self._get(f"/history/{prompt_id}")
+    def get_history(
+        self, prompt_id: str, *, timeout_seconds: float | None = None
+    ) -> dict[str, Any] | None:
+        resp = self._get(
+            f"/history/{prompt_id}",
+            timeout=self._query_timeout(timeout_seconds),
+        )
         if resp.status_code != 200:
             return None
         data = resp.json()
@@ -141,8 +151,20 @@ class ComfyUIClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_jobs(self, status: str = "", limit: int = 20, offset: int = 0, sort_by: str = "created_at", sort_order: str = "desc") -> dict[str, Any]:
-        params: dict[str, Any] = {"limit": limit, "offset": offset, "sort_by": sort_by, "sort_order": sort_order}
+    def get_jobs(
+        self,
+        status: str = "",
+        limit: int = 20,
+        offset: int = 0,
+        sort_by: str = "created_at",
+        sort_order: str = "desc",
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+        }
         if status:
             params["status"] = status
         resp = self._get("/api/jobs", params=params)
@@ -156,10 +178,15 @@ class ComfyUIClient:
         resp.raise_for_status()
         return resp.json()
 
-    def get_queue(self) -> dict[str, Any]:
-        resp = self._get("/queue")
+    def get_queue(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        resp = self._get("/queue", timeout=self._query_timeout(timeout_seconds))
         resp.raise_for_status()
         return resp.json()
+
+    def _query_timeout(self, timeout_seconds: float | None) -> float:
+        if timeout_seconds is None:
+            return self.timeout
+        return min(self.timeout, max(timeout_seconds, 0.0))
 
     def ws_events(
         self,
@@ -172,13 +199,14 @@ class ComfyUIClient:
 
         ws_url = self.server_url.replace("http://", "ws://").replace("https://", "wss://")
         deadline = (
-            time.monotonic() + max(timeout_seconds, 0)
-            if timeout_seconds is not None
-            else None
+            time.monotonic() + max(timeout_seconds, 0) if timeout_seconds is not None else None
         )
         connect_timeout = self.timeout
         if deadline is not None:
-            connect_timeout = min(connect_timeout, max(0.1, deadline - time.monotonic()))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            connect_timeout = min(self.timeout, remaining)
         ws = websocket.create_connection(
             f"{ws_url}/ws?clientId={client_id}",
             timeout=connect_timeout,
@@ -192,7 +220,7 @@ class ComfyUIClient:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         break
-                    ws.settimeout(min(1.0, remaining))
+                    ws.settimeout(min(self.timeout, remaining))
                 else:
                     ws.settimeout(self.timeout)
                 try:
@@ -203,6 +231,8 @@ class ComfyUIClient:
                     if deadline is not None:
                         continue
                     raise
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 if opcode == websocket.ABNF.OPCODE_BINARY:
                     continue
                 if opcode != websocket.ABNF.OPCODE_TEXT:
@@ -251,9 +281,7 @@ class ComfyUIClient:
         max_bytes: int = 100 * 1024 * 1024,
     ) -> int:
         destination_path = Path(destination)
-        temporary = destination_path.with_name(
-            f".{destination_path.name}.{uuid.uuid4().hex}.tmp"
-        )
+        temporary = destination_path.with_name(f".{destination_path.name}.{uuid.uuid4().hex}.tmp")
         response = self._output_response(filename, subfolder, output_type, max_bytes)
         total = 0
         try:
@@ -306,7 +334,7 @@ class ComfyUIClient:
         return resp.json()
 
     def get_object_info_node(self, node_class: str) -> dict[str, Any] | None:
-        resp = self._get(f"/object_info/{node_class}")
+        resp = self._get(f"/object_info/{quote(node_class, safe='')}")
         if resp.status_code == 404:
             return None
         resp.raise_for_status()
@@ -319,10 +347,9 @@ class ComfyUIClient:
         return resp.json()
 
     def get_models(self, folder: str) -> list[str]:
-        resp = self._get(f"/models/{folder}")
+        resp = self._get(f"/models/{quote(folder, safe='')}")
         resp.raise_for_status()
         return resp.json()
-
 
     # -- Manager API (ComfyUI-Manager plugin) --
 
@@ -334,11 +361,14 @@ class ComfyUIClient:
             return False
 
     def manager_install_node(self, repo_url: str, pkg_name: str) -> dict[str, Any]:
-        resp = self._post("/manager/queue/install", json_data={
-            "id": pkg_name,
-            "url": repo_url,
-            "install_type": "git-clone",
-        })
+        resp = self._post(
+            "/manager/queue/install",
+            json_data={
+                "id": pkg_name,
+                "url": repo_url,
+                "install_type": "git-clone",
+            },
+        )
         if resp.status_code == 404:
             return {"success": False, "error": "ComfyUI Manager not installed"}
         if resp.status_code >= 400:
@@ -420,9 +450,7 @@ class ComfyUIClient:
         ]
         if original_ref:
             parts.append(
-                _multipart_text_part(
-                    "original_ref", original_ref, boundary, b"\r\n" + closing
-                )
+                _multipart_text_part("original_ref", original_ref, boundary, b"\r\n" + closing)
             )
         else:
             header, file_path, suffix = parts[0]
@@ -497,11 +525,13 @@ class ComfyUIClient:
                             if isinstance(p, str) and p.endswith(".json"):
                                 paths.append(p)
                 elif isinstance(data, dict) and "files" in data:
-                    paths = [
-                        f.get("path", f.get("name", ""))
-                        for f in data["files"]
-                        if isinstance(f, dict) and (f.get("path", "") or f.get("name", "")).endswith(".json")
-                    ]
+                    paths = []
+                    for file_entry in data["files"]:
+                        if not isinstance(file_entry, dict):
+                            continue
+                        candidate = file_entry.get("path") or file_entry.get("name")
+                        if isinstance(candidate, str) and candidate.endswith(".json"):
+                            paths.append(candidate)
                 if paths:
                     return paths
             except (requests.RequestException, ValueError):
@@ -510,6 +540,7 @@ class ComfyUIClient:
 
     def read_userdata_workflow(self, workflow_path: str) -> dict[str, Any] | None:
         import urllib.parse
+
         # aiohttp matches /userdata/{file} as a single path segment. Percent-
         # encode the full relative path (including "/" separators) so it is
         # not split into multiple segments, which would return 404.

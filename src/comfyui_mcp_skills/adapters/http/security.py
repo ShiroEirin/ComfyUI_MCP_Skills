@@ -66,9 +66,7 @@ class SafeHTTPSDownloader:
                     current = urljoin(current, location)
                     continue
                 if response.status >= 400:
-                    raise UploadFailed(
-                        f"Remote HTTPS server returned status {response.status}"
-                    )
+                    raise UploadFailed(f"Remote HTTPS server returned status {response.status}")
                 return self._write_response(response, parsed.path, directory, deadline)
             except urllib3.exceptions.HTTPError as exc:
                 raise UploadFailed("Remote HTTPS request failed") from exc
@@ -92,9 +90,7 @@ class SafeHTTPSDownloader:
             except ValueError as exc:
                 raise UploadFailed("Remote HTTPS content length is invalid") from exc
             if declared_size > self._max_bytes:
-                raise PayloadTooLarge(
-                    f"Remote asset exceeds {self._max_bytes} bytes"
-                )
+                raise PayloadTooLarge(f"Remote asset exceeds {self._max_bytes} bytes")
         suffix = Path(url_path).suffix.lower()[:10] or ".bin"
         destination = directory / f"remote-{uuid.uuid4().hex}{suffix}"
         size = 0
@@ -105,9 +101,7 @@ class SafeHTTPSDownloader:
                         raise UploadFailed("Remote HTTPS download timed out")
                     size += len(chunk)
                     if size > self._max_bytes:
-                        raise PayloadTooLarge(
-                            f"Remote asset exceeds {self._max_bytes} bytes"
-                        )
+                        raise PayloadTooLarge(f"Remote asset exceeds {self._max_bytes} bytes")
                     handle.write(chunk)
             return destination
         except Exception:

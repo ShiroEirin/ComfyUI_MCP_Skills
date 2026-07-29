@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from comfyui_mcp_skills.domain.errors import ExecutionFailed, ServerOffline
-from comfyui_mcp_skills.infrastructure.comfyui.gateway import LegacyComfyUIGateway
+from comfyui_mcp_skills.infrastructure.comfyui.gateway import ComfyUIGatewayAdapter
 
 
 def _http_error(status: int) -> requests.HTTPError:
@@ -18,13 +18,13 @@ def _http_error(status: int) -> requests.HTTPError:
 
 
 def test_gateway_does_not_expose_undeclared_client_methods() -> None:
-    gateway = LegacyComfyUIGateway({"url": "http://127.0.0.1:8188"})
-    assert not hasattr(gateway, "get_system_stats")
+    gateway = ComfyUIGatewayAdapter({"url": "http://127.0.0.1:8188"})
+    assert not hasattr(gateway, "get_extensions")
 
 
 @pytest.mark.parametrize("status", [400, 422])
 def test_queue_prompt_maps_4xx_to_execution_failed(status: int) -> None:
-    gateway = LegacyComfyUIGateway({"url": "http://127.0.0.1:8188"})
+    gateway = ComfyUIGatewayAdapter({"url": "http://127.0.0.1:8188"})
     gateway._client = MagicMock()
     gateway._client.queue_prompt.side_effect = _http_error(status)
 
@@ -36,7 +36,7 @@ def test_queue_prompt_maps_4xx_to_execution_failed(status: int) -> None:
 def test_queue_prompt_maps_unknown_outcome_to_server_offline(
     failure: Exception,
 ) -> None:
-    gateway = LegacyComfyUIGateway({"url": "http://127.0.0.1:8188"})
+    gateway = ComfyUIGatewayAdapter({"url": "http://127.0.0.1:8188"})
     gateway._client = MagicMock()
     gateway._client.queue_prompt.side_effect = failure
 
