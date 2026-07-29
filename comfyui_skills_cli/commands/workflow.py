@@ -81,6 +81,7 @@ _MEDIA_TYPE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
 }
 
 _LOAD_IMAGE_CLASSES = {"LoadImage", "LoadImageMask"}
+_LOAD_OUTPUT_IMAGE_CLASSES = {"LoadImageOutput"}
 
 _WIDGET_BASE_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
 
@@ -166,7 +167,13 @@ def _extract_schema(workflow_data: dict[str, Any], media_type: str = "image") ->
                 continue
 
             # Determine exposure
-            if class_type in _LOAD_IMAGE_CLASSES and field == "image":
+            storage_type = ""
+            if class_type in _LOAD_OUTPUT_IMAGE_CLASSES and field == "image":
+                exposed, required = True, True
+                description = "Reference an image from this server's output history"
+                field_type = "image"
+                storage_type = "output"
+            elif class_type in _LOAD_IMAGE_CLASSES and field == "image":
                 exposed, required = True, True
                 description = "Upload an image"
                 field_type = "image"
@@ -194,6 +201,8 @@ def _extract_schema(workflow_data: dict[str, Any], media_type: str = "image") ->
                 "default": value,
                 "class_type": class_type,
             })
+            if storage_type:
+                raw_params[-1]["storage_type"] = storage_type
 
     # Assign unique names
     field_counts: dict[str, int] = {}
@@ -223,6 +232,8 @@ def _extract_schema(workflow_data: dict[str, Any], media_type: str = "image") ->
             "type": p["type"],
             "description": p["description"],
         }
+        if p.get("storage_type"):
+            parameters[name]["storage_type"] = p["storage_type"]
 
     return parameters
 

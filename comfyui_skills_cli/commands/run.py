@@ -775,6 +775,13 @@ def _upload_media(
             continue
         if not isinstance(value, str) or not _looks_like_local_path(value):
             continue
+        if parameters[key].get("storage_type") == "output":
+            output_error(
+                ctx,
+                "INVALID_ARGS",
+                f'Media parameter "{key}" requires an existing server output '
+                "reference, not a local path.",
+            )
         expanded = os.path.expanduser(value)
         if not os.path.isfile(expanded):
             continue
@@ -804,7 +811,7 @@ def _inject_params(
     return workflow
 
 
-_MEDIA_KEYS = ("images", "gifs", "audio")
+_MEDIA_KEYS = ("images", "gifs", "audio", "video")
 
 _VIDEO_EXTENSIONS = {".mp4", ".webm", ".mkv", ".avi", ".mov", ".gif"}
 _AUDIO_EXTENSIONS = {".mp3", ".wav", ".flac", ".ogg", ".aac", ".m4a"}
@@ -831,7 +838,11 @@ def _collect_outputs(outputs: dict[str, Any]) -> list[dict[str, str]]:
         if not isinstance(node_output, dict):
             continue
         for key in _MEDIA_KEYS:
-            fallback = "audio" if key == "audio" else ("video" if key == "gifs" else "image")
+            fallback = (
+                "audio"
+                if key == "audio"
+                else ("video" if key in {"gifs", "video"} else "image")
+            )
             for item in node_output.get(key, []):
                 filename = item.get("filename", "")
                 collected.append({

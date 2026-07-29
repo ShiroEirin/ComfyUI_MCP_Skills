@@ -29,6 +29,7 @@ from typing import Any
 from comfyui_skills_cli.commands.workflow import (
     _convert_editor_to_api,
     _convert_node_inputs,
+    _extract_schema,
     _is_widget_type,
 )
 
@@ -276,6 +277,28 @@ class ConvertNodeInputsStringComboTests(unittest.TestCase):
         self.assertEqual(out, {"preset": "A", "sampler": "euler", "steps": 25})
 
 
+class MediaParameterExtractionTests(unittest.TestCase):
+    def test_load_image_output_is_exposed_as_image_parameter(self) -> None:
+        workflow = {
+            "1": {
+                "class_type": "LoadImageOutput",
+                "inputs": {"image": "generated/example.png [output]"},
+            }
+        }
+
+        parameters = _extract_schema(workflow)
+
+        self.assertEqual(
+            parameters["image"],
+            {
+                "node_id": "1",
+                "field": "image",
+                "required": True,
+                "type": "image",
+                "description": "Reference an image from this server's output history",
+                "storage_type": "output",
+            },
+        )
 
 
 class EditorWorkflowValidationTests(unittest.TestCase):

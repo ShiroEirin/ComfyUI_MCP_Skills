@@ -241,6 +241,7 @@ class JobService:
                 ("images", "image"),
                 ("gifs", "video"),
                 ("audio", "audio"),
+                ("video", "video"),
             ):
                 for item in node_output.get(key, []):
                     filename = str(item.get("filename", ""))

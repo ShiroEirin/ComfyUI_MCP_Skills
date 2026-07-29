@@ -23,6 +23,7 @@ class _Catalog:
                     "required": True,
                     "node_id": "1",
                     "field": "media",
+                    "storage_type": "output",
                 }
             },
             graph={"1": {"class_type": "LoadMedia", "inputs": {"media": "old"}}},
@@ -137,6 +138,15 @@ def test_reuses_owned_output_on_same_server_without_downloading() -> None:
     assert submitted.prompt_id == "reused-prompt"
     assert gateway.queued[0]["1"]["inputs"]["media"] == ("renders/final/render.png [output]")
     gateway.download_output.assert_not_called()
+
+
+def test_output_only_parameter_rejects_plain_input_reference() -> None:
+    service, gateway = _service()
+
+    with pytest.raises(AssetNotFound, match="requires an output URI"):
+        service.submit("local", "reuse", {"media": "uploaded.png"})
+
+    assert gateway.queued == []
 
 
 def test_rejects_output_from_another_server() -> None:

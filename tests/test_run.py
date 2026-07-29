@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import typer
 
-from comfyui_skills_cli.commands.run import _upload_media
+from comfyui_skills_cli.commands.run import _collect_outputs, _upload_media
 
 
 def _ctx() -> typer.Context:
@@ -78,6 +78,16 @@ class UploadMediaTests(unittest.TestCase):
             with self.assertRaises(typer.Exit):
                 _upload_media(self.ctx, self.client, parameters, args)
 
+    def test_rejects_local_path_for_output_only_image(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".png") as f:
+            parameters = {"image": {"type": "image", "storage_type": "output"}}
+            args = {"image": f.name}
+
+            with self.assertRaises(typer.Exit):
+                _upload_media(self.ctx, self.client, parameters, args)
+
+            self.client.upload_image.assert_not_called()
+
     def test_skips_bare_filename_even_when_file_exists_in_cwd(self) -> None:
         # Regression: a bare filename must resolve on the ComfyUI server,
         # never on the caller's cwd. Otherwise `run` becomes cwd-dependent.
@@ -105,6 +115,29 @@ class UploadMediaTests(unittest.TestCase):
                 _upload_media(self.ctx, self.client, parameters, args)
                 self.client.upload_image.assert_called_once_with(os.path.expanduser("~/cat.png"))
                 self.assertEqual(args["image"], "cat.png")
+
+
+class CollectOutputsTests(unittest.TestCase):
+    def test_collects_explicit_video_history_key(self) -> None:
+        outputs = {
+            "10": {
+                "video": [
+                    {"filename": "render.webm", "subfolder": "video", "type": "output"}
+                ]
+            }
+        }
+
+        self.assertEqual(
+            _collect_outputs(outputs),
+            [
+                {
+                    "filename": "render.webm",
+                    "subfolder": "video",
+                    "type": "output",
+                    "media_type": "video",
+                }
+            ],
+        )
 
 
 if __name__ == "__main__":

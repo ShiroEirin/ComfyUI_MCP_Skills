@@ -180,9 +180,14 @@ class ExecutionService:
     ) -> dict[str, Any]:
         resolved = dict(arguments)
         for name, value in arguments.items():
-            parameter_type = str(parameters.get(name, {}).get("type", ""))
+            metadata = parameters.get(name, {})
+            parameter_type = str(metadata.get("type", ""))
             if parameter_type not in {"image", "mask", "audio", "video"}:
                 continue
+            if metadata.get("storage_type") == "output" and not (
+                isinstance(value, str) and value.startswith("comfyui://outputs/")
+            ):
+                raise AssetNotFound(f'Media parameter "{name}" requires an output URI')
             if isinstance(value, str) and value.startswith("comfyui://outputs/"):
                 resolved[name] = self._resolve_output(
                     server_id,

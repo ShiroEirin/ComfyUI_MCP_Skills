@@ -371,6 +371,37 @@ def test_job_outputs_include_gifs_and_media_metadata(tmp_path: Path) -> None:
     assert completed.outputs[0]["mime_type"] == "video/mp4"
 
 
+def test_job_outputs_include_video_key_and_media_metadata(tmp_path: Path) -> None:
+    _project(tmp_path)
+    runs = FileRunRepository(tmp_path)
+    runs.save(Job("prompt-video-key", "local", "img2img", "submitted"))
+    gateway = FakeGateway()
+    gateway.histories["prompt-video-key"] = {
+        "status": {"completed": True, "status_str": "success"},
+        "outputs": {
+            "10": {
+                "video": [
+                    {"filename": "render.webm", "subfolder": "video", "type": "output"}
+                ]
+            }
+        },
+    }
+    service = JobService(ServerRegistry(tmp_path), runs, lambda _config: gateway)
+
+    completed = service.get("local", "prompt-video-key")
+
+    assert completed.outputs == (
+        {
+            "filename": "render.webm",
+            "subfolder": "video",
+            "type": "output",
+            "media_type": "video",
+            "mime_type": "video/webm",
+            "resource_uri": "comfyui://outputs/local/prompt-video-key/0",
+        },
+    )
+
+
 def test_wait_zero_returns_handle_and_callback_errors_propagate(tmp_path: Path) -> None:
     _project(tmp_path)
     runs = FileRunRepository(tmp_path)
