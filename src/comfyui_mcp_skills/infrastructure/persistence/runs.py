@@ -20,10 +20,10 @@ _STATUS_PRIORITY = {
     "submitted": 1,
     "queued": 2,
     "running": 3,
-    "cancelled": 4,
+    "completed": 4,
+    "cancelled": 5,
     "interrupted": 5,
     "error": 5,
-    "completed": 6,
 }
 
 

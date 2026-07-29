@@ -76,7 +76,8 @@ $env:COMFYUI_MCP_UPLOAD_ROOTS = "D:/media;E:/shared-assets"
 
 ## Streamable HTTP
 
-远程模式拒绝匿名启动。至少配置一个 Bearer Token：
+远程模式拒绝匿名启动。当前仅支持部署方配置的预共享静态 Bearer Token，
+不发布 OAuth Protected Resource Metadata，也不宣称已接入 OAuth 2.1：
 
 ```powershell
 $env:COMFYUI_MCP_DIR = "D:/path/to/project"
@@ -85,7 +86,6 @@ $env:COMFYUI_MCP_ALLOWED_HOSTS = "mcp.example.com"
 $env:COMFYUI_MCP_ALLOWED_ORIGINS = "https://agent.example.com"
 $env:COMFYUI_MCP_HOST = "0.0.0.0"
 $env:COMFYUI_MCP_PUBLIC_URL = "https://mcp.example.com/mcp"
-$env:COMFYUI_MCP_OAUTH_ISSUER_URL = "https://auth.example.com"
 $env:COMFYUI_MCP_FETCH_HOSTS = "cdn.example.com,objects.example.com"
 comfyui-mcp-http
 ```
@@ -98,6 +98,7 @@ comfyui-mcp-http
 
 远程传输启用 Host/Origin 校验、请求体限制、上传大小限制、请求 ID 和进程内限流。公网部署仍应由反向代理终止 TLS，并使用外部密钥管理和集中限流。
 `/mcp` 的 JSON-RPC 请求体默认限制为 1 MiB；`/assets/fetch` 的 JSON 请求体默认限制为 64 KiB。媒体上传仍使用独立的 `COMFYUI_MCP_MAX_UPLOAD_BYTES` 上限。
+静态 Token 应由外部密钥管理系统注入并定期轮换。若需要 OAuth 2.1，必须另行接入 JWT/JWKS 或 Token Introspection，不能直接使用当前静态 Token 配置冒充 OAuth Resource Server。
 
 ## 独立管理面
 

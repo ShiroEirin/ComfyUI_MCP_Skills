@@ -19,6 +19,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from comfyui_mcp_skills.adapters.http.security import SafeHTTPSDownloader
 from comfyui_mcp_skills.adapters.mcp.server import create_server
@@ -51,25 +52,49 @@ class StaticTokenVerifier:
         return None
 
 
-class RequestControlMiddleware(BaseHTTPMiddleware):
+class StrictMCP2026Middleware(BaseHTTPMiddleware):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        if request.method == "POST" and request.url.path == "/mcp":
+            if not request.headers.get("mcp-protocol-version"):
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32020,
+                            "message": "HeaderMismatch: MCP-Protocol-Version is required",
+                        },
+                    },
+                    status_code=400,
+                )
+        return await call_next(request)
+
+
+class RequestControlMiddleware:
     def __init__(
         self,
-        app: Any,
+        app: ASGIApp,
         *,
         requests_per_minute: int,
         max_concurrent_requests: int,
         bearer_tokens: tuple[str, ...],
     ) -> None:
-        super().__init__(app)
+        self._app = app
         self._limit = requests_per_minute
         self._requests: dict[str, deque[float]] = defaultdict(deque)
         self._max_clients = 4096
         self._bearer_tokens = bearer_tokens
         self._concurrency = anyio.Semaphore(max_concurrent_requests)
 
-    async def dispatch(
-        self, request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
+    async def __call__(
+        self, scope: Scope, receive: Receive, send: Send
+    ) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        request = Request(scope, receive=receive)
         request_id = request.headers.get("x-request-id") or uuid.uuid4().hex
         client = request.client.host if request.client else "unknown"
         authorization = request.headers.get("authorization", "")
@@ -99,16 +124,25 @@ class RequestControlMiddleware(BaseHTTPMiddleware):
         while recent and recent[0] <= now - 60:
             recent.popleft()
         if len(recent) >= self._limit:
-            return JSONResponse(
+            response = JSONResponse(
                 {"code": "RATE_LIMITED", "request_id": request_id},
                 status_code=429,
                 headers={"retry-after": "60", "x-request-id": request_id},
             )
+            await response(scope, receive, send)
+            return
         recent.append(now)
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                message["headers"] = [
+                    *message.get("headers", []),
+                    (b"x-request-id", request_id.encode("latin-1")),
+                ]
+            await send(message)
+
         async with self._concurrency:
-            response = await call_next(request)
-        response.headers["x-request-id"] = request_id
-        return response
+            await self._app(scope, receive, send_with_request_id)
 
 
 def create_http_app(
@@ -125,7 +159,6 @@ def create_http_app(
     requests_per_minute: int = 120,
     max_concurrent_requests: int = 32,
     public_mcp_url: str | None = None,
-    oauth_issuer_url: str | None = None,
     remote_fetch_hosts: list[str] | None = None,
 ):
     """Build the remote MCP app; remote mode refuses anonymous operation."""
@@ -237,14 +270,13 @@ def create_http_app(
             return JSONResponse({"code": "INVALID_ARGUMENTS", "message": str(exc)}, status_code=400)
 
     local_host = host in {"127.0.0.1", "localhost", "::1"}
-    if not local_host and (not public_mcp_url or not oauth_issuer_url):
-        raise ValueError("Remote binding requires public MCP and OAuth issuer URLs")
+    if not local_host and not public_mcp_url:
+        raise ValueError("Remote binding requires a public MCP URL")
     resource_url = public_mcp_url or f"http://{host}/mcp"
-    issuer_url = oauth_issuer_url or resource_url
     server = create_server(base_dir, upload_roots=[upload_root])
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
-        stateless_http=False,
+        stateless_http=True,
         max_request_body_size=max_mcp_body_bytes,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
@@ -253,8 +285,8 @@ def create_http_app(
         ),
         host=host,
         auth=AuthSettings(
-            issuer_url=issuer_url,
-            resource_server_url=resource_url,
+            issuer_url=resource_url,
+            resource_server_url=None,
             required_scopes=["comfyui:execute"],
         ),
         token_verifier=verifier,
@@ -263,6 +295,7 @@ def create_http_app(
             Route("/assets/fetch", fetch, methods=["POST"]),
         ],
     )
+    app.add_middleware(StrictMCP2026Middleware)
     app.add_middleware(
         RequestControlMiddleware,
         requests_per_minute=requests_per_minute,

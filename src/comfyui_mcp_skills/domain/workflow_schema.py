@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 from .errors import WorkflowArgumentsError
 
@@ -123,6 +124,10 @@ def build_input_schema(parameters: dict[str, Any]) -> dict[str, Any]:
     }
     if required:
         schema["required"] = required
+    try:
+        Draft202012Validator.check_schema(schema)
+    except SchemaError as exc:
+        raise ValueError(f"Invalid JSON Schema: {exc.message}") from exc
     return schema
 
 

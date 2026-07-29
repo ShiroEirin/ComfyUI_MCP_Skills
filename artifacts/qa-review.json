@@ -1,97 +1,72 @@
 {
   "qaMode": "deep",
+  "protocol": "MCP 2026-07-28",
   "scope": [
-    "MCP 2026-07-28 wire compliance",
     "src/comfyui_mcp_skills/adapters/mcp",
     "src/comfyui_mcp_skills/adapters/http",
-    "src/comfyui_mcp_skills/application",
-    "src/comfyui_mcp_skills/infrastructure",
+    "src/comfyui_mcp_skills/domain",
+    "src/comfyui_mcp_skills/infrastructure/persistence",
     "tests"
   ],
-  "outcome": "findings",
-  "conclusion": "The modern 2026-07-28 happy path works, including stateless HTTP responses with resultType and no session ID, but protocol-error mapping, progress monotonicity, schema validation, terminal-state persistence, legacy transport fallback, and authorization-mode clarity require correction before claiming strict 2026-07-28 compliance.",
-  "findings": [
+  "outcome": "passed",
+  "conclusion": "The reported MCP 2026-07-28 findings were reproduced where applicable and corrected. Strict schema publication, monotonic progress, resource error mapping, terminal-state precedence, stateless HTTP behavior, admin protocol errors, static-token semantics, streaming concurrency, ResourceLink output, and raw HTTP wire behavior are covered by regression tests.",
+  "findings": [],
+  "resolved": [
     {
       "severity": "P0",
-      "file": "src/comfyui_mcp_skills/domain/workflow_schema.py:102-126",
-      "summary": "Workflow metadata can produce an invalid advertised JSON Schema",
-      "evidence": "A workflow enum value of 'not-an-array' was returned by tools/list; Draft202012Validator.check_schema raised SchemaError. MCP requires every inputSchema to be a valid JSON Schema object."
-    },
-    {
-      "severity": "P0",
-      "file": "src/comfyui_mcp_skills/adapters/mcp/server.py:276-299",
-      "summary": "Progress notifications are not monotonically increasing",
-      "evidence": "Observed progress sequence: 0/1, 1/1, 0/10, 5/10, 0/unknown. MCP 2026-07-28 requires progress to increase with every notification."
+      "summary": "Invalid workflow JSON Schema is rejected and the workflow is isolated"
     },
     {
       "severity": "P0",
-      "file": "src/comfyui_mcp_skills/adapters/mcp/server.py:399-473",
-      "summary": "Missing resources are returned as internal errors",
-      "evidence": "Modern resources/read for a missing asset and an unsupported URI returned JSON-RPC -32603. MCP 2026-07-28 requires -32602 for a resource that does not exist."
+      "summary": "Progress notifications use a request-wide strictly increasing sequence"
     },
     {
       "severity": "P0",
-      "file": "src/comfyui_mcp_skills/infrastructure/persistence/runs.py:17-27",
-      "summary": "Completed state can overwrite an error terminal state",
-      "evidence": "Persisting error followed by completed resulted in a completed Job with the error erased. This contradicts the intended error/interrupted/cancelled-first terminal precedence."
+      "summary": "Missing and unsupported resources return JSON-RPC -32602"
+    },
+    {
+      "severity": "P0",
+      "summary": "Failure terminal states cannot be overwritten by completed"
     },
     {
       "severity": "P1",
-      "file": "src/comfyui_mcp_skills/adapters/http/server.py:243-258",
-      "summary": "Legacy stateful HTTP mode remains enabled",
-      "evidence": "stateless_http=False enables the SDK legacy session branch. A request carrying 2026 metadata but omitting MCP-Protocol-Version minted Mcp-Session-Id and returned a legacy missing-session error instead of a modern header-validation error."
+      "summary": "HTTP runs stateless and rejects requests missing the 2026 protocol header without creating sessions"
     },
     {
       "severity": "P1",
-      "file": "src/comfyui_mcp_skills/adapters/mcp/admin.py:92-136",
-      "summary": "Unknown admin tools are reported as tool execution errors",
-      "evidence": "The unknown-tool ValueError is caught and converted to isError=true. MCP tool rules classify unknown tools as protocol Invalid Params (-32602)."
+      "summary": "Unknown admin tools raise protocol Invalid Params"
     },
     {
       "severity": "P1",
-      "file": "src/comfyui_mcp_skills/adapters/http/server.py:35-50,237-258",
-      "summary": "Static bearer authentication and OAuth discovery are mixed",
-      "evidence": "Protected Resource Metadata is advertised through AuthSettings, but token validation accepts only deployment-provided static tokens and no authorization-server provider is installed. The default local issuer points to the MCP endpoint itself, which does not expose authorization-server discovery."
+      "summary": "Static bearer-token mode no longer advertises OAuth Protected Resource Metadata"
     },
     {
       "severity": "P1",
-      "file": "src/comfyui_mcp_skills/adapters/http/server.py:53-110",
-      "summary": "Streaming concurrency is not bounded for the full response lifetime",
-      "evidence": "The semaphore surrounds call_next only inside BaseHTTPMiddleware. For SSE responses call_next returns after response start, so the semaphore can be released while the response stream and tool work remain active."
+      "summary": "Pure ASGI concurrency control holds its slot through the final streaming body frame"
     },
     {
       "severity": "P2",
-      "file": "src/comfyui_mcp_skills/adapters/mcp/server.py:147-160,446-471",
-      "summary": "Output links are JSON fields rather than MCP ResourceLink content",
-      "evidence": "Tool results always contain only TextContent plus structuredContent. Output resource_uri values are not emitted as resource_link content blocks, limiting host-native resource handling."
+      "summary": "Completed job outputs include native MCP ResourceLink blocks"
     },
     {
       "severity": "P2",
-      "file": "tests/test_http_security.py:35-188; tests/test_mcp_server.py:126-381",
-      "summary": "Tests do not cover the modern HTTP wire contract",
-      "evidence": "Current tests use the in-process Client or an initialize-shaped HTTP request. They do not assert 2026 request metadata/header matching, absence of session IDs, modern error codes, cancellation by stream close, or monotonic progress."
+      "summary": "Raw HTTP tests cover 2026 headers, resultType, statelessness, methods, and resource errors"
     }
   ],
   "commands": [
     {
       "command": "python -m pytest --cov --cov-report=term-missing -q",
-      "result": "135 passed; 83.45% coverage; 80% gate passed"
+      "result": "151 passed; 84.91% coverage; 80% gate passed"
     },
     {
       "command": "python -m compileall -q src/comfyui_mcp_skills comfyui_skills_cli",
       "result": "passed"
-    },
-    {
-      "command": "python -m pip check",
-      "result": "failed because the shared workstation browser-use installation requires mcp==1.26.0, click==8.3.1 and rich==14.3.1; this demonstrates the need for an isolated project environment but is not attributed to repository source code"
-    },
-    {
-      "command": "Raw MCP 2026-07-28 TestClient probes",
-      "result": "modern tools/list returned resultType=complete with no session ID; header mismatch returned -32020; missing resource returned -32603; missing protocol header entered the legacy session branch"
-    },
-    {
-      "command": "In-process MCP progress probe",
-      "result": "observed non-monotonic sequence 0/1, 1/1, 0/10, 5/10, 0/unknown"
     }
+  ],
+  "sources": [
+    "https://modelcontextprotocol.io/specification/2026-07-28/basic",
+    "https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http",
+    "https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/progress",
+    "https://modelcontextprotocol.io/specification/2026-07-28/server/resources"
   ]
 }

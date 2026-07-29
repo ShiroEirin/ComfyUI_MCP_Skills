@@ -6,12 +6,14 @@ import json
 import logging
 from pathlib import Path
 
-from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
+from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import (
+    build_input_schema,
     normalize_parameters,
     validate_parameter_targets,
 )
+
 logger = logging.getLogger(__name__)
 
 
@@ -63,6 +65,7 @@ class FileWorkflowRepository:
         try:
             parameters = normalize_parameters(schema)
             validate_parameter_targets(parameters, graph)
+            build_input_schema(parameters)
         except ValueError as exc:
             logger.warning("Skipping workflow %s/%s: %s", server_id, workflow_id, exc)
             return None

@@ -293,6 +293,33 @@ def test_run_repository_does_not_regress_terminal_status(tmp_path: Path) -> None
     assert persisted.outputs[0]["filename"] == "out.png"
 
 
+def test_run_repository_does_not_replace_error_with_completed(tmp_path: Path) -> None:
+    runs = FileRunRepository(tmp_path)
+    runs.save(
+        Job(
+            prompt_id="prompt-error",
+            server_id="local",
+            workflow_id="flow",
+            status="error",
+            error="execution failed",
+        )
+    )
+    runs.save(
+        Job(
+            prompt_id="prompt-error",
+            server_id="local",
+            workflow_id="flow",
+            status="completed",
+            outputs=({"filename": "late.png"},),
+        )
+    )
+
+    persisted = runs.get("local", "prompt-error")
+    assert persisted is not None
+    assert persisted.status == "error"
+    assert persisted.error == "execution failed"
+
+
 def test_execution_rejects_raw_media_reference_for_owned_request(
     tmp_path: Path,
 ) -> None:

@@ -48,3 +48,10 @@ def test_validation_accepts_valid_arguments() -> None:
         PARAMETERS,
         {"prompt": "cat", "steps": 30, "sampler": "euler"},
     )
+
+
+def test_build_input_schema_rejects_invalid_json_schema_metadata() -> None:
+    with pytest.raises(ValueError, match="Invalid JSON Schema"):
+        build_input_schema(
+            {"sampler": {"type": "string", "enum": "not-an-array"}}
+        )

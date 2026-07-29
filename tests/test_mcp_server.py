@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from mcp import Client
+from mcp.shared.exceptions import MCPError
 
 from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
 from comfyui_mcp_skills.adapters.mcp.server import create_server
@@ -216,6 +217,11 @@ async def test_dynamic_workflow_tool_and_resources(tmp_path: Path) -> None:
         assert completed.structured_content["status"] == "completed"
         job_uri = "comfyui://jobs/local/prompt-mcp"
         output_uri = completed.structured_content["outputs"][0]["resource_uri"]
+        output_link = next(
+            block for block in completed.content if block.type == "resource_link"
+        )
+        assert str(output_link.uri) == output_uri
+        assert output_link.mime_type == "image/png"
         assert json.loads((await client.read_resource(asset_uri)).contents[0].text)["name"]
         assert json.loads((await client.read_resource(job_uri)).contents[0].text)["status"] == "completed"
         output_resource = await client.read_resource(output_uri)
@@ -291,6 +297,18 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
     assert not (tmp_path / "data" / "local" / "txt2img").exists()
 
 @pytest.mark.anyio
+async def test_admin_unknown_tool_returns_invalid_params(tmp_path: Path) -> None:
+    _project(tmp_path)
+    server = create_admin_server(tmp_path, enabled=True)
+
+    async with Client(server) as client:
+        with pytest.raises(MCPError) as captured:
+            await client.call_tool("comfyui.admin.unknown", {})
+
+    assert captured.value.code == -32602
+
+
+@pytest.mark.anyio
 async def test_admin_unexpected_failure_returns_structured_error(
     tmp_path: Path,
 ) -> None:
@@ -313,6 +331,66 @@ async def test_admin_unexpected_failure_returns_structured_error(
     assert result.is_error is True
     assert json.loads(result.content[0].text)["code"] == "INTERNAL_ERROR"
 
+
+
+@pytest.mark.anyio
+async def test_wait_progress_is_strictly_increasing(tmp_path: Path) -> None:
+    _project(tmp_path)
+
+    class ProgressGateway(FakeGateway):
+        def ws_events(self, *_args: Any) -> Any:
+            yield {"type": "progress", "data": {"node": "1", "value": 0, "max": 10}}
+            yield {"type": "progress", "data": {"node": "1", "value": 5, "max": 10}}
+            yield {"type": "executing", "data": {"node": None}}
+
+        def get_history(self, prompt_id: str) -> dict[str, Any] | None:
+            return {"status": {"completed": True}, "outputs": {}}
+
+    gateway = ProgressGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+    observed: list[tuple[float, float | None, str | None]] = []
+
+    async def record(progress: float, total: float | None, message: str | None) -> None:
+        observed.append((progress, total, message))
+
+    async with Client(server) as client:
+        tool = next(tool for tool in (await client.list_tools()).tools if tool.name.startswith("comfyui.run."))
+        await client.call_tool(
+            tool.name,
+            {
+                "prompt": "cat",
+                "_execution": {"wait": True, "wait_timeout_seconds": 5},
+            },
+            progress_callback=record,
+        )
+
+    values = [progress for progress, _total, _message in observed]
+    assert values
+    assert all(current > previous for previous, current in zip(values, values[1:]))
+    assert all(total is None for _progress, total, _message in observed)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "comfyui://assets/local/asset_missing",
+        "comfyui://jobs/local/job_missing",
+        "comfyui://workflows/local/workflow_missing",
+        "comfyui://unknown/foo",
+    ],
+)
+async def test_missing_resource_returns_invalid_params(
+    tmp_path: Path, uri: str,
+) -> None:
+    _project(tmp_path)
+    server = create_server(tmp_path, gateway_factory=lambda _config: FakeGateway())
+
+    async with Client(server) as client:
+        with pytest.raises(MCPError) as captured:
+            await client.read_resource(uri)
+
+    assert captured.value.code == -32602
 
 
 @pytest.mark.anyio
@@ -345,6 +423,28 @@ async def test_bad_schema_is_isolated_and_legacy_ui_parameters_are_exposed(
         json.dumps({"enabled": True, "parameters": None}), encoding="utf-8"
     )
     (bad / "workflow.json").write_text("{}", encoding="utf-8")
+    invalid_schema = tmp_path / "data" / "local" / "invalid-schema"
+    invalid_schema.mkdir()
+    (invalid_schema / "schema.json").write_text(
+        json.dumps(
+            {
+                "enabled": True,
+                "parameters": {
+                    "prompt": {
+                        "type": "string",
+                        "enum": "not-an-array",
+                        "node_id": "1",
+                        "field": "text",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (invalid_schema / "workflow.json").write_text(
+        json.dumps({"1": {"class_type": "Test", "inputs": {"text": ""}}}),
+        encoding="utf-8",
+    )
     reserved = tmp_path / "data" / "local" / "reserved"
     reserved.mkdir()
     (reserved / "schema.json").write_text(
@@ -399,8 +499,10 @@ async def test_bad_schema_is_isolated_and_legacy_ui_parameters_are_exposed(
     names = {tool.name for tool in listed.tools}
     assert "comfyui.job.get" in names
     assert not any(
-        name.endswith((".bad", ".bad-target", ".reserved")) for name in names
+        name.endswith((".bad", ".bad-target", ".invalid-schema", ".reserved"))
+        for name in names
     )
     legacy_tool = next(tool for tool in listed.tools if tool.name.endswith(".legacy"))
     assert "Skipping workflow local/bad" in caplog.text
+    assert "Skipping workflow local/invalid-schema" in caplog.text
     assert legacy_tool.input_schema["required"] == ["prompt"]

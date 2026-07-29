@@ -30,14 +30,10 @@ def main() -> None:
         raise ValueError("Remote binding requires COMFYUI_MCP_ALLOWED_ORIGINS")
     local_host = host in {"127.0.0.1", "localhost", "::1"}
     public_mcp_url = os.environ.get("COMFYUI_MCP_PUBLIC_URL", "")
-    oauth_issuer_url = os.environ.get("COMFYUI_MCP_OAUTH_ISSUER_URL", "")
     if local_host:
         public_mcp_url = public_mcp_url or f"http://{host}:{port}/mcp"
-        oauth_issuer_url = oauth_issuer_url or public_mcp_url
-    elif not public_mcp_url or not oauth_issuer_url:
-        raise ValueError(
-            "Remote binding requires COMFYUI_MCP_PUBLIC_URL and COMFYUI_MCP_OAUTH_ISSUER_URL"
-        )
+    elif not public_mcp_url:
+        raise ValueError("Remote binding requires COMFYUI_MCP_PUBLIC_URL")
     app = create_http_app(
         base_dir,
         host=host,
@@ -63,7 +59,6 @@ def main() -> None:
             os.environ.get("COMFYUI_MCP_MAX_CONCURRENT_REQUESTS", "32")
         ),
         public_mcp_url=public_mcp_url,
-        oauth_issuer_url=oauth_issuer_url,
         remote_fetch_hosts=_csv(
             os.environ.get("COMFYUI_MCP_FETCH_HOSTS", "")
         ),

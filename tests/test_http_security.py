@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import anyio
 import pytest
 from starlette.testclient import TestClient
+from starlette.applications import Starlette
+from starlette.responses import StreamingResponse
+from starlette.routing import Route
 
 from comfyui_mcp_skills.adapters.http.security import SafeHTTPSDownloader
-from comfyui_mcp_skills.adapters.http.server import create_http_app
+from comfyui_mcp_skills.adapters.http.server import (
+    RequestControlMiddleware,
+    create_http_app,
+)
 from comfyui_mcp_skills.http_main import _default_allowed_hosts
 from comfyui_mcp_skills.domain.errors import UnsafePath
 
@@ -52,11 +61,9 @@ def test_http_upload_requires_token_and_origin(tmp_path: Path) -> None:
         )
         bad_origin = client.post(
             "/mcp",
-            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            json=_modern_mcp_request("tools/list"),
             headers={
-                "authorization": "Bearer secret",
-                "content-type": "application/json",
-                "accept": "application/json, text/event-stream",
+                **_modern_mcp_headers("tools/list"),
                 "origin": "https://evil.example",
             },
         )
@@ -186,3 +193,207 @@ def test_http_unknown_server_and_fetch_body_limit(tmp_path: Path) -> None:
     assert oversized.status_code == 413
     allowed = set(_default_allowed_hosts("127.0.0.1", 8765))
     assert {"127.0.0.1", "127.0.0.1:8765", "localhost:8765"} <= allowed
+
+
+def _modern_mcp_request(method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+    body_params = dict(params or {})
+    body_params["_meta"] = {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"},
+    }
+    return {"jsonrpc": "2.0", "id": 1, "method": method, "params": body_params}
+
+
+def _modern_mcp_headers(method: str) -> dict[str, str]:
+    return {
+        "authorization": "Bearer secret",
+        "origin": "https://agent.example",
+        "accept": "application/json, text/event-stream",
+        "content-type": "application/json",
+        "MCP-Protocol-Version": "2026-07-28",
+        "Mcp-Method": method,
+    }
+
+
+def test_http_2026_is_stateless_and_rejects_missing_version_header(tmp_path: Path) -> None:
+    _project(tmp_path)
+    app = create_http_app(
+        tmp_path,
+        host="127.0.0.1",
+        allowed_hosts=["testserver"],
+        allowed_origins=["https://agent.example"],
+        tokens={"secret": ["comfyui:execute"]},
+        upload_root=tmp_path / "uploads",
+    )
+    request = _modern_mcp_request("tools/list")
+
+    with TestClient(app) as client:
+        modern = client.post(
+            "/mcp", json=request, headers=_modern_mcp_headers("tools/list")
+        )
+        missing_version = client.post(
+            "/mcp",
+            json=request,
+            headers={
+                key: value
+                for key, value in _modern_mcp_headers("tools/list").items()
+                if key != "MCP-Protocol-Version"
+            },
+        )
+
+    assert modern.status_code == 200
+    assert modern.json()["result"]["resultType"] == "complete"
+    assert "mcp-session-id" not in modern.headers
+    assert missing_version.status_code == 400
+    assert missing_version.json()["error"]["code"] == -32020
+    assert "mcp-session-id" not in missing_version.headers
+
+
+def test_static_token_mode_does_not_advertise_oauth_metadata(tmp_path: Path) -> None:
+    _project(tmp_path)
+    app = create_http_app(
+        tmp_path,
+        host="127.0.0.1",
+        allowed_hosts=["testserver"],
+        allowed_origins=["https://agent.example"],
+        tokens={"secret": ["comfyui:execute"]},
+        upload_root=tmp_path / "uploads",
+    )
+
+    with TestClient(app) as client:
+        metadata = client.get("/.well-known/oauth-protected-resource/mcp")
+        denied = client.post(
+            "/mcp",
+            json=_modern_mcp_request("tools/list"),
+            headers={
+                key: value
+                for key, value in _modern_mcp_headers("tools/list").items()
+                if key != "authorization"
+            },
+        )
+
+    assert metadata.status_code == 404
+    assert "resource_metadata" not in denied.headers.get("www-authenticate", "")
+
+
+def test_http_2026_wire_headers_methods_and_resource_errors(tmp_path: Path) -> None:
+    _project(tmp_path)
+
+    app = create_http_app(
+        tmp_path,
+        host="127.0.0.1",
+        allowed_hosts=["testserver"],
+        allowed_origins=["https://agent.example"],
+        tokens={"secret": ["comfyui:execute"]},
+        upload_root=tmp_path / "uploads",
+    )
+    base_headers = _modern_mcp_headers("tools/list")
+    missing_method_headers = dict(base_headers)
+    missing_method_headers.pop("Mcp-Method")
+    mismatched_name_headers = _modern_mcp_headers("tools/call")
+    mismatched_name_headers["Mcp-Name"] = "comfyui.job.cancel"
+    resource_uri = "comfyui://assets/local/asset_missing"
+    resource_headers = _modern_mcp_headers("resources/read")
+    resource_headers["Mcp-Name"] = resource_uri
+
+    with TestClient(app) as client:
+        missing_method = client.post(
+            "/mcp",
+            json=_modern_mcp_request("tools/list"),
+            headers=missing_method_headers,
+        )
+        mismatched_name = client.post(
+            "/mcp",
+            json=_modern_mcp_request(
+                "tools/call",
+                {"name": "comfyui.job.get", "arguments": {}},
+            ),
+            headers=mismatched_name_headers,
+        )
+        missing_resource = client.post(
+            "/mcp",
+            json=_modern_mcp_request("resources/read", {"uri": resource_uri}),
+            headers=resource_headers,
+        )
+        get_response = client.get("/mcp", headers=base_headers)
+        delete_response = client.delete("/mcp", headers=base_headers)
+
+    assert missing_method.status_code == 400
+    assert missing_method.json()["error"]["code"] == -32020
+    assert mismatched_name.status_code == 400
+    assert mismatched_name.json()["error"]["code"] == -32020
+    assert missing_resource.json()["error"]["code"] == -32602
+    assert get_response.status_code == 405
+    assert delete_response.status_code == 405
+
+
+def test_missing_version_requests_are_rate_limited(tmp_path: Path) -> None:
+    _project(tmp_path)
+    app = create_http_app(
+        tmp_path,
+        host="127.0.0.1",
+        allowed_hosts=["testserver"],
+        allowed_origins=["https://agent.example"],
+        tokens={"secret": ["comfyui:execute"]},
+        upload_root=tmp_path / "uploads",
+        requests_per_minute=1,
+    )
+    headers = {
+        key: value
+        for key, value in _modern_mcp_headers("tools/list").items()
+        if key != "MCP-Protocol-Version"
+    }
+
+    with TestClient(app) as client:
+        first = client.post(
+            "/mcp", json=_modern_mcp_request("tools/list"), headers=headers
+        )
+        second = client.post(
+            "/mcp", json=_modern_mcp_request("tools/list"), headers=headers
+        )
+
+    assert first.status_code == 400
+    assert second.status_code == 429
+
+
+def test_request_concurrency_slot_covers_stream_lifetime() -> None:
+    first_started = Event()
+    release = Event()
+    overlap = Event()
+    state_lock = Lock()
+    active = 0
+
+    async def endpoint(_request: object) -> StreamingResponse:
+        async def body():
+            nonlocal active
+            with state_lock:
+                active += 1
+                if active > 1:
+                    overlap.set()
+                first_started.set()
+            try:
+                await anyio.to_thread.run_sync(release.wait)
+                yield b"ok"
+            finally:
+                with state_lock:
+                    active -= 1
+
+        return StreamingResponse(body())
+
+    app = Starlette(routes=[Route("/", endpoint)])
+    app.add_middleware(
+        RequestControlMiddleware,
+        requests_per_minute=10,
+        max_concurrent_requests=1,
+        bearer_tokens=(),
+    )
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.get, "/")
+        assert first_started.wait(timeout=2)
+        second = pool.submit(client.get, "/")
+        did_overlap = overlap.wait(timeout=0.2)
+        release.set()
+        assert first.result(timeout=2).status_code == 200
+        assert second.result(timeout=2).status_code == 200
+        assert not did_overlap

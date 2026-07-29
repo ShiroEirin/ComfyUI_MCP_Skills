@@ -28,6 +28,7 @@ from mcp.types import (
     ReadResourceRequestParams,
     ReadResourceResult,
     Resource,
+    ResourceLink,
     TextContent,
     TextResourceContents,
     Tool,
@@ -41,7 +42,13 @@ from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
-from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
+from comfyui_mcp_skills.domain.errors import (
+    AssetNotFound,
+    ComfyUISkillsError,
+    JobNotFound,
+    ServerNotFound,
+    WorkflowNotFound,
+)
 from comfyui_mcp_skills.domain.models import Job, Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
@@ -153,8 +160,30 @@ def _job_dict(job: Job) -> dict[str, Any]:
 
 
 def _result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
+    content: list[TextContent | ResourceLink] = [
+        TextContent(type="text", text=json.dumps(data, ensure_ascii=False))
+    ]
+    if not error:
+        outputs = data.get("outputs", [])
+        if isinstance(outputs, list):
+            for output in outputs:
+                if not isinstance(output, dict):
+                    continue
+                uri = output.get("resource_uri")
+                if not isinstance(uri, str) or not uri:
+                    continue
+                filename = output.get("filename")
+                mime_type = output.get("mime_type")
+                content.append(
+                    ResourceLink(
+                        type="resource_link",
+                        uri=uri,
+                        name=filename if isinstance(filename, str) and filename else uri,
+                        mime_type=mime_type if isinstance(mime_type, str) else None,
+                    )
+                )
     return CallToolResult(
-        content=[TextContent(type="text", text=json.dumps(data, ensure_ascii=False))],
+        content=content,
         structured_content=None if error else data,
         is_error=error,
     )
@@ -273,7 +302,7 @@ def create_server(
                     raise ValueError(
                         "wait_timeout_seconds must be between 0 and 300"
                     )
-                await ctx.session.report_progress(0, 1, "Submitting ComfyUI workflow")
+                await ctx.session.report_progress(1, None, "Submitting ComfyUI workflow")
                 job = await anyio.to_thread.run_sync(
                     lambda: execution.submit(
                         workflow.server_id,
@@ -283,19 +312,22 @@ def create_server(
                         owner_id=owner_id,
                     )
                 )
-                await ctx.session.report_progress(1, 1, "Workflow submitted")
+                await ctx.session.report_progress(2, None, "Workflow submitted")
                 if wait:
 
+                    progress_value = 2
                     def report(event: dict[str, Any]) -> None:
+                        nonlocal progress_value
+                        progress_value += 1
                         data = event.get("data", {})
-                        value = float(data.get("value", 0))
-                        total_raw = data.get("max")
-                        total = float(total_raw) if total_raw is not None else None
                         message = str(event.get("type", "progress"))
                         if data.get("node") is not None:
                             message = f"{message}: node {data['node']}"
                         anyio.from_thread.run(
-                            ctx.session.report_progress, value, total, message
+                            ctx.session.report_progress,
+                            progress_value,
+                            None,
+                            message,
                         )
 
                     job = await anyio.to_thread.run_sync(
@@ -396,7 +428,7 @@ def create_server(
             resources=resources, ttl_ms=5_000, cache_scope="private"
         )
 
-    async def read_resource(
+    async def _read_resource(
         _ctx: ServerRequestContext[dict[str, object]],
         params: ReadResourceRequestParams,
     ) -> ReadResourceResult:
@@ -482,6 +514,27 @@ def create_server(
             ttl_ms=5_000,
             cache_scope="private",
         )
+
+    async def read_resource(
+        ctx: ServerRequestContext[dict[str, object]],
+        params: ReadResourceRequestParams,
+    ) -> ReadResourceResult:
+        try:
+            return await _read_resource(ctx, params)
+        except MCPError:
+            raise
+        except (
+            AssetNotFound,
+            JobNotFound,
+            ServerNotFound,
+            WorkflowNotFound,
+            ValueError,
+        ) as exc:
+            raise MCPError(
+                code=INVALID_PARAMS,
+                message="Resource not found",
+                data={"uri": str(params.uri)},
+            ) from exc
 
     return Server(
         "ComfyUI MCP Skills",

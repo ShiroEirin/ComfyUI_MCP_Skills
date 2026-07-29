@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import anyio
+from mcp.shared.exceptions import MCPError
 from mcp.server import Server, ServerRequestContext
 from mcp.types import (
     CallToolRequestParams,
@@ -18,6 +19,7 @@ from mcp.types import (
     Tool,
     ToolAnnotations,
 )
+from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
 from comfyui_mcp_skills.application.admin import WorkflowAdmin
@@ -129,8 +131,13 @@ def create_admin_server(
                     )
                 )
             else:
-                raise ValueError(f"Unknown admin tool: {params.name}")
+                raise MCPError(
+                    code=INVALID_PARAMS,
+                    message=f"Unknown tool: {params.name}",
+                )
             return _result(result)
+        except MCPError:
+            raise
         except (ComfyUISkillsError, KeyError, TypeError, ValueError) as exc:
             error = exc.as_dict() if isinstance(exc, ComfyUISkillsError) else {
                 "code": "INVALID_ARGUMENTS", "message": str(exc)
