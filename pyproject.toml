@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-mcp-skills"
+version = "1.0.0"
+description = "Agent-native ComfyUI workflow execution over MCP"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "HuangYuChuh" },
+]
+keywords = ["comfyui", "mcp", "agent", "workflow", "skills"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "mcp>=2,<3",
+    "mcp-types>=2,<3",
+    "jsonschema>=4.23,<5",
+    "requests>=2.28",
+    "certifi>=2024.2",
+    "filelock>=3.15",
+    "urllib3>=2",
+    "rich>=13",
+    "typer>=0.9",
+    "websocket-client>=1",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+]
+
+[project.scripts]
+comfyui-skill = "comfyui_skills_cli.__main__:main"
+comfyui-mcp = "comfyui_mcp_skills.__main__:main"
+comfyui-mcp-http = "comfyui_mcp_skills.http_main:main"
+comfyui-mcp-admin = "comfyui_mcp_skills.admin_main:main"
+
+[project.urls]
+Repository = "https://github.com/ShiroEirin/ComfyUI_MCP_Skills"
+Issues = "https://github.com/ShiroEirin/ComfyUI_MCP_Skills/issues"
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["comfyui_mcp_skills*", "comfyui_skills_cli*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config"
+
+[tool.coverage.run]
+source = ["comfyui_mcp_skills"]
+omit = [
+    "*/__main__.py",
+    "*/admin_main.py",
+    "*/http_main.py",
+]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
