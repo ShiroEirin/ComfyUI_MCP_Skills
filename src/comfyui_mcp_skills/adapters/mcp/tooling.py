@@ -11,6 +11,8 @@ from typing import Any
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.types import CallToolResult, ContentBlock, ResourceLink, TextContent, Tool, ToolAnnotations
 
+from comfyui_mcp_skills.application.auth_context import current_authorization
+from comfyui_mcp_skills.application.authorization import Scope, parse_scopes
 from comfyui_mcp_skills.domain.models import Job, Workflow
 
 JOB_SCHEMA: dict[str, Any] = {
@@ -139,7 +141,18 @@ def tool_result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
 
 def current_owner() -> str:
     token = get_access_token()
-    return token.client_id if token is not None else "stdio"
+    if token is not None:
+        return token.client_id
+    authorization = current_authorization()
+    return authorization.principal_id if authorization is not None else "local-stdio"
+
+
+def current_scopes() -> frozenset[Scope] | None:
+    token = get_access_token()
+    if token is not None:
+        return parse_scopes(",".join(token.scopes))
+    authorization = current_authorization()
+    return authorization.scopes if authorization is not None else None
 
 
 def required_string(arguments: dict[str, Any], name: str) -> str:

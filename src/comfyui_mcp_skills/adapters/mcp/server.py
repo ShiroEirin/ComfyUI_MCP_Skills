@@ -30,6 +30,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     EXECUTION_PROPERTY,
     JOB_SCHEMA,
     current_owner,
+    current_scopes,
     fixed_tools,
     job_dict,
     optional_string,
@@ -39,6 +40,12 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     workflow_tool_names,
 )
 from comfyui_mcp_skills.application.assets import AssetService
+from comfyui_mcp_skills.application.authorization import (
+    AuthorizationContext,
+    Scope,
+    Toolset,
+    tool_visible,
+)
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
@@ -69,12 +76,17 @@ def create_server(
     upload_roots: list[Path] | None = None,
     max_upload_bytes: int = 100 * 1024 * 1024,
     repositories: RepositoryBundle | None = None,
+    authorization: AuthorizationContext | None = None,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
     catalog = WorkflowCatalog(FileWorkflowRepository(base_dir))
     servers = ServerRegistry(base_dir)
     repositories = repositories or create_repository_bundle(base_dir)
+    enforce_authorization = authorization is not None
+    authorization = authorization or AuthorizationContext(
+        "internal", frozenset(Scope), Toolset.EXECUTION
+    )
     run_repository = repositories.runs
     asset_repository = repositories.assets
     assets = AssetService(
@@ -127,10 +139,18 @@ def create_server(
         gateway_factory,
         enabled_workflows,
         resource_aliases=resource_aliases,
+        require_authorization=enforce_authorization,
     )
 
     def current_tools() -> tuple[list[Tool], dict[str, Workflow]]:
-        workflow_map = workflow_tool_names(enabled_workflows())
+        granted_scopes = current_scopes() if enforce_authorization else None
+        if enforce_authorization and granted_scopes is None:
+            return [], {}
+        active_scopes = granted_scopes or authorization.scopes
+        include_dynamic = (
+            not enforce_authorization or authorization.toolset is Toolset.EXECUTION
+        ) and (granted_scopes is None or Scope.EXECUTE in active_scopes)
+        workflow_map = workflow_tool_names(enabled_workflows()) if include_dynamic else {}
         tools: list[Tool] = []
         for name in sorted(workflow_map):
             workflow = workflow_map[name]
@@ -154,7 +174,16 @@ def create_server(
                     ),
                 )
             )
-        tools.extend(fixed_tools())
+        if enforce_authorization or granted_scopes is not None:
+            tools.extend(
+                tool
+                for tool in fixed_tools()
+                if tool_visible(tool.name, authorization.toolset, active_scopes)
+            )
+            if authorization.toolset is not Toolset.EXECUTION:
+                workflow_map = {}
+        else:
+            tools.extend(fixed_tools())
         return tools, workflow_map
 
     async def list_tools(
@@ -170,7 +199,12 @@ def create_server(
     ) -> CallToolResult:
         arguments = dict(params.arguments or {})
         owner_id = current_owner()
-        _tools, workflow_map = current_tools()
+        tools, workflow_map = current_tools()
+        granted_scopes = current_scopes()
+        if enforce_authorization or granted_scopes is not None:
+            visible_names = {tool.name for tool in tools}
+            if params.name not in visible_names:
+                raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {params.name}")
         try:
             if params.name in workflow_map:
                 workflow = workflow_map[params.name]

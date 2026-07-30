@@ -6,8 +6,8 @@ import base64
 import json
 import time
 from pathlib import Path
-from unittest.mock import patch
 from typing import Any
+from unittest.mock import patch
 
 import anyio
 import pytest

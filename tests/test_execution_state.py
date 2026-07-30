@@ -9,23 +9,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 import typer
 import websocket
+
 from comfyui_mcp_skills.application import jobs as jobs_module
 from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.domain.models import Job
-from comfyui_mcp_skills.infrastructure.comfyui.gateway import ComfyUIGatewayAdapter
-from comfyui_mcp_skills.infrastructure.comfyui import client as comfyui_client_module
+from comfyui_mcp_skills.infrastructure.comfyui import jobs_client as comfyui_jobs_client_module
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
-
+from comfyui_mcp_skills.infrastructure.comfyui.gateway import ComfyUIGatewayAdapter
 from comfyui_skills_cli.commands import history as history_command
 from comfyui_skills_cli.commands import run as run_command
-
 from comfyui_skills_cli.commands.run import (
     OutputFormat,
-    _RunContext,
     _run_with_poll,
     _run_with_ws,
-    run_cmd,
+    _RunContext,
     classify_history,
+    run_cmd,
 )
 from comfyui_skills_cli.history_writer import save_run_record
 
@@ -198,7 +197,7 @@ def test_job_wait_caps_each_query_to_remaining_deadline() -> None:
         patch.object(jobs_module.time, "monotonic", clock.monotonic),
         patch.object(jobs_module.time, "sleep", clock.sleep),
         patch(
-            "comfyui_mcp_skills.infrastructure.comfyui.client.requests.get",
+            "comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get",
             side_effect=request_get,
         ),
     ):
@@ -268,7 +267,7 @@ def test_websocket_io_uses_remaining_deadline_and_discards_late_event() -> None:
     socket.recv_data.side_effect = receive
     client = ComfyUIClient("http://127.0.0.1:8188", timeout=30)
     with (
-        patch.object(comfyui_client_module.time, "monotonic", clock.monotonic),
+        patch.object(comfyui_jobs_client_module.time, "monotonic", clock.monotonic),
         patch("websocket.create_connection", return_value=socket) as connect,
     ):
         events = list(client.ws_events("client-1", "prompt-1", timeout_seconds=0.05))

@@ -14,6 +14,7 @@ from mcp.types import ReadResourceRequestParams
 
 from comfyui_mcp_skills.adapters.mcp import resources as resource_adapter
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
+from comfyui_mcp_skills.application.authorization import Scope
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.models import Asset, Job
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
@@ -273,6 +274,63 @@ async def test_resource_handlers_return_canonical_identity_and_same_sqlite_fact(
         monkeypatch.setattr(resource_adapter, "current_owner", lambda: "owner-b")
         await read(_CANONICAL_ASSET_URI)
     assert cross_owner.value.code == -32602
+
+
+@pytest.mark.anyio
+async def test_non_execute_scope_hides_execution_templates_and_canonical_resources(
+    tmp_path: Path,
+    alias_reader: SQLiteLegacyResourceAliasReader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resource_adapter, "current_owner", lambda: _OWNER)
+    monkeypatch.setattr(
+        resource_adapter,
+        "current_scopes",
+        lambda: frozenset({Scope.OBSERVE}),
+    )
+    handlers = create_resource_handlers(
+        catalog=Any,  # type: ignore[arg-type]
+        servers=ServerRegistry(tmp_path),
+        assets=_Assets(),  # type: ignore[arg-type]
+        jobs=_Jobs(),  # type: ignore[arg-type]
+        gateway_factory=lambda _config: _Gateway(),  # type: ignore[arg-type,return-value]
+        enabled_workflows=lambda: [],
+        resource_aliases=alias_reader,
+    )
+
+    templates = await handlers.list_templates(None, None)
+    uris = {template.uri_template for template in templates.resource_templates}
+    assert uris == {"comfyui://workflows/{server_id}/{workflow_id}"}
+
+    for uri in (_CANONICAL_ASSET_URI, _CANONICAL_JOB_URI, _CANONICAL_ARTIFACT_URI):
+        with pytest.raises(MCPError) as captured:
+            await handlers.read_resource(None, ReadResourceRequestParams(uri=uri))
+        assert captured.value.code == -32602
+
+
+@pytest.mark.anyio
+async def test_enforced_resource_authorization_fails_closed_without_context(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resource_adapter, "current_owner", lambda: _OWNER)
+    monkeypatch.setattr(resource_adapter, "current_scopes", lambda: None)
+    handlers = create_resource_handlers(
+        catalog=Any,  # type: ignore[arg-type]
+        servers=Any,  # type: ignore[arg-type]
+        assets=_Assets(),  # type: ignore[arg-type]
+        jobs=_Jobs(),  # type: ignore[arg-type]
+        gateway_factory=Any,  # type: ignore[arg-type]
+        enabled_workflows=lambda: [],
+        resource_aliases=alias_reader,
+        require_authorization=True,
+    )
+
+    templates = await handlers.list_templates(None, None)
+    assert templates.resource_templates == []
+    with pytest.raises(MCPError) as captured:
+        await handlers.read_resource(None, ReadResourceRequestParams(uri=_CANONICAL_ASSET_URI))
+    assert captured.value.code == -32602
 
 
 @pytest.mark.anyio

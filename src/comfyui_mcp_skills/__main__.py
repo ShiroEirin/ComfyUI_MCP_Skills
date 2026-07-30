@@ -9,6 +9,8 @@ import anyio
 from mcp.server.stdio import stdio_server
 
 from .adapters.mcp.server import create_server
+from .application.auth_context import reset_authorization, set_authorization
+from .application.authorization import authorization_for_stdio
 from .observability import configure_logging
 
 
@@ -30,13 +32,22 @@ def _configured_upload_roots(base_dir: Path) -> list[Path]:
 
 
 async def _run_stdio(base_dir: Path) -> None:
-    server = create_server(base_dir, upload_roots=_configured_upload_roots(base_dir))
-    async with stdio_server() as (read_stream, write_stream):
-        await server.run(
-            read_stream,
-            write_stream,
-            server.create_initialization_options(),
-        )
+    authorization = authorization_for_stdio(os.environ)
+    server = create_server(
+        base_dir,
+        upload_roots=_configured_upload_roots(base_dir),
+        authorization=authorization,
+    )
+    token = set_authorization(authorization)
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
+    finally:
+        reset_authorization(token)
 
 
 def main() -> None:

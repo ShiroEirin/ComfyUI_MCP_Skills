@@ -25,8 +25,9 @@ from mcp.types import (
 )
 from mcp_types import INVALID_PARAMS
 
-from comfyui_mcp_skills.adapters.mcp.tooling import current_owner, job_dict
+from comfyui_mcp_skills.adapters.mcp.tooling import current_owner, current_scopes, job_dict
 from comfyui_mcp_skills.application.assets import AssetService
+from comfyui_mcp_skills.application.authorization import is_authorized, scopes_for_resource
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
@@ -47,6 +48,18 @@ EnabledWorkflows = Callable[[], list[Workflow]]
 _MAX_OUTPUT_BYTES = 25 * 1024 * 1024
 
 
+def _resource_scope_allowed(kind: str, *, required: bool) -> bool:
+    granted = current_scopes()
+    if granted is None:
+        return not required
+    return is_authorized(granted, scopes_for_resource(kind))
+
+
+def _require_resource_scope(kind: str, *, required: bool) -> None:
+    if not _resource_scope_allowed(kind, required=required):
+        raise MCPError(code=INVALID_PARAMS, message="Resource not found")
+
+
 @dataclass(frozen=True, slots=True)
 class ResourceHandlers:
     list_templates: Callable[..., Any]
@@ -63,55 +76,83 @@ def create_resource_handlers(
     enabled_workflows: EnabledWorkflows,
     *,
     resource_aliases: ResourceAliasReader | None = None,
+    require_authorization: bool = False,
 ) -> ResourceHandlers:
     async def list_templates(
         _ctx: ServerRequestContext[dict[str, object]],
         _params: PaginatedRequestParams | None,
     ) -> ListResourceTemplatesResult:
-        return ListResourceTemplatesResult(
-            resource_templates=[
+        templates = [
+            (
+                "workflow",
                 ResourceTemplate(
                     uri_template="comfyui://workflows/{server_id}/{workflow_id}",
                     name="Configured workflow",
                     mime_type="application/json",
                 ),
+            ),
+            (
+                "asset",
                 ResourceTemplate(
                     uri_template="comfyui://assets/{server_id}/{asset_id}",
                     name="Authorized input asset",
                     mime_type="application/json",
                 ),
+            ),
+            (
+                "job",
                 ResourceTemplate(
                     uri_template="comfyui://jobs/{server_id}/{prompt_id}",
                     name="Durable execution job",
                     mime_type="application/json",
                 ),
+            ),
+            (
+                "output",
                 ResourceTemplate(
                     uri_template="comfyui://outputs/{server_id}/{prompt_id}/{index}",
                     name="Generated output media",
                 ),
+            ),
+            (
+                "asset",
                 ResourceTemplate(
                     uri_template="comfyui://assets/{asset_id}",
                     name="Canonical input asset",
                     mime_type="application/json",
                 ),
+            ),
+            (
+                "job",
                 ResourceTemplate(
                     uri_template="comfyui://jobs/{job_id}",
                     name="Canonical execution job",
                     mime_type="application/json",
                 ),
+            ),
+            (
+                "artifact",
                 ResourceTemplate(
                     uri_template="comfyui://artifacts/{artifact_id}",
                     name="Canonical generated artifact",
                 ),
+            ),
+        ]
+        return ListResourceTemplatesResult(
+            resource_templates=[
+                template
+                for kind, template in templates
+                if _resource_scope_allowed(kind, required=require_authorization)
             ],
             ttl_ms=60_000,
-            cache_scope="public",
+            cache_scope="private",
         )
 
     async def list_resources(
         _ctx: ServerRequestContext[dict[str, object]],
         _params: PaginatedRequestParams | None,
     ) -> ListResourcesResult:
+        _require_resource_scope("workflow", required=require_authorization)
         resources = [
             Resource(
                 uri=f"comfyui://workflows/{workflow.server_id}/{workflow.workflow_id}",
@@ -138,6 +179,7 @@ def create_resource_handlers(
                 jobs=jobs,
                 gateway_factory=gateway_factory,
                 resource_aliases=resource_aliases,
+                require_authorization=require_authorization,
             )
         except MCPError:
             raise
@@ -167,8 +209,12 @@ async def _read_resource(
     jobs: JobService,
     gateway_factory: GatewayFactory,
     resource_aliases: ResourceAliasReader | None = None,
+    require_authorization: bool = False,
 ) -> ReadResourceResult:
     uri = str(params.uri)
+    legacy_kind = parse_legacy_resource_uri(uri)
+    if legacy_kind is not None:
+        _require_resource_scope(legacy_kind.kind, required=require_authorization)
     owner_id = current_owner()
     legacy = parse_legacy_resource_uri(uri)
     response_uri = uri
@@ -193,6 +239,7 @@ async def _read_resource(
             "input_schema": build_input_schema(workflow.parameters),
         }
     elif resolved_target is not None:
+        _require_resource_scope(resolved_target.kind, required=require_authorization)
         return await _read_resolved_resource(
             resolved_target,
             servers=servers,

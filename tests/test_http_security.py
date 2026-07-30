@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
 from unittest.mock import MagicMock, patch
@@ -25,6 +25,8 @@ from comfyui_mcp_skills.domain.errors import UnsafePath
 from comfyui_mcp_skills.http_main import (
     _default_allowed_hosts,
     _validate_worker_limits,
+)
+from comfyui_mcp_skills.http_main import (
     main as http_main,
 )
 
@@ -121,7 +123,7 @@ def test_http_upload_and_fetch_are_bounded(tmp_path: Path) -> None:
     }
     with (
         patch(
-            "comfyui_mcp_skills.adapters.http.server.create_gateway",
+            "comfyui_mcp_skills.adapters.http.uploads.create_gateway",
             return_value=gateway,
         ),
         patch.object(SafeHTTPSDownloader, "download", return_value=remote),

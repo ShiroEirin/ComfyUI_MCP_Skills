@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import json
 import tempfile
-from pathlib import Path
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 
-
 # -- queue_prompt --
+
 
 class QueuePromptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_with_client_id(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"prompt_id": "p-123"})
         mock_post.return_value.raise_for_status = MagicMock()
@@ -26,7 +26,7 @@ class QueuePromptTests(unittest.TestCase):
         self.assertEqual(result["prompt_id"], "p-123")
         self.assertEqual(mock_post.call_args.kwargs["json"]["client_id"], "my-client-id")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_generates_client_id(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"prompt_id": "p-456"})
         mock_post.return_value.raise_for_status = MagicMock()
@@ -34,7 +34,7 @@ class QueuePromptTests(unittest.TestCase):
         self.assertIn("client_id", result)
         self.assertTrue(len(result["client_id"]) > 0)
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_with_targets(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"prompt_id": "p-100"})
         mock_post.return_value.raise_for_status = MagicMock()
@@ -42,7 +42,7 @@ class QueuePromptTests(unittest.TestCase):
         payload = mock_post.call_args.kwargs["json"]
         self.assertEqual(payload["partial_execution_targets"], [["5"], ["8"]])
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_without_targets(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"prompt_id": "p-101"})
         mock_post.return_value.raise_for_status = MagicMock()
@@ -50,7 +50,7 @@ class QueuePromptTests(unittest.TestCase):
         payload = mock_post.call_args.kwargs["json"]
         self.assertNotIn("partial_execution_targets", payload)
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_with_empty_targets(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200, json=lambda: {"prompt_id": "p-102"})
         mock_post.return_value.raise_for_status = MagicMock()
@@ -61,18 +61,19 @@ class QueuePromptTests(unittest.TestCase):
 
 # -- interrupt / queue management / free --
 
+
 class InterruptTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_with_prompt_id(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         result = self.client.interrupt("abc-123")
         self.assertTrue(result["success"])
         self.assertEqual(mock_post.call_args.kwargs["json"], {"prompt_id": "abc-123"})
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_without_prompt_id(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         result = self.client.interrupt()
@@ -84,14 +85,14 @@ class QueueManagementTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_queue_clear(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         result = self.client.queue_clear()
         self.assertTrue(result["success"])
         self.assertEqual(mock_post.call_args.kwargs["json"], {"clear": True})
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_queue_delete(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         result = self.client.queue_delete(["id-1", "id-2"])
@@ -103,26 +104,28 @@ class FreeMemoryTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_free_both(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         result = self.client.free_memory(unload_models=True, free_memory=True)
         self.assertTrue(result["success"])
-        self.assertEqual(mock_post.call_args.kwargs["json"], {"unload_models": True, "free_memory": True})
+        self.assertEqual(
+            mock_post.call_args.kwargs["json"], {"unload_models": True, "free_memory": True}
+        )
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_free_models_only(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         self.client.free_memory(unload_models=True, free_memory=False)
         self.assertEqual(mock_post.call_args.kwargs["json"], {"unload_models": True})
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_free_memory_only(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         self.client.free_memory(unload_models=False, free_memory=True)
         self.assertEqual(mock_post.call_args.kwargs["json"], {"free_memory": True})
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_free_no_flags_sends_empty(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         self.client.free_memory(unload_models=False, free_memory=False)
@@ -131,16 +134,23 @@ class FreeMemoryTests(unittest.TestCase):
 
 # -- upload --
 
+
 class UploadFileTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_upload_file_calls_upload_image_endpoint(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
-        mock_post.return_value.json.return_value = {"name": "test.png", "subfolder": "", "type": "input"}
+        mock_post.return_value.json.return_value = {
+            "name": "test.png",
+            "subfolder": "",
+            "type": "input",
+        }
 
-        import tempfile, os
+        import os
+        import tempfile
+
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"fake png data")
             tmp_path = f.name
@@ -158,15 +168,15 @@ class UploadFileTests(unittest.TestCase):
             mock.assert_called_once_with("/fake/path.png")
             self.assertEqual(result["name"], "x.png")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.Path")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.Path")
     def test_upload_streams_chunks_and_sanitizes_crlf_filename(
         self, path_class: MagicMock, mock_post: MagicMock
     ) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         mock_post.return_value.json.return_value = {"name": "safe.png"}
         path = MagicMock()
-        path.name = 'cat.png\r\nX-Injected: yes'
+        path.name = "cat.png\r\nX-Injected: yes"
         path.stat.return_value.st_size = 7
         handle = MagicMock()
         handle.read.side_effect = [b"payload", b""]
@@ -183,10 +193,8 @@ class UploadFileTests(unittest.TestCase):
         assert b"\r\n--" in body
         handle.read.assert_called_with(64 * 1024)
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.post")
-    def test_upload_mask_has_well_formed_multipart_boundaries(
-        self, mock_post: MagicMock
-    ) -> None:
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_mask_has_well_formed_multipart_boundaries(self, mock_post: MagicMock) -> None:
         mock_post.return_value = MagicMock(status_code=200)
         mock_post.return_value.json.return_value = {"name": "mask.png"}
         import os
@@ -209,11 +217,12 @@ class UploadFileTests(unittest.TestCase):
 
 # -- object_info --
 
+
 class ObjectInfoNodeTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_found(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -223,13 +232,13 @@ class ObjectInfoNodeTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["display_name"], "KSampler")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_not_found(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=404)
         result = self.client.get_object_info_node("NonExistentNode")
         self.assertIsNone(result)
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_percent_encodes_node_class_path_segment(self, mock_get: MagicMock) -> None:
         node_class = "Custom/Node?view=full"
         mock_get.return_value = MagicMock(
@@ -242,7 +251,7 @@ class ObjectInfoNodeTests(unittest.TestCase):
         self.assertEqual(result, {"display_name": "Custom Node"})
         self.assertIn("/object_info/Custom%2FNode%3Fview%3Dfull", mock_get.call_args.args[0])
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_percent_encodes_model_folder_path_segment(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=200, json=lambda: [])
 
@@ -258,15 +267,25 @@ class ObjectInfoNodeTests(unittest.TestCase):
 
 SAMPLE_STATS = {
     "system": {
-        "os": "posix", "ram_total": 68719476736, "ram_free": 32000000000,
-        "comfyui_version": "v0.3.10", "python_version": "3.11.5",
-        "pytorch_version": "2.1.0", "embedded_python": False,
+        "os": "posix",
+        "ram_total": 68719476736,
+        "ram_free": 32000000000,
+        "comfyui_version": "v0.3.10",
+        "python_version": "3.11.5",
+        "pytorch_version": "2.1.0",
+        "embedded_python": False,
     },
-    "devices": [{
-        "name": "cuda:0", "type": "cuda", "index": 0,
-        "vram_total": 25769803776, "vram_free": 20000000000,
-        "torch_vram_total": 25769803776, "torch_vram_free": 22000000000,
-    }],
+    "devices": [
+        {
+            "name": "cuda:0",
+            "type": "cuda",
+            "index": 0,
+            "vram_total": 25769803776,
+            "vram_free": 20000000000,
+            "torch_vram_total": 25769803776,
+            "torch_vram_free": 22000000000,
+        }
+    ],
 }
 
 
@@ -274,13 +293,13 @@ class SystemStatsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_success(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=200, json=lambda: SAMPLE_STATS)
         result = self.client.get_system_stats()
         self.assertEqual(result, SAMPLE_STATS)
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_raises_on_error(self, mock_get: MagicMock) -> None:
         mock_resp = MagicMock(status_code=500)
         mock_resp.raise_for_status.side_effect = Exception("Server error")
@@ -288,7 +307,7 @@ class SystemStatsTests(unittest.TestCase):
         with self.assertRaises(Exception):
             self.client.get_system_stats()
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_multi_server(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=200, json=lambda: SAMPLE_STATS)
         clients = [ComfyUIClient("http://s1:8188"), ComfyUIClient("http://s2:8188")]
@@ -299,6 +318,7 @@ class SystemStatsTests(unittest.TestCase):
 
 # -- ws_events --
 
+
 class WsEventsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
@@ -306,13 +326,27 @@ class WsEventsTests(unittest.TestCase):
     @patch("websocket.create_connection")
     def test_yields_matching_events(self, mock_ws_create: MagicMock) -> None:
         import websocket
+
         mock_ws = MagicMock()
         mock_ws_create.return_value = mock_ws
         events = [
-            (websocket.ABNF.OPCODE_TEXT, json.dumps({"type": "execution_start", "data": {"prompt_id": "p-1"}}).encode()),
-            (websocket.ABNF.OPCODE_TEXT, json.dumps({"type": "executing", "data": {"node": "5", "prompt_id": "p-1"}}).encode()),
+            (
+                websocket.ABNF.OPCODE_TEXT,
+                json.dumps({"type": "execution_start", "data": {"prompt_id": "p-1"}}).encode(),
+            ),
+            (
+                websocket.ABNF.OPCODE_TEXT,
+                json.dumps(
+                    {"type": "executing", "data": {"node": "5", "prompt_id": "p-1"}}
+                ).encode(),
+            ),
             (websocket.ABNF.OPCODE_BINARY, b"\x01\x00\x00\x00fake-preview"),
-            (websocket.ABNF.OPCODE_TEXT, json.dumps({"type": "executing", "data": {"node": None, "prompt_id": "p-1"}}).encode()),
+            (
+                websocket.ABNF.OPCODE_TEXT,
+                json.dumps(
+                    {"type": "executing", "data": {"node": None, "prompt_id": "p-1"}}
+                ).encode(),
+            ),
         ]
         mock_ws.recv_data = MagicMock(side_effect=events)
         collected = list(self.client.ws_events("cid-1", "p-1"))
@@ -325,9 +359,8 @@ class WsEventsTests(unittest.TestCase):
     @patch("websocket.create_connection")
     def test_forwards_bearer_auth_header(self, mock_ws_create: MagicMock) -> None:
         import websocket
-        authenticated = ComfyUIClient(
-            "http://localhost:8188", auth="secret-token"
-        )
+
+        authenticated = ComfyUIClient("http://localhost:8188", auth="secret-token")
         mock_ws = MagicMock()
         mock_ws.recv_data.return_value = (
             websocket.ABNF.OPCODE_TEXT,
@@ -342,18 +375,27 @@ class WsEventsTests(unittest.TestCase):
 
         list(authenticated.ws_events("cid-1", "p-1"))
 
-        assert mock_ws_create.call_args.kwargs["header"] == {
-            "Authorization": "Bearer secret-token"
-        }
+        assert mock_ws_create.call_args.kwargs["header"] == {"Authorization": "Bearer secret-token"}
 
     @patch("websocket.create_connection")
     def test_filters_other_prompts(self, mock_ws_create: MagicMock) -> None:
         import websocket
+
         mock_ws = MagicMock()
         mock_ws_create.return_value = mock_ws
         events = [
-            (websocket.ABNF.OPCODE_TEXT, json.dumps({"type": "executing", "data": {"node": "1", "prompt_id": "other"}}).encode()),
-            (websocket.ABNF.OPCODE_TEXT, json.dumps({"type": "executing", "data": {"node": None, "prompt_id": "p-1"}}).encode()),
+            (
+                websocket.ABNF.OPCODE_TEXT,
+                json.dumps(
+                    {"type": "executing", "data": {"node": "1", "prompt_id": "other"}}
+                ).encode(),
+            ),
+            (
+                websocket.ABNF.OPCODE_TEXT,
+                json.dumps(
+                    {"type": "executing", "data": {"node": None, "prompt_id": "p-1"}}
+                ).encode(),
+            ),
         ]
         mock_ws.recv_data = MagicMock(side_effect=events)
         collected = list(self.client.ws_events("cid-1", "p-1"))
@@ -362,10 +404,19 @@ class WsEventsTests(unittest.TestCase):
     @patch("websocket.create_connection")
     def test_stops_on_error(self, mock_ws_create: MagicMock) -> None:
         import websocket
+
         mock_ws = MagicMock()
         mock_ws_create.return_value = mock_ws
         events = [
-            (websocket.ABNF.OPCODE_TEXT, json.dumps({"type": "execution_error", "data": {"prompt_id": "p-1", "exception_message": "boom"}}).encode()),
+            (
+                websocket.ABNF.OPCODE_TEXT,
+                json.dumps(
+                    {
+                        "type": "execution_error",
+                        "data": {"prompt_id": "p-1", "exception_message": "boom"},
+                    }
+                ).encode(),
+            ),
         ]
         mock_ws.recv_data = MagicMock(side_effect=events)
         collected = list(self.client.ws_events("cid-1", "p-1"))
@@ -380,9 +431,7 @@ class WsEventsTests(unittest.TestCase):
         mock_ws.recv_data.side_effect = websocket.WebSocketTimeoutException()
         mock_ws_create.return_value = mock_ws
 
-        collected = list(
-            self.client.ws_events("cid-1", "p-1", timeout_seconds=0.01)
-        )
+        collected = list(self.client.ws_events("cid-1", "p-1", timeout_seconds=0.01))
 
         self.assertEqual(collected, [])
         mock_ws.close.assert_called_once()
@@ -408,20 +457,19 @@ class WsEventsTests(unittest.TestCase):
 
         with self.assertRaises(Cancelled):
             list(
-                self.client.ws_events(
-                    "cid-1", "p-1", timeout_seconds=10, cancel_check=cancel_check
-                )
+                self.client.ws_events("cid-1", "p-1", timeout_seconds=10, cancel_check=cancel_check)
             )
         mock_ws.close.assert_called_once()
 
 
 # -- userdata workflows --
 
+
 class ListUserdataWorkflowsTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_v2_userdata_returns_list_of_dicts(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -434,7 +482,7 @@ class ListUserdataWorkflowsTests(unittest.TestCase):
         self.assertEqual(paths, ["workflows/a.json", "workflows/b.json"])
         self.assertEqual(mock_get.call_args.kwargs["params"], {"path": "workflows"})
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_falls_back_to_userdata_bare_strings(self, mock_get: MagicMock) -> None:
         # /v2/userdata returns empty, /userdata returns bare filenames
         mock_get.side_effect = [
@@ -444,12 +492,12 @@ class ListUserdataWorkflowsTests(unittest.TestCase):
         paths = self.client.list_userdata_workflows()
         self.assertEqual(paths, ["workflows/a.json", "workflows/b.json"])
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_both_endpoints_empty(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=200, json=lambda: [])
         self.assertEqual(self.client.list_userdata_workflows(), [])
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_filters_non_json_entries(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(
             status_code=200,
@@ -467,7 +515,7 @@ class ReadUserdataWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_percent_encodes_full_path(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=200, json=lambda: {"nodes": []})
         self.client.read_userdata_workflow("workflows/MultiCharacter.json")
@@ -475,7 +523,7 @@ class ReadUserdataWorkflowTests(unittest.TestCase):
         self.assertIn("/userdata/workflows%2FMultiCharacter.json", called_url)
         self.assertNotIn("/userdata/workflows/MultiCharacter.json", called_url)
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_returns_none_on_404(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=404)
         self.assertIsNone(self.client.read_userdata_workflow("workflows/missing.json"))
@@ -485,7 +533,7 @@ class DownloadOutputTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_streams_output_to_atomic_destination(self, mock_get: MagicMock) -> None:
         response = MagicMock()
         response.headers = {"content-length": "6"}
@@ -493,14 +541,12 @@ class DownloadOutputTests(unittest.TestCase):
         mock_get.return_value = response
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "output.bin"
-            size = self.client.download_output_to(
-                "output.bin", destination, max_bytes=6
-            )
+            size = self.client.download_output_to("output.bin", destination, max_bytes=6)
             self.assertEqual(size, 6)
             self.assertEqual(destination.read_bytes(), b"abcdef")
         response.close.assert_called_once()
 
-    @patch("comfyui_mcp_skills.infrastructure.comfyui.client.requests.get")
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_rejects_stream_exceeding_declared_limit(self, mock_get: MagicMock) -> None:
         response = MagicMock()
         response.headers = {}

@@ -9,7 +9,8 @@ from typing import Any
 
 import uvicorn
 
-from comfyui_mcp_skills.adapters.http.server import _validate_tokens, create_http_app
+from comfyui_mcp_skills.adapters.http.app import create_http_app
+from comfyui_mcp_skills.adapters.http.auth import _validate_tokens
 from comfyui_mcp_skills.observability import configure_logging
 
 _APP_FACTORY = "comfyui_mcp_skills.http_main:create_app"
@@ -95,6 +96,8 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
         "public_mcp_url": public_mcp_url,
         "auth_mode": os.environ.get("COMFYUI_MCP_AUTH_MODE", "static").strip().lower(),
         "remote_fetch_hosts": _csv(os.environ.get("COMFYUI_MCP_FETCH_HOSTS", "")),
+        "toolset": os.environ.get("COMFYUI_MCP_TOOLSET", "execution").strip().lower(),
+        "enable_high_risk": os.environ.get("COMFYUI_MCP_ENABLE_HIGH_RISK", "") == "1",
     }
     return host, port, app_options
 
