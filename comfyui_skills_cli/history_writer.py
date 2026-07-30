@@ -12,6 +12,13 @@ from typing import Any
 
 from filelock import FileLock
 
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
+from comfyui_mcp_skills.infrastructure.persistence.store_fencing import (
+    assert_file_store_active,
+)
+
 from .storage import _safe_path
 
 _STATUS_PRIORITY = {
@@ -44,9 +51,7 @@ def _record_path(
 
 
 def _request_digest(args: dict[str, Any]) -> str:
-    payload = json.dumps(
-        args, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
+    payload = json.dumps(args, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -64,7 +69,11 @@ def claim_job(
     path = _record_path(base_dir, server_id, workflow_id, job_id, kind="job")
     path.parent.mkdir(parents=True, exist_ok=True)
     digest = _request_digest(args)
-    with FileLock(f"{path}.lock", timeout=10):
+    with project_migration_lock(base_dir), FileLock(f"{path}.lock", timeout=10):
+        assert_file_store_active(
+            base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
+        )
         existing = _read_record(path)
         if existing:
             if existing.get("request_digest") not in {None, digest}:
@@ -72,9 +81,7 @@ def claim_job(
             if existing.get("status") != "reserved":
                 return False
             try:
-                claimed_at = datetime.fromisoformat(
-                    str(existing.get("timestamp", ""))
-                )
+                claimed_at = datetime.fromisoformat(str(existing.get("timestamp", "")))
                 age = (datetime.now(timezone.utc) - claimed_at).total_seconds()
             except ValueError:
                 age = 301
@@ -109,7 +116,11 @@ def release_job_claim(
 ) -> None:
     """Release only the caller's unsubmitted reservation."""
     path = _record_path(base_dir, server_id, workflow_id, job_id, kind="job")
-    with FileLock(f"{path}.lock", timeout=10):
+    with project_migration_lock(base_dir), FileLock(f"{path}.lock", timeout=10):
+        assert_file_store_active(
+            base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
+        )
         existing = _read_record(path)
         if (
             existing
@@ -124,23 +135,31 @@ def find_existing_run(
     base_dir: Path, server_id: str, workflow_id: str, job_id: str
 ) -> dict[str, Any] | None:
     path = _record_path(base_dir, server_id, workflow_id, job_id, kind="job")
-    return _read_record(path)
+    with project_migration_lock(base_dir):
+        assert_file_store_active(
+            base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
+        )
+        return _read_record(path)
 
 
 def find_run_record(
     base_dir: Path, server_id: str, workflow_id: str, run_id: str
 ) -> dict[str, Any] | None:
     """Find a persisted job or prompt record by its public run identifier."""
-    for kind in ("job", "prompt"):
-        record = _read_record(
-            _record_path(base_dir, server_id, workflow_id, run_id, kind=kind)
+    with project_migration_lock(base_dir):
+        assert_file_store_active(
+            base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
         )
-        if record and run_id in {
-            record.get("run_id"),
-            record.get("job_id"),
-            record.get("prompt_id"),
-        }:
-            return record
+        for kind in ("job", "prompt"):
+            record = _read_record(_record_path(base_dir, server_id, workflow_id, run_id, kind=kind))
+            if record and run_id in {
+                record.get("run_id"),
+                record.get("job_id"),
+                record.get("prompt_id"),
+            }:
+                return record
     return None
 
 
@@ -154,7 +173,11 @@ def renew_job_claim(
     if not job_id:
         return
     path = _record_path(base_dir, server_id, workflow_id, job_id, kind="job")
-    with FileLock(f"{path}.lock", timeout=10):
+    with project_migration_lock(base_dir), FileLock(f"{path}.lock", timeout=10):
+        assert_file_store_active(
+            base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
+        )
         existing = _read_record(path)
         if (
             not existing
@@ -186,7 +209,11 @@ def save_run_record(
     kind = "job" if job_id else "prompt"
     path = _record_path(base_dir, server_id, workflow_id, file_id, kind=kind)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with FileLock(f"{path}.lock", timeout=10):
+    with project_migration_lock(base_dir), FileLock(f"{path}.lock", timeout=10):
+        assert_file_store_active(
+            base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
+        )
         existing = _read_record(path)
         if job_id and existing:
             existing_lease = str(existing.get("lease_token", ""))
@@ -214,12 +241,8 @@ def save_run_record(
             "request_digest": _request_digest(args),
         }
         if job_id:
-            record["lease_token"] = lease_token or str(
-                (existing or {}).get("lease_token", "")
-            )
-            record["client_id"] = client_id or str(
-                (existing or {}).get("client_id", "")
-            )
+            record["lease_token"] = lease_token or str((existing or {}).get("lease_token", ""))
+            record["client_id"] = client_id or str((existing or {}).get("client_id", ""))
         if outputs:
             record["outputs"] = outputs
         if error:

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 from unittest.mock import MagicMock
 
 import pytest
+
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.jobs import JobService
@@ -21,7 +23,10 @@ from comfyui_mcp_skills.domain.errors import (
 )
 from comfyui_mcp_skills.domain.models import Asset, Job
 from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
+from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_assets import SQLiteAssetRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
 
 
@@ -379,11 +384,7 @@ def test_job_outputs_include_video_key_and_media_metadata(tmp_path: Path) -> Non
     gateway.histories["prompt-video-key"] = {
         "status": {"completed": True, "status_str": "success"},
         "outputs": {
-            "10": {
-                "video": [
-                    {"filename": "render.webm", "subfolder": "video", "type": "output"}
-                ]
-            }
+            "10": {"video": [{"filename": "render.webm", "subfolder": "video", "type": "output"}]}
         },
     }
     service = JobService(ServerRegistry(tmp_path), runs, lambda _config: gateway)
@@ -424,3 +425,181 @@ def test_wait_zero_returns_handle_and_callback_errors_propagate(tmp_path: Path) 
             timeout_seconds=1,
             progress=lambda _event: (_ for _ in ()).throw(ValueError("callback failed")),
         )
+
+
+def test_sqlite_asset_repository_round_trips_without_overwrite(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    repository = SQLiteAssetRepository(store)
+    asset = Asset(
+        "asset_" + "a" * 32,
+        "local",
+        "agent/assets/cat.png",
+        "cat.png",
+        "agent/assets",
+        "image",
+        "image/png",
+        3,
+        "b" * 64,
+        "owner",
+        "2026-07-30T00:00:00+00:00",
+    )
+
+    repository.save(asset)
+
+    assert repository.get(asset.asset_id) == asset
+    with pytest.raises(sqlite3.IntegrityError):
+        repository.save(
+            Asset(
+                asset.asset_id,
+                "other",
+                asset.comfyui_ref,
+                asset.name,
+                asset.subfolder,
+                asset.media_type,
+                asset.mime_type,
+                asset.size_bytes,
+                asset.sha256,
+                asset.owner_id,
+                asset.created_at,
+            )
+        )
+
+
+def test_sqlite_run_repository_claim_submit_and_lookup_are_atomic(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    runs = SQLiteRunRepository(store)
+    arguments = {"prompt": "cat"}
+
+    lease = runs.claim("local", "portrait", "request-1", arguments, "owner", "client")
+    assert lease
+    assert runs.claim("local", "portrait", "request-1", arguments, "owner", "client") is None
+
+    job = Job(
+        "prompt-1",
+        "local",
+        "portrait",
+        "submitted",
+        idempotency_key="request-1",
+        client_id="client",
+        request_digest=runs.request_digest("portrait", arguments),
+        owner_id="owner",
+    )
+    runs.save(job, lease_token=str(lease))
+
+    assert runs.get("local", "prompt-1") == job
+    assert runs.get_by_idempotency("local", "request-1", "owner") == job
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT count(*) FROM jobs").fetchone() == (1,)
+        assert connection.execute("SELECT count(*) FROM execution_attempts").fetchone() == (1,)
+        assert connection.execute("SELECT count(*) FROM idempotency_records").fetchone() == (1,)
+
+
+def test_sqlite_run_repository_preserves_claim_and_terminal_state(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    runs = SQLiteRunRepository(store)
+    arguments = {"prompt": "cat"}
+    digest = runs.request_digest("portrait", arguments)
+    lease = runs.claim("local", "portrait", "request-1", arguments, "owner", "client")
+    assert lease
+    claim = runs.get_claim("local", "request-1", "owner")
+    assert claim is not None
+    assert claim["workflow_id"] == "portrait"
+
+    submitted = Job(
+        "prompt-1",
+        "local",
+        "portrait",
+        "submitted",
+        idempotency_key="request-1",
+        client_id="client",
+        request_digest=digest,
+        owner_id="owner",
+    )
+    runs.save(submitted, lease_token=str(lease))
+    completed = Job(
+        "prompt-1",
+        "local",
+        "portrait",
+        "completed",
+        outputs=(
+            {
+                "filename": "first.png",
+                "subfolder": "",
+                "type": "output",
+                "media_type": "image",
+                "mime_type": "image/png",
+                "resource_uri": "comfyui://outputs/local/prompt-1/0",
+            },
+        ),
+        idempotency_key="request-1",
+        client_id="client",
+        request_digest=digest,
+        owner_id="owner",
+    )
+    runs.save(completed)
+    runs.save(submitted)
+
+    assert runs.get("local", "prompt-1") == completed
+    assert runs.get_by_idempotency("local", "request-1", "owner") == completed
+
+
+def test_sqlite_run_repository_reclaims_expired_claim_and_ignores_empty_unknown(
+    tmp_path: Path,
+) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    runs = SQLiteRunRepository(store)
+    arguments = {"prompt": "cat"}
+    first = runs.claim("local", "portrait", "request-1", arguments, "owner", "client")
+    assert first
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE idempotency_records SET expires_at = '2000-01-01T00:00:00+00:00' "
+            "WHERE owner_id = 'owner' AND key = 'request-1'"
+        )
+
+    second = runs.claim("local", "portrait", "request-1", arguments, "owner", "client")
+    assert second and second != first
+    runs.mark_submission_unknown("local", "", "", "owner")
+
+
+def test_sqlite_run_repository_recovers_unknown_submission(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    runs = SQLiteRunRepository(store)
+    arguments = {"prompt": "cat"}
+    digest = runs.request_digest("portrait", arguments)
+    lease = runs.claim("local", "portrait", "request-1", arguments, "owner", "client")
+    assert lease
+    runs.mark_submission_unknown("local", "request-1", str(lease), "owner")
+
+    recovered = Job(
+        "prompt-1",
+        "local",
+        "portrait",
+        "submitted",
+        idempotency_key="request-1",
+        client_id="client",
+        request_digest=digest,
+        owner_id="owner",
+    )
+    runs.save(recovered, lease_token=str(lease))
+
+    assert runs.get_by_idempotency("local", "request-1", "owner") == recovered
+
+
+def test_sqlite_run_repository_rejects_cross_owner_prompt_collision(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    runs = SQLiteRunRepository(store)
+    runs.save(Job("shared", "local", "portrait", "completed", owner_id="victim"))
+
+    with pytest.raises(RuntimeError, match="identity"):
+        runs.save(Job("shared", "local", "portrait", "running", owner_id="attacker"))
+
+    assert runs.get("local", "shared") == Job(
+        "shared", "local", "portrait", "completed", owner_id="victim"
+    )

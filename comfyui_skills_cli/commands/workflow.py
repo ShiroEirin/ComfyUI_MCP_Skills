@@ -11,6 +11,10 @@ from typing import Any
 import typer
 
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
+
 from ..config import get_base_dir, get_default_server_id, get_server, load_config
 from ..output import output_error, output_event, output_result
 from ..storage import _safe_path
@@ -67,7 +71,11 @@ _MEDIA_TYPE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
         "seconds": {"exposed": True, "required": False, "description": "Duration in seconds"},
         "language": {"exposed": True, "required": False, "description": "Language code"},
         "keyscale": {"exposed": True, "required": False, "description": "Musical key and scale"},
-        "cfg_scale": {"exposed": True, "required": False, "description": "Classifier-free guidance scale"},
+        "cfg_scale": {
+            "exposed": True,
+            "required": False,
+            "description": "Classifier-free guidance scale",
+        },
         "temperature": {"exposed": True, "required": False, "description": "Sampling temperature"},
     },
     "video": {
@@ -75,8 +83,16 @@ _MEDIA_TYPE_FIELDS: dict[str, dict[str, dict[str, Any]]] = {
         "codec": {"exposed": True, "required": False, "description": "Video codec"},
         "frame_rate": {"exposed": True, "required": False, "description": "Video frame rate"},
         "fps": {"exposed": True, "required": False, "description": "Frames per second"},
-        "noise_seed": {"exposed": True, "required": False, "description": "Noise seed for video generation"},
-        "cfg": {"exposed": True, "required": False, "description": "Classifier-free guidance scale"},
+        "noise_seed": {
+            "exposed": True,
+            "required": False,
+            "description": "Noise seed for video generation",
+        },
+        "cfg": {
+            "exposed": True,
+            "required": False,
+            "description": "Classifier-free guidance scale",
+        },
     },
 }
 
@@ -89,20 +105,20 @@ _WIDGET_BASE_TYPES = {"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"}
 def _is_widget_type(type_def: list) -> bool:
     if not isinstance(type_def, list) or not type_def:
         return False
-    
+
     t = type_def[0]
-    
+
     if isinstance(t, list):
         return True
-    
+
     return isinstance(t, str) and t in _WIDGET_BASE_TYPES
 
 
 def _get_widget_field_names_from_schema(node_info: dict[str, Any]) -> list[str]:
     widget_fields: list[str] = []
-    
+
     inp = node_info.get("input", {})
-    
+
     input_order = node_info.get("input_order", {})
     if isinstance(input_order, dict):
         for section in ("required", "optional"):
@@ -118,14 +134,14 @@ def _get_widget_field_names_from_schema(node_info: dict[str, Any]) -> list[str]:
                         widget_fields.append(name)
         if widget_fields:
             return widget_fields
-    
+
     for section in ("required", "optional"):
         sec = inp.get(section, {})
         if isinstance(sec, dict):
             for name, type_def in sec.items():
                 if _is_widget_type(type_def):
                     widget_fields.append(name)
-    
+
     return widget_fields
 
 
@@ -139,7 +155,9 @@ def _get_type_guess(value: Any) -> str:
     return "string"
 
 
-def _extract_schema(workflow_data: dict[str, Any], media_type: str = "image") -> dict[str, dict[str, Any]]:
+def _extract_schema(
+    workflow_data: dict[str, Any], media_type: str = "image"
+) -> dict[str, dict[str, Any]]:
     """Extract parameters from API-format workflow and build schema.
 
     *media_type* selects additional field-exposure rules beyond the base
@@ -192,15 +210,17 @@ def _extract_schema(workflow_data: dict[str, Any], media_type: str = "image") ->
             if not exposed:
                 continue
 
-            raw_params.append({
-                "node_id": str(node_id),
-                "field": field,
-                "type": field_type,
-                "required": required,
-                "description": description,
-                "default": value,
-                "class_type": class_type,
-            })
+            raw_params.append(
+                {
+                    "node_id": str(node_id),
+                    "field": field,
+                    "type": field_type,
+                    "required": required,
+                    "description": description,
+                    "default": value,
+                    "class_type": class_type,
+                }
+            )
             if storage_type:
                 raw_params[-1]["storage_type"] = storage_type
 
@@ -299,15 +319,11 @@ def _convert_editor_to_api(
             if isinstance(node, dict)
             and str(node.get("type", "")).strip()
             and str(node.get("type", "")).strip() not in {"Reroute", "Note"}
-            and not isinstance(
-                object_info.get(str(node.get("type", "")).strip()), dict
-            )
+            and not isinstance(object_info.get(str(node.get("type", "")).strip()), dict)
         }
     )
     if unknown_types:
-        raise ValueError(
-            "Unknown ComfyUI node types: " + ", ".join(unknown_types)
-        )
+        raise ValueError("Unknown ComfyUI node types: " + ", ".join(unknown_types))
 
     node_by_id: dict[int, dict[str, Any]] = {}
     for node in nodes:
@@ -348,8 +364,10 @@ def _convert_editor_to_api(
 
 
 def _resolve_reroute(
-    source_id: int, source_slot: int,
-    node_by_id: dict[int, dict[str, Any]], links: list[Any],
+    source_id: int,
+    source_slot: int,
+    node_by_id: dict[int, dict[str, Any]],
+    links: list[Any],
 ) -> tuple[str, int] | None:
     node = node_by_id.get(source_id)
     if not isinstance(node, dict):
@@ -371,8 +389,10 @@ def _resolve_reroute(
 
 
 def _convert_node_inputs(
-    node: dict[str, Any], class_type: str,
-    node_info: dict[str, Any], link_map: dict[tuple[int, int], tuple[str, int]],
+    node: dict[str, Any],
+    class_type: str,
+    node_info: dict[str, Any],
+    link_map: dict[tuple[int, int], tuple[str, int]],
 ) -> dict[str, Any]:
     node_id = int(node["id"])
     input_slots = node.get("inputs", [])
@@ -398,10 +418,10 @@ def _convert_node_inputs(
         connected_names.add(slot_name)
 
     widget_field_names = _get_widget_field_names_from_schema(node_info)
-    
+
     control_fields = _get_control_after_generate_fields(node_info)
     widget_idx = 0
-    
+
     for field_name in widget_field_names:
         if field_name in connected_names:
             widget_idx += 1
@@ -412,7 +432,12 @@ def _convert_node_inputs(
         widget_idx += 1
         if field_name in control_fields and widget_idx < len(widget_values):
             val = widget_values[widget_idx]
-            if isinstance(val, str) and val.lower() in {"fixed", "increment", "decrement", "randomize"}:
+            if isinstance(val, str) and val.lower() in {
+                "fixed",
+                "increment",
+                "decrement",
+                "randomize",
+            }:
                 widget_idx += 1
 
     return converted
@@ -464,10 +489,21 @@ def _get_control_after_generate_fields(node_info: dict[str, Any]) -> set[str]:
 @app.command("import")
 def workflow_import(
     ctx: typer.Context,
-    json_path: str = typer.Argument(None, help="Path to workflow JSON file (omit when using --from-server)"),
-    name: str = typer.Option("", "--name", "-n", help="Workflow ID (default: derived from filename)"),
-    media_type: str = typer.Option("image", "--type", "-t", help="Media type preset for parameter detection: image (default), audio, video"),
-    from_server: bool = typer.Option(False, "--from-server", help="Import from ComfyUI server userdata"),
+    json_path: str = typer.Argument(
+        None, help="Path to workflow JSON file (omit when using --from-server)"
+    ),
+    name: str = typer.Option(
+        "", "--name", "-n", help="Workflow ID (default: derived from filename)"
+    ),
+    media_type: str = typer.Option(
+        "image",
+        "--type",
+        "-t",
+        help="Media type preset for parameter detection: image (default), audio, video",
+    ),
+    from_server: bool = typer.Option(
+        False, "--from-server", help="Import from ComfyUI server userdata"
+    ),
     preview: bool = typer.Option(False, "--preview", help="Preview only, don't import"),
     check_deps: bool = typer.Option(False, "--check-deps", help="Check dependencies after import"),
 ):
@@ -488,17 +524,35 @@ def workflow_import(
         return
 
     if from_server:
-        _import_from_server(ctx, base_dir, server_id, server_config, name, preview, check_deps, media_type)
+        _import_from_server(
+            ctx, base_dir, server_id, server_config, name, preview, check_deps, media_type
+        )
     elif json_path:
-        _import_from_file(ctx, base_dir, server_id, server_config, json_path, name, preview, check_deps, media_type)
+        _import_from_file(
+            ctx,
+            base_dir,
+            server_id,
+            server_config,
+            json_path,
+            name,
+            preview,
+            check_deps,
+            media_type,
+        )
     else:
         output_error(ctx, "INVALID_ARGS", "Provide a JSON file path or use --from-server.")
 
 
 def _import_from_file(
-    ctx: typer.Context, base_dir: Path, server_id: str,
-    server_config: dict[str, Any], json_path: str, name: str,
-    preview: bool, check_deps: bool, media_type: str = "image",
+    ctx: typer.Context,
+    base_dir: Path,
+    server_id: str,
+    server_config: dict[str, Any],
+    json_path: str,
+    name: str,
+    preview: bool,
+    check_deps: bool,
+    media_type: str = "image",
 ) -> None:
     if not os.path.isfile(json_path):
         output_error(ctx, "FILE_NOT_FOUND", f'File not found: "{json_path}"')
@@ -524,9 +578,12 @@ def _import_from_file(
         try:
             object_info = client.get_object_info()
         except Exception as exc:
-            output_error(ctx, "SERVER_ERROR",
-                         f"Cannot fetch object_info for format conversion: {exc}",
-                         hint="ComfyUI server must be online to convert editor-format workflows.")
+            output_error(
+                ctx,
+                "SERVER_ERROR",
+                f"Cannot fetch object_info for format conversion: {exc}",
+                hint="ComfyUI server must be online to convert editor-format workflows.",
+            )
             return
         try:
             api_data = _convert_editor_to_api(data, object_info)
@@ -534,41 +591,50 @@ def _import_from_file(
             output_error(ctx, "CONVERSION_FAILED", str(exc))
             return
         if not api_data:
-            output_error(ctx, "CONVERSION_FAILED", "Failed to convert editor workflow to API format.")
+            output_error(
+                ctx, "CONVERSION_FAILED", "Failed to convert editor workflow to API format."
+            )
             return
     else:
-        output_error(ctx, "INVALID_FORMAT",
-                     "Unrecognized workflow format. Expected ComfyUI API or editor format.")
+        output_error(
+            ctx,
+            "INVALID_FORMAT",
+            "Unrecognized workflow format. Expected ComfyUI API or editor format.",
+        )
         return
 
     # Generate schema
     parameters = _extract_schema(api_data, media_type)
 
     if preview:
-        output_result(ctx, {
-            "workflow_id": workflow_id,
-            "server_id": server_id,
-            "format_detected": format_detected,
-            "parameters": parameters,
-            "node_count": len(api_data),
-            "preview": True,
-        })
+        output_result(
+            ctx,
+            {
+                "workflow_id": workflow_id,
+                "server_id": server_id,
+                "format_detected": format_detected,
+                "parameters": parameters,
+                "node_count": len(api_data),
+                "preview": True,
+            },
+        )
         return
 
     # Write files
-    workflow_dir = _safe_path(base_dir, server_id, workflow_id)
-    workflow_dir.mkdir(parents=True, exist_ok=True)
+    with project_migration_lock(base_dir):
+        workflow_dir = _safe_path(base_dir, server_id, workflow_id)
+        workflow_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(workflow_dir / "workflow.json", "w", encoding="utf-8") as f:
-        json.dump(api_data, f, ensure_ascii=False, indent=2)
+        with open(workflow_dir / "workflow.json", "w", encoding="utf-8") as f:
+            json.dump(api_data, f, ensure_ascii=False, indent=2)
 
-    schema = {
-        "description": "",
-        "enabled": True,
-        "parameters": parameters,
-    }
-    with open(workflow_dir / "schema.json", "w", encoding="utf-8") as f:
-        json.dump(schema, f, ensure_ascii=False, indent=2)
+        schema = {
+            "description": "",
+            "enabled": True,
+            "parameters": parameters,
+        }
+        with open(workflow_dir / "schema.json", "w", encoding="utf-8") as f:
+            json.dump(schema, f, ensure_ascii=False, indent=2)
 
     result: dict[str, Any] = {
         "workflow_id": workflow_id,
@@ -601,6 +667,7 @@ def _import_from_file(
     # Optional deps check
     if check_deps:
         from .deps import _check_missing_models
+
         client = ComfyUIClient(
             server_url=server_config.get("url", "http://127.0.0.1:8188"),
             auth=server_config.get("auth", ""),
@@ -615,7 +682,8 @@ def _import_from_file(
             installed_nodes = set(object_info.keys())
             missing_nodes = [
                 {"class_type": ct, "can_auto_install": False}
-                for ct in required_nodes if ct not in installed_nodes
+                for ct in required_nodes
+                if ct not in installed_nodes
             ]
             missing_models = _check_missing_models(client, api_data)
             result["deps"] = {
@@ -630,9 +698,14 @@ def _import_from_file(
 
 
 def _import_from_server(
-    ctx: typer.Context, base_dir: Path, server_id: str,
-    server_config: dict[str, Any], name_filter: str,
-    preview: bool, check_deps: bool, media_type: str = "image",
+    ctx: typer.Context,
+    base_dir: Path,
+    server_id: str,
+    server_config: dict[str, Any],
+    name_filter: str,
+    preview: bool,
+    check_deps: bool,
+    media_type: str = "image",
 ) -> None:
     client = ComfyUIClient(
         server_url=server_config.get("url", "http://127.0.0.1:8188"),
@@ -657,11 +730,14 @@ def _import_from_server(
             return
 
     if preview:
-        output_result(ctx, {
-            "server_id": server_id,
-            "available_workflows": workflow_paths,
-            "count": len(workflow_paths),
-        })
+        output_result(
+            ctx,
+            {
+                "server_id": server_id,
+                "available_workflows": workflow_paths,
+                "count": len(workflow_paths),
+            },
+        )
         return
 
     # Import each workflow
@@ -670,7 +746,9 @@ def _import_from_server(
         output_event(ctx, "importing", workflow=wf_path)
         data = client.read_userdata_workflow(wf_path)
         if data is None:
-            results.append({"path": wf_path, "status": "failed", "error": "Could not read workflow"})
+            results.append(
+                {"path": wf_path, "status": "failed", "error": "Could not read workflow"}
+            )
             continue
 
         # Detect and convert
@@ -691,15 +769,16 @@ def _import_from_server(
         workflow_id = _suggest_workflow_id(api_data, filename)
         parameters = _extract_schema(api_data, media_type)
 
-        workflow_dir = _safe_path(base_dir, server_id, workflow_id)
-        workflow_dir.mkdir(parents=True, exist_ok=True)
+        with project_migration_lock(base_dir):
+            workflow_dir = _safe_path(base_dir, server_id, workflow_id)
+            workflow_dir.mkdir(parents=True, exist_ok=True)
 
-        with open(workflow_dir / "workflow.json", "w", encoding="utf-8") as f:
-            json.dump(api_data, f, ensure_ascii=False, indent=2)
+            with open(workflow_dir / "workflow.json", "w", encoding="utf-8") as f:
+                json.dump(api_data, f, ensure_ascii=False, indent=2)
 
-        schema = {"description": "", "enabled": True, "parameters": parameters}
-        with open(workflow_dir / "schema.json", "w", encoding="utf-8") as f:
-            json.dump(schema, f, ensure_ascii=False, indent=2)
+            schema = {"description": "", "enabled": True, "parameters": parameters}
+            with open(workflow_dir / "schema.json", "w", encoding="utf-8") as f:
+                json.dump(schema, f, ensure_ascii=False, indent=2)
 
         entry: dict[str, Any] = {
             "path": wf_path,
@@ -716,7 +795,9 @@ def _import_from_server(
                     if isinstance(node, dict):
                         ct = node.get("class_type", "")
                         if ct in replacements:
-                            deprecated.append({"node_id": node_id, "old": ct, "new": replacements[ct]})
+                            deprecated.append(
+                                {"node_id": node_id, "old": ct, "new": replacements[ct]}
+                            )
                 if deprecated:
                     entry["deprecated_nodes"] = deprecated
         except Exception:
@@ -725,13 +806,16 @@ def _import_from_server(
         results.append(entry)
         output_event(ctx, "imported", workflow_id=workflow_id)
 
-    output_result(ctx, {
-        "server_id": server_id,
-        "results": results,
-        "imported": sum(1 for r in results if r["status"] == "imported"),
-        "failed": sum(1 for r in results if r["status"] == "failed"),
-        "skipped": sum(1 for r in results if r["status"] == "skipped"),
-    })
+    output_result(
+        ctx,
+        {
+            "server_id": server_id,
+            "results": results,
+            "imported": sum(1 for r in results if r["status"] == "imported"),
+            "failed": sum(1 for r in results if r["status"] == "failed"),
+            "skipped": sum(1 for r in results if r["status"] == "skipped"),
+        },
+    )
 
 
 @app.command("enable")
@@ -771,12 +855,17 @@ def workflow_delete(
         return
 
     import shutil
-    shutil.rmtree(workflow_dir)
-    output_result(ctx, {
-        "workflow_id": workflow_id,
-        "server_id": server_id,
-        "deleted": True,
-    })
+
+    with project_migration_lock(base_dir):
+        shutil.rmtree(workflow_dir)
+    output_result(
+        ctx,
+        {
+            "workflow_id": workflow_id,
+            "server_id": server_id,
+            "deleted": True,
+        },
+    )
 
 
 def _toggle_workflow(ctx: typer.Context, skill_id: str, enabled: bool) -> None:
@@ -793,18 +882,22 @@ def _toggle_workflow(ctx: typer.Context, skill_id: str, enabled: bool) -> None:
         output_error(ctx, "SKILL_NOT_FOUND", f'Workflow "{skill_id}" not found.')
         return
 
-    with open(schema_path, encoding="utf-8") as f:
-        schema = json.load(f)
+    with project_migration_lock(base_dir):
+        with open(schema_path, encoding="utf-8") as f:
+            schema = json.load(f)
 
-    schema["enabled"] = enabled
-    with open(schema_path, "w", encoding="utf-8") as f:
-        json.dump(schema, f, ensure_ascii=False, indent=2)
+        schema["enabled"] = enabled
+        with open(schema_path, "w", encoding="utf-8") as f:
+            json.dump(schema, f, ensure_ascii=False, indent=2)
 
-    output_result(ctx, {
-        "workflow_id": workflow_id,
-        "server_id": server_id,
-        "enabled": enabled,
-    })
+    output_result(
+        ctx,
+        {
+            "workflow_id": workflow_id,
+            "server_id": server_id,
+            "enabled": enabled,
+        },
+    )
 
 
 def _parse_skill_id(ctx: typer.Context, skill_id: str) -> tuple[str, str]:

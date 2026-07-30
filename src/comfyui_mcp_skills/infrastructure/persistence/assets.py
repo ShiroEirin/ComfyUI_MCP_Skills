@@ -11,6 +11,12 @@ from pathlib import Path
 from filelock import FileLock
 
 from comfyui_mcp_skills.domain.models import Asset
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
+from comfyui_mcp_skills.infrastructure.persistence.store_fencing import (
+    assert_file_store_active,
+)
 
 
 class FileAssetRepository:
@@ -19,9 +25,12 @@ class FileAssetRepository:
         data_root.mkdir(parents=True, exist_ok=True)
         self._root = data_root / "assets"
         self._retention_lock = FileLock(str(data_root / ".retention.lock"), timeout=10)
+        self._migration_lock = project_migration_lock(base_dir)
+        self._base_dir = base_dir.resolve()
 
     def save(self, asset: Asset) -> None:
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            assert_file_store_active(self._base_dir, frozenset({"asset"}))
             self._root.mkdir(parents=True, exist_ok=True)
             path = self._path(asset.asset_id)
             temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -35,7 +44,8 @@ class FileAssetRepository:
                 temporary.unlink(missing_ok=True)
 
     def get(self, asset_id: str) -> Asset | None:
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            assert_file_store_active(self._base_dir, frozenset({"asset"}))
             path = self._path(asset_id)
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))

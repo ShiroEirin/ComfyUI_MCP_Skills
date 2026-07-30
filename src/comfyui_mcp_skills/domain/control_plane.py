@@ -53,6 +53,7 @@ _LEGACY_ARTIFACT_NAMESPACE = "legacy-artifact-v1"
 _LEGACY_WORKFLOW_NAMESPACE = "legacy-workflow-v1"
 _LEGACY_REVISION_NAMESPACE = "legacy-revision-v1"
 _LEGACY_UNKNOWN_JOB_NAMESPACE = "legacy-unknown-v1"
+_LEGACY_ATTEMPT_NAMESPACE = "legacy-attempt-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +129,17 @@ def derive_legacy_job_id(server_id: str, prompt_id: str) -> str:
     server_id = validate_identifier(server_id, field="server_id")
     prompt_id = validate_identifier(prompt_id, field="prompt_id")
     return derived_control_plane_id("job", _LEGACY_JOB_NAMESPACE, [server_id, prompt_id])
+
+
+def derive_legacy_attempt_id(job_id: str, server_id: str, attempt: int) -> str:
+    """Derive the stable first-attempt identity for a migrated legacy Job."""
+    job_id = validate_control_plane_id("job", job_id)
+    server_id = validate_identifier(server_id, field="server_id")
+    if isinstance(attempt, bool) or not isinstance(attempt, int) or not 0 < attempt <= 2**63 - 1:
+        raise ValueError("attempt must be a positive signed 64-bit integer")
+    return derived_control_plane_id(
+        "attempt", _LEGACY_ATTEMPT_NAMESPACE, [job_id, server_id, attempt]
+    )
 
 
 def derive_legacy_artifact_id(
@@ -282,11 +294,12 @@ def parse_legacy_resource_uri(uri: object) -> LegacyResourceRef | None:
         server_id, upstream_id = parts
         if not _safe_legacy_component(server_id) or not _safe_legacy_component(upstream_id):
             return None
-        kind: LegacyResourceKind = {
+        kinds: dict[str, LegacyResourceKind] = {
             "workflows": "workflow",
             "assets": "asset",
             "jobs": "job",
-        }[collection]
+        }
+        kind = kinds[collection]
         return LegacyResourceRef(kind, server_id, upstream_id)
 
     if collection == "outputs" and len(parts) == 3:

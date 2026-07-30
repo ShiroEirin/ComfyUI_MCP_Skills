@@ -21,6 +21,9 @@ from comfyui_mcp_skills.domain.errors import (
     WorkflowNotFound,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
 
 MAX_ADMIN_REQUEST_ID_LENGTH = 128
 
@@ -81,6 +84,7 @@ class WorkflowAdmin:
         self._audit_log = audit_log or JsonlAuditLog(self._base_dir / "data" / "admin-audit.jsonl")
         self._transactions_dir = self._base_dir / ".admin-transactions"
         self._transaction_cache: dict[str, dict[str, Any]] = {}
+        self._migration_lock = project_migration_lock(self._base_dir)
 
     def set_enabled(
         self,
@@ -94,7 +98,7 @@ class WorkflowAdmin:
         target = {"server_id": server_id, "workflow_id": workflow_id}
 
         def change() -> dict[str, object]:
-            with FileLock(f"{directory}.admin.lock", timeout=10):
+            with self._migration_lock, FileLock(f"{directory}.admin.lock", timeout=10):
                 workflow = self._repository.get(server_id, workflow_id)
                 if workflow is None:
                     raise WorkflowNotFound(f"Workflow not found: {server_id}/{workflow_id}")
@@ -131,7 +135,7 @@ class WorkflowAdmin:
             expected = f"delete:{server_id}/{workflow_id}"
             if confirmation != expected:
                 raise ValueError(f"confirmation must equal {expected}")
-            with FileLock(f"{directory}.admin.lock", timeout=10):
+            with self._migration_lock, FileLock(f"{directory}.admin.lock", timeout=10):
                 if self._repository.get(server_id, workflow_id) is None:
                     raise WorkflowNotFound(f"Workflow not found: {server_id}/{workflow_id}")
                 shutil.rmtree(directory)
@@ -373,11 +377,7 @@ class WorkflowAdmin:
                 "request_id was already used for a different administrative operation"
             )
         terminal = next(
-            (
-                event
-                for event in reversed(events)
-                if event.get("outcome") in {"success", "failure"}
-            ),
+            (event for event in reversed(events) if event.get("outcome") in {"success", "failure"}),
             None,
         )
         committed = None if terminal is None else terminal.get("outcome") == "success"
@@ -405,7 +405,6 @@ class WorkflowAdmin:
         self._transaction_cache[request_id] = transaction
         self._store_transaction_safely(transaction)
         return transaction
-
 
     def _load_transaction(self, request_id: str) -> dict[str, Any] | None:
         cached = self._transaction_cache.get(request_id)

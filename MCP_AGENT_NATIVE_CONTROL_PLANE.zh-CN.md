@@ -1,6 +1,6 @@
 # ComfyUI MCP Skills：Agent 原生超级控制平面设计与开发路线
 
-> 状态：架构蓝图已审查，实施前置决策待完成
+> 状态：架构蓝图已审查，G0 实施前置决策已验收
 > 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 本地工作区
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
 > 更新日期：2026-07-30
@@ -128,6 +128,8 @@ flowchart LR
 5. 原子文件仓库到数据库的备份、事务导入、一致性校验和单一事实源切换。
 
 门禁通过的证据必须包含：评审通过的领域 schema、可执行迁移演练、事务失败注入测试、旧 URI 兼容读取，以及由隔离 contract harness 验证的最小 Revision → Plan → Job 模型。G0 不切换生产 Workflow 或执行链；真实数据回填和真实执行分别由 G3、G4 验收。任何一项未通过，文档状态保持“实施前置决策待完成”。
+
+截至 2026-07-30，G0 门禁已通过：规范 ID/canonical URI 与旧 URI alias、SQLite `ControlPlaneUnitOfWork`/Outbox 边界、Workflow/Revision/Deployment 归属、HTTP/stdio 主体与 scope 契约、文件事实源 Manifest/备份/隔离迁移演练，以及最小 Revision → Deployment → Plan → Job contract harness 均已有可执行证据。生产 Workflow Repository、Job/Asset 事实源与真实执行链仍未切换，分别留待 G1、G3、G4。
 
 ---
 

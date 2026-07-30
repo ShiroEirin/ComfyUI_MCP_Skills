@@ -9,17 +9,26 @@ from typing import Any
 
 from filelock import FileLock
 
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
+from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
+    create_repository_bundle,
+)
+
 _TERMINAL = {"completed", "error", "interrupted", "cancelled"}
 
 
 class FileRetentionService:
     def __init__(self, base_dir: Path) -> None:
+        self._base_dir = base_dir.resolve()
         self._data_root = (base_dir.resolve() / "data").resolve()
         self._data_root.mkdir(parents=True, exist_ok=True)
         self._runs_root = self._data_root / "runs"
         self._assets_root = self._data_root / "assets"
         self._generation_path = self._data_root / ".retention-generation"
         self._lock = FileLock(str(self._data_root / ".retention.lock"), timeout=10)
+        self._migration_lock = project_migration_lock(base_dir)
 
     def prune(
         self,
@@ -27,6 +36,44 @@ class FileRetentionService:
         run_days: int,
         asset_days: int,
         max_history_records: int,
+        preserve_runs: bool = False,
+        preserve_assets: bool = False,
+    ) -> dict[str, int]:
+        with self._migration_lock:
+            return self._prune_locked(
+                run_days=run_days,
+                asset_days=asset_days,
+                max_history_records=max_history_records,
+                preserve_runs=preserve_runs,
+                preserve_assets=preserve_assets,
+            )
+
+    def prune_switch_aware(
+        self,
+        *,
+        run_days: int,
+        asset_days: int,
+        max_history_records: int,
+    ) -> dict[str, int]:
+        """Read cutover state and prune legacy files under the same migration lock."""
+        with self._migration_lock:
+            repositories = create_repository_bundle(self._base_dir)
+            return self._prune_locked(
+                run_days=run_days,
+                asset_days=asset_days,
+                max_history_records=max_history_records,
+                preserve_runs=repositories.run_store == "sqlite",
+                preserve_assets=repositories.asset_store == "sqlite",
+            )
+
+    def _prune_locked(
+        self,
+        *,
+        run_days: int,
+        asset_days: int,
+        max_history_records: int,
+        preserve_runs: bool,
+        preserve_assets: bool,
     ) -> dict[str, int]:
         if run_days < 0 or asset_days < 0 or max_history_records < 0:
             raise ValueError("Retention values must be non-negative")
@@ -44,11 +91,15 @@ class FileRetentionService:
         deletable.sort(key=lambda item: self._mtime(item[0]), reverse=True)
         over_limit = {path for path, _record in deletable[max_history_records:]}
         run_cutoff = now - run_days * 86_400
-        candidates = [
-            path
-            for path, _record in deletable
-            if path in over_limit or self._mtime(path) < run_cutoff
-        ]
+        candidates = (
+            []
+            if preserve_runs
+            else [
+                path
+                for path, _record in deletable
+                if path in over_limit or self._mtime(path) < run_cutoff
+            ]
+        )
 
         runs_deleted = 0
         batch_size = 256
@@ -72,7 +123,7 @@ class FileRetentionService:
         assets_deleted = 0
         asset_cutoff = now - asset_days * 86_400
         asset_candidates = []
-        if self._assets_root.exists():
+        if not preserve_assets and self._assets_root.exists():
             asset_candidates = [
                 path
                 for path in self._assets_root.glob("*.json")

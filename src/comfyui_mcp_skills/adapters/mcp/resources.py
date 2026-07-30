@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import mimetypes
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -29,7 +30,9 @@ from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
+from comfyui_mcp_skills.application.resource_aliases import ResourceAliasReader, ResourceTarget
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.domain.control_plane import parse_legacy_resource_uri
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
     JobNotFound,
@@ -58,6 +61,8 @@ def create_resource_handlers(
     jobs: JobService,
     gateway_factory: GatewayFactory,
     enabled_workflows: EnabledWorkflows,
+    *,
+    resource_aliases: ResourceAliasReader | None = None,
 ) -> ResourceHandlers:
     async def list_templates(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -83,6 +88,20 @@ def create_resource_handlers(
                 ResourceTemplate(
                     uri_template="comfyui://outputs/{server_id}/{prompt_id}/{index}",
                     name="Generated output media",
+                ),
+                ResourceTemplate(
+                    uri_template="comfyui://assets/{asset_id}",
+                    name="Canonical input asset",
+                    mime_type="application/json",
+                ),
+                ResourceTemplate(
+                    uri_template="comfyui://jobs/{job_id}",
+                    name="Canonical execution job",
+                    mime_type="application/json",
+                ),
+                ResourceTemplate(
+                    uri_template="comfyui://artifacts/{artifact_id}",
+                    name="Canonical generated artifact",
                 ),
             ],
             ttl_ms=60_000,
@@ -118,6 +137,7 @@ def create_resource_handlers(
                 assets=assets,
                 jobs=jobs,
                 gateway_factory=gateway_factory,
+                resource_aliases=resource_aliases,
             )
         except MCPError:
             raise
@@ -146,15 +166,24 @@ async def _read_resource(
     assets: AssetService,
     jobs: JobService,
     gateway_factory: GatewayFactory,
+    resource_aliases: ResourceAliasReader | None = None,
 ) -> ReadResourceResult:
     uri = str(params.uri)
     owner_id = current_owner()
-    if uri.startswith("comfyui://workflows/"):
-        identity = uri.removeprefix("comfyui://workflows/").split("/", 1)
-        if len(identity) != 2:
-            raise ValueError(f"Invalid workflow URI: {uri}")
-        servers.connection(identity[0])
-        workflow = catalog.get(identity[0], identity[1])
+    legacy = parse_legacy_resource_uri(uri)
+    response_uri = uri
+    resolved_target = None
+    if resource_aliases is not None and legacy is None:
+        resolved_target = await anyio.to_thread.run_sync(
+            lambda: resource_aliases.resolve(uri, owner_id=owner_id)
+        )
+    elif resource_aliases is not None and legacy is not None and legacy.kind != "workflow":
+        resolved_target = await anyio.to_thread.run_sync(
+            lambda: resource_aliases.resolve(uri, owner_id=owner_id)
+        )
+    if legacy is not None and legacy.kind == "workflow":
+        servers.connection(legacy.server_id)
+        workflow = catalog.get(legacy.server_id, legacy.upstream_id)
         document = {
             "server_id": workflow.server_id,
             "workflow_id": workflow.workflow_id,
@@ -163,24 +192,27 @@ async def _read_resource(
             "parameters": workflow.parameters,
             "input_schema": build_input_schema(workflow.parameters),
         }
-    elif uri.startswith("comfyui://assets/"):
-        identity = uri.removeprefix("comfyui://assets/").split("/", 1)
-        if len(identity) != 2:
-            raise ValueError(f"Invalid asset URI: {uri}")
-        servers.connection(identity[0])
-        asset = assets.get(identity[1], owner_id=owner_id)
-        if asset.server_id != identity[0]:
-            raise ValueError(f"Asset does not belong to server: {identity[0]}")
+    elif resolved_target is not None:
+        return await _read_resolved_resource(
+            resolved_target,
+            servers=servers,
+            assets=assets,
+            jobs=jobs,
+            gateway_factory=gateway_factory,
+            owner_id=owner_id,
+        )
+    elif legacy is not None and legacy.kind == "asset":
+        servers.connection(legacy.server_id)
+        asset = assets.get(legacy.upstream_id, owner_id=owner_id)
+        if asset.server_id != legacy.server_id:
+            raise ValueError(f"Asset does not belong to server: {legacy.server_id}")
         document = asset.to_public_dict()
-    elif uri.startswith("comfyui://jobs/"):
-        identity = uri.removeprefix("comfyui://jobs/").split("/", 1)
-        if len(identity) != 2:
-            raise ValueError(f"Invalid job URI: {uri}")
+    elif legacy is not None and legacy.kind == "job":
         job = await anyio.to_thread.run_sync(
-            lambda: jobs.get(identity[0], identity[1], owner_id=owner_id)
+            lambda: jobs.get(legacy.server_id, legacy.upstream_id, owner_id=owner_id)
         )
         document = job_dict(job)
-    elif uri.startswith("comfyui://outputs/"):
+    elif legacy is not None and legacy.kind == "output":
         return await _read_output(
             uri,
             servers=servers,
@@ -193,7 +225,7 @@ async def _read_resource(
     return ReadResourceResult(
         contents=[
             TextResourceContents(
-                uri=uri,
+                uri=response_uri,
                 mime_type="application/json",
                 text=json.dumps(document, ensure_ascii=False),
             )
@@ -211,23 +243,93 @@ async def _read_output(
     gateway_factory: GatewayFactory,
     owner_id: str,
 ) -> ReadResourceResult:
-    identity = uri.removeprefix("comfyui://outputs/").split("/", 2)
-    if len(identity) != 3 or not identity[2].isdigit():
+    identity = parse_legacy_resource_uri(uri)
+    if identity is None or identity.kind != "output" or identity.index is None:
         raise ValueError(f"Invalid output URI: {uri}")
     job = await anyio.to_thread.run_sync(
-        lambda: jobs.get(identity[0], identity[1], owner_id=owner_id)
+        lambda: jobs.get(identity.server_id, identity.upstream_id, owner_id=owner_id)
     )
-    index = int(identity[2])
-    if index >= len(job.outputs):
+    if identity.index >= len(job.outputs):
         raise ValueError(f"Output not found: {uri}")
-    output = dict(job.outputs[index])
-    gateway = gateway_factory(servers.connection(identity[0]))
+    output = dict(job.outputs[identity.index])
+    return await _download_output(
+        uri=uri,
+        mime_type=str(output.get("mime_type", "application/octet-stream")),
+        server_id=identity.server_id,
+        filename=str(output.get("filename", "")),
+        subfolder=str(output.get("subfolder", "")),
+        storage_type=str(output.get("type", "output")),
+        servers=servers,
+        gateway_factory=gateway_factory,
+    )
+
+
+async def _read_resolved_resource(
+    target: ResourceTarget,
+    *,
+    servers: ServerRegistry,
+    assets: AssetService,
+    jobs: JobService,
+    gateway_factory: GatewayFactory,
+    owner_id: str,
+) -> ReadResourceResult:
+    if target.kind == "asset":
+        servers.connection(target.server_id)
+        asset = assets.get(target.object_id, owner_id=owner_id)
+        if asset.server_id != target.server_id:
+            raise ValueError(f"Asset does not belong to server: {target.server_id}")
+        document = asset.to_public_dict()
+        document["canonical_uri"] = target.canonical_uri
+    elif target.kind == "job":
+        job = await anyio.to_thread.run_sync(
+            lambda: jobs.get(target.server_id, target.prompt_id, owner_id=owner_id)
+        )
+        document = job_dict(job)
+        document["canonical_uri"] = target.canonical_uri
+    elif target.kind == "artifact":
+        return await _download_output(
+            uri=target.canonical_uri,
+            mime_type=mimetypes.guess_type(target.filename)[0] or "application/octet-stream",
+            server_id=target.server_id,
+            filename=target.filename,
+            subfolder=target.subfolder,
+            storage_type=target.storage_type,
+            servers=servers,
+            gateway_factory=gateway_factory,
+        )
+    else:
+        raise ValueError(f"Unsupported canonical resource kind: {target.kind}")
+    return ReadResourceResult(
+        contents=[
+            TextResourceContents(
+                uri=target.canonical_uri,
+                mime_type="application/json",
+                text=json.dumps(document, ensure_ascii=False),
+            )
+        ],
+        ttl_ms=5_000,
+        cache_scope="private",
+    )
+
+
+async def _download_output(
+    *,
+    uri: str,
+    mime_type: str,
+    server_id: str,
+    filename: str,
+    subfolder: str,
+    storage_type: str,
+    servers: ServerRegistry,
+    gateway_factory: GatewayFactory,
+) -> ReadResourceResult:
+    gateway = gateway_factory(servers.connection(server_id))
     try:
         payload = await anyio.to_thread.run_sync(
             lambda: gateway.download_output(
-                str(output.get("filename", "")),
-                str(output.get("subfolder", "")),
-                str(output.get("type", "output")),
+                filename,
+                subfolder,
+                storage_type,
                 max_bytes=_MAX_OUTPUT_BYTES,
             )
         )
@@ -237,7 +339,7 @@ async def _read_output(
         contents=[
             BlobResourceContents(
                 uri=uri,
-                mime_type=str(output.get("mime_type", "application/octet-stream")),
+                mime_type=mime_type,
                 blob=base64.b64encode(payload).decode("ascii"),
             )
         ],

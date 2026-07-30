@@ -6,20 +6,24 @@ import copy
 import json
 import os
 import shutil
-from pathlib import Path
 import uuid
+from pathlib import Path
 from typing import Any
 
 import typer
 
-from ..config import get_base_dir, get_servers, load_config, save_config
-from ..output import output_error, output_event, output_result
-from ..storage import _safe_path
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.workflow_schema import (
     normalize_parameters,
     validate_parameter_targets,
 )
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
+
+from ..config import get_base_dir, get_servers, load_config, save_config
+from ..output import output_error, output_event, output_result
+from ..storage import _safe_path
 
 app = typer.Typer()
 
@@ -30,8 +34,14 @@ _DEFAULT_EXPORT_NAME = "comfyui-skill-export.json"
 @app.command("export")
 def config_export(
     ctx: typer.Context,
-    output: str = typer.Option("", "--output", "-o", help="Output file or directory (default: ./comfyui-skill-export.json)"),
-    portable_only: bool = typer.Option(True, "--portable-only/--include-secrets", help="Exclude server URLs and credentials by default"),
+    output: str = typer.Option(
+        "", "--output", "-o", help="Output file or directory (default: ./comfyui-skill-export.json)"
+    ),
+    portable_only: bool = typer.Option(
+        True,
+        "--portable-only/--include-secrets",
+        help="Exclude server URLs and credentials by default",
+    ),
 ):
     """Export config and workflows as a portable bundle."""
     if not output:
@@ -101,11 +111,14 @@ def config_export(
     with open(output, "w", encoding="utf-8") as f:
         json.dump(bundle, f, ensure_ascii=False, indent=2)
 
-    output_result(ctx, {
-        "exported": output,
-        "servers": len(servers),
-        "workflows": len(bundle["workflows"]),
-    })
+    output_result(
+        ctx,
+        {
+            "exported": output,
+            "servers": len(servers),
+            "workflows": len(bundle["workflows"]),
+        },
+    )
 
 
 @app.command("import")
@@ -113,8 +126,9 @@ def config_import(
     ctx: typer.Context,
     input_path: str = typer.Argument(help="Path to bundle JSON file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without applying"),
-    apply_environment: bool = typer.Option(False, "--apply-environment",
-                                           help="Also apply server URLs and default_server from bundle"),
+    apply_environment: bool = typer.Option(
+        False, "--apply-environment", help="Also apply server URLs and default_server from bundle"
+    ),
     no_overwrite: bool = typer.Option(False, "--no-overwrite", help="Skip existing workflows"),
 ):
     """Import config and workflows from a bundle."""
@@ -153,9 +167,7 @@ def config_import(
             output_error(ctx, "INVALID_BUNDLE", str(exc))
             return
         if "enabled" in server and not isinstance(server["enabled"], bool):
-            output_error(
-                ctx, "INVALID_BUNDLE", "Server enabled must be a JSON boolean."
-            )
+            output_error(ctx, "INVALID_BUNDLE", "Server enabled must be a JSON boolean.")
             return
         validated_servers.append(server)
     bundle_servers = validated_servers
@@ -191,9 +203,7 @@ def config_import(
             )
             return
         workflow_schema = wf_data["schema"]
-        if "enabled" in workflow_schema and not isinstance(
-            workflow_schema["enabled"], bool
-        ):
+        if "enabled" in workflow_schema and not isinstance(workflow_schema["enabled"], bool):
             output_error(
                 ctx,
                 "INVALID_BUNDLE",
@@ -279,9 +289,7 @@ def config_import(
 
     if apply_environment and "default_server" in bundle_config:
         try:
-            validate_identifier(
-                bundle_config["default_server"], field="default_server"
-            )
+            validate_identifier(bundle_config["default_server"], field="default_server")
         except ValueError as exc:
             output_error(ctx, "INVALID_BUNDLE", str(exc))
             return
@@ -292,18 +300,16 @@ def config_import(
     overwritten = 0
     skipped = 0
     staged: list[tuple[str, Path, Path, Path, bool]] = []
+    migration_lock = project_migration_lock(base_dir)
+    migration_lock.acquire()
     try:
         for wf_key, wf_data in bundle_workflows.items():
             _server_id, _workflow_id, workflow_dir = validated_workflows[wf_key]
             if workflow_dir.exists() and no_overwrite:
                 skipped += 1
                 continue
-            stage = workflow_dir.with_name(
-                f".{workflow_dir.name}.{uuid.uuid4().hex}.tmp"
-            )
-            backup = workflow_dir.with_name(
-                f".{workflow_dir.name}.{uuid.uuid4().hex}.backup"
-            )
+            stage = workflow_dir.with_name(f".{workflow_dir.name}.{uuid.uuid4().hex}.tmp")
+            backup = workflow_dir.with_name(f".{workflow_dir.name}.{uuid.uuid4().hex}.backup")
             if workflow_dir.exists():
                 shutil.copytree(workflow_dir, stage)
             else:
@@ -347,10 +353,14 @@ def config_import(
         for _wf_key, _workflow_dir, stage, backup, _existed in staged:
             shutil.rmtree(stage, ignore_errors=True)
             shutil.rmtree(backup, ignore_errors=True)
+        migration_lock.release()
 
-    output_result(ctx, {
-        "created": created,
-        "overwritten": overwritten,
-        "skipped": skipped,
-        "servers_updated": len(bundle_servers),
-    })
+    output_result(
+        ctx,
+        {
+            "created": created,
+            "overwritten": overwritten,
+            "skipped": skipped,
+            "servers_updated": len(bundle_servers),
+        },
+    )

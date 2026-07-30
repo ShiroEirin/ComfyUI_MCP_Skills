@@ -1,70 +1,38 @@
 {
-  "qaMode": "deep-release",
-  "version": "1.1.0",
-  "protocol": "MCP 2026-07-28",
+  "qaMode": "deep",
+  "scope": "G1 Job/Asset deterministic migration, SQLite repositories, atomic store routing, legacy resource aliases, stale File repository fencing, retention, and live ComfyUI execution",
   "outcome": "pass",
-  "conclusion": "Migration, security hardening, persistence recovery, deployment safeguards, tests, packaging, and documentation passed release review. Independent code review found no remaining P0/P1 after the subscription-stream denial-of-service fix.",
-  "severityCounts": {
-    "P0": 0,
-    "P1": 0,
-    "P2": 0
-  },
-  "verifiedFixes": [
-    "CLI and MCP share the in-process ComfyUI client; the legacy duplicate client was removed",
-    "workflow, asset, job, and output resources are addressable and output resources can be reused without download/re-upload",
-    "server, node, and model discovery is paginated, deterministic, and URL-encodes path segments",
-    "network calls use explicit connect/read or execution deadlines",
-    "running job cancellation is rejected instead of using ComfyUI global interrupt",
-    "static bearer tokens map to stable principal_id owners across rotation and reject malformed token, principal, and scope configurations",
-    "request IDs and bearer headers are bounded and validated",
-    "ordinary HTTP requests and long-lived subscriptions/listen streams use separate fail-fast concurrency pools with per-principal subscription quotas",
-    "subscription scanning is offloaded from the event loop and SDK subscription capacity is bounded",
-    "retention cleanup uses bounded lock batches and does not delete assets referenced by non-terminal jobs",
-    "management mutations use durable intent/success/failure audit records, operation fingerprints, audit-only recovery, and no-reexecution retry semantics",
-    "structured logs, process metrics, maintenance pruning, multi-worker guardrails, pinned Actions, Dependabot, lockfile, build, install, and Trusted Publishing release workflows are present"
+  "conclusion": "G1 quality gates, independent closeout reviews, and a real ComfyUI Anima workflow execution pass with no remaining P0/P1/HIGH findings.",
+  "findings": [],
+  "fileReferences": [
+    "src/comfyui_mcp_skills/infrastructure/persistence/control_plane.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/g1_migration.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/file_migration.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_runs.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_assets.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/repository_factory.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/resource_aliases.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/store_fencing.py",
+    "src/comfyui_mcp_skills/adapters/mcp/resources.py",
+    "comfyui_skills_cli/history_writer.py"
   ],
   "commands": [
-    {
-      "command": "uv run python -m pytest --cov --cov-report=term-missing -q",
-      "result": "218 passed; 84.24% statement coverage; 80% gate passed"
-    },
-    {
-      "command": "uv run ruff check src/comfyui_mcp_skills",
-      "result": "passed"
-    },
-    {
-      "command": "uv run mypy src/comfyui_mcp_skills",
-      "result": "passed"
-    },
-    {
-      "command": "uv run python -m compileall -q src/comfyui_mcp_skills comfyui_skills_cli",
-      "result": "passed"
-    },
-    {
-      "command": "uv run pip-audit --timeout 60",
-      "result": "no known third-party vulnerabilities; unpublished local project skipped"
-    },
-    {
-      "command": "uv build",
-      "result": "sdist and universal wheel built successfully"
-    },
-    {
-      "command": "isolated wheel install, import, comfyui-skill --version, comfyui-mcp-maintain",
-      "result": "installed version 1.1.0; CLI version 1.1.0; maintenance command completed"
-    },
-    {
-      "command": "git diff --check",
-      "result": "passed; Windows line-ending conversion warnings only"
-    }
+    {"command": "uv run ruff check <G1 source and test scope>", "result": "passed"},
+    {"command": "uv run mypy src/comfyui_mcp_skills", "result": "passed"},
+    {"command": "uv run python -m pytest -q", "result": "391 passed, 1 skipped"},
+    {"command": "uv run python -m pytest --cov --cov-report=term-missing -q", "result": "390 passed, 1 skipped; 83.38% coverage; 80% gate passed before final fencing regression test"},
+    {"command": "node run_workflow_args.js run local/anima-txt2img-aesthetic-lora ../../runtime/comfyui-manager/args/g1_live_smoke.json", "result": "success; prompt_id fe6ec5aa-f66f-40c7-a2b8-daee44dbe7fb; output g1-live-smoke_00001_.png"}
   ],
-  "independentReview": {
-    "reviewer": "code-reviewer",
-    "initialFinding": "P1: long-lived subscriptions/listen streams could exhaust the shared HTTP request semaphore",
-    "repair": "separate global subscription pool, stable-principal quota, fail-fast saturation responses, shielded release, and reduced SDK subscription/buffer limits",
-    "finalResult": "P0: 0; P1: 0"
+  "liveSmoke": {
+    "workflow": "local/anima-txt2img-aesthetic-lora",
+    "promptId": "fe6ec5aa-f66f-40c7-a2b8-daee44dbe7fb",
+    "seed": 734083764,
+    "output": "D:/github/comfyui-good-anima/v2mini-opt-mini/runtime/comfyui-manager/outputs/anima/2026-07-30/g1-live-smoke_00001_.png",
+    "observed": "2048x2048 image decoded successfully"
   },
-  "nonBlockingNotes": [
-    "No live external ComfyUI server was available for an end-to-end generation probe; gateway, execution, HTTP, MCP, persistence, and packaging contracts were exercised by the repository test suite.",
-    "Repeated local archives were structurally equivalent but not byte-for-byte identical because build timestamps are not normalized; the release workflow does not claim reproducible-build guarantees."
-  ]
+  "independentReview": {
+    "code": "PASS; P0 0, P1 0",
+    "security": "PASS; HIGH 0",
+    "database": "PASS; HIGH 0"
+  }
 }

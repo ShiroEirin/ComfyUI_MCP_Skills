@@ -49,8 +49,13 @@ from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
-from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
-from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
+from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
+    RepositoryBundle,
+    create_repository_bundle,
+)
+from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
+    SQLiteLegacyResourceAliasReader,
+)
 from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
@@ -63,13 +68,15 @@ def create_server(
     gateway_factory: GatewayFactory = create_gateway,
     upload_roots: list[Path] | None = None,
     max_upload_bytes: int = 100 * 1024 * 1024,
+    repositories: RepositoryBundle | None = None,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
     catalog = WorkflowCatalog(FileWorkflowRepository(base_dir))
     servers = ServerRegistry(base_dir)
-    run_repository = FileRunRepository(base_dir)
-    asset_repository = FileAssetRepository(base_dir)
+    repositories = repositories or create_repository_bundle(base_dir)
+    run_repository = repositories.runs
+    asset_repository = repositories.assets
     assets = AssetService(
         asset_repository,
         upload_roots=upload_roots if upload_roots is not None else [base_dir / "uploads"],
@@ -82,9 +89,7 @@ def create_server(
     discovery = DiscoveryService(servers, gateway_factory)
 
     subscription_bus = InMemorySubscriptionBus()
-    listen_handler = ListenHandler(
-        subscription_bus, max_subscriptions=64, max_buffered_events=256
-    )
+    listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
     change_monitor = WorkflowChangeMonitor(base_dir, subscription_bus)
 
     @asynccontextmanager
@@ -107,6 +112,13 @@ def create_server(
             result.append(workflow)
         return result
 
+    resource_aliases = (
+        SQLiteLegacyResourceAliasReader(repositories.store)
+        if repositories.store is not None
+        and (repositories.run_store == "sqlite" or repositories.asset_store == "sqlite")
+        else None
+    )
+
     resource_handlers = create_resource_handlers(
         catalog,
         servers,
@@ -114,6 +126,7 @@ def create_server(
         jobs,
         gateway_factory,
         enabled_workflows,
+        resource_aliases=resource_aliases,
     )
 
     def current_tools() -> tuple[list[Tool], dict[str, Workflow]]:

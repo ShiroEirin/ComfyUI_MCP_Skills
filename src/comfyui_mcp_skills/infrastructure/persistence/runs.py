@@ -13,6 +13,12 @@ from typing import Any
 from filelock import FileLock
 
 from comfyui_mcp_skills.domain.models import Job
+from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
+    project_migration_lock,
+)
+from comfyui_mcp_skills.infrastructure.persistence.store_fencing import (
+    assert_file_store_active,
+)
 
 _STATUS_PRIORITY = {
     "reserved": 0,
@@ -34,6 +40,8 @@ class FileRunRepository:
         self._root = data_root / "runs"
         self._retention_lock = FileLock(str(data_root / ".retention.lock"), timeout=10)
         self._generation_path = data_root / ".retention-generation"
+        self._migration_lock = project_migration_lock(base_dir)
+        self._base_dir = base_dir.resolve()
 
     def claim(
         self,
@@ -49,7 +57,8 @@ class FileRunRepository:
         path = self._idempotency_path(server_id, idempotency_key, owner_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         request_digest = self.request_digest(workflow_id, arguments)
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            self._assert_active()
             with self._lock(path):
                 existing = self._read_record(path)
                 if existing is not None:
@@ -80,7 +89,8 @@ class FileRunRepository:
 
     def get_claim(self, server_id: str, key: str, owner_id: str = "") -> dict[str, Any] | None:
         path = self._idempotency_path(server_id, key, owner_id)
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            self._assert_active()
             with self._lock(path):
                 return self._read_record(path)
 
@@ -95,7 +105,8 @@ class FileRunRepository:
         if not key:
             return
         path = self._idempotency_path(server_id, key, owner_id)
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            self._assert_active()
             with self._lock(path):
                 record = self._read_record(path)
                 if (
@@ -117,7 +128,8 @@ class FileRunRepository:
         if not key:
             return
         path = self._idempotency_path(server_id, key, owner_id)
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            self._assert_active()
             with self._lock(path):
                 record = self._read_record(path)
                 if record and record.get("lease_token") == lease_token:
@@ -136,7 +148,8 @@ class FileRunRepository:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def save(self, job: Job, *, lease_token: str = "") -> None:
-        with self._retention_lock:
+        with self._migration_lock, self._retention_lock:
+            self._assert_active()
             self._save_locked(job, lease_token=lease_token)
             self._bump_generation()
 
@@ -182,10 +195,20 @@ class FileRunRepository:
             self._atomic_write(prompt_path, self._serialize(job))
 
     def get(self, server_id: str, prompt_id: str) -> Job | None:
-        return self._read_job(self._prompt_path(server_id, prompt_id))
+        with self._migration_lock:
+            self._assert_active()
+            return self._read_job(self._prompt_path(server_id, prompt_id))
 
     def get_by_idempotency(self, server_id: str, key: str, owner_id: str = "") -> Job | None:
-        return self._read_job(self._idempotency_path(server_id, key, owner_id))
+        with self._migration_lock:
+            self._assert_active()
+            return self._read_job(self._idempotency_path(server_id, key, owner_id))
+
+    def _assert_active(self) -> None:
+        assert_file_store_active(
+            self._base_dir,
+            frozenset({"job", "execution_attempt", "idempotency_record", "artifact"}),
+        )
 
     def _bump_generation(self) -> None:
         temporary = self._generation_path.with_name(

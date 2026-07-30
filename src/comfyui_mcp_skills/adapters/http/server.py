@@ -32,7 +32,9 @@ from comfyui_mcp_skills.domain.errors import (
     ServerNotFound,
 )
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
-from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
+from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
+    create_repository_bundle,
+)
 from comfyui_mcp_skills.observability import REQUEST_METRICS
 
 logger = logging.getLogger(__name__)
@@ -241,9 +243,7 @@ class RequestControlMiddleware:
                 },
             )
 
-    async def _acquire_concurrency_slot(
-        self, client: str, is_subscription: bool
-    ) -> int | None:
+    async def _acquire_concurrency_slot(self, client: str, is_subscription: bool) -> int | None:
         if not is_subscription:
             try:
                 self._concurrency.acquire_nowait()
@@ -267,9 +267,7 @@ class RequestControlMiddleware:
             raise
         return None
 
-    async def _release_concurrency_slot(
-        self, client: str, is_subscription: bool
-    ) -> None:
+    async def _release_concurrency_slot(self, client: str, is_subscription: bool) -> None:
         if not is_subscription:
             self._concurrency.release()
             return
@@ -319,8 +317,9 @@ def create_http_app(
     upload_root.mkdir(parents=True, exist_ok=True)
     verifier = StaticTokenVerifier(tokens)
     servers = ServerRegistry(base_dir)
+    repositories = create_repository_bundle(base_dir)
     assets = AssetService(
-        FileAssetRepository(base_dir),
+        repositories.assets,
         upload_roots=[upload_root],
         max_bytes=max_upload_bytes,
     )
@@ -415,7 +414,7 @@ def create_http_app(
     if not local_host and not public_mcp_url:
         raise ValueError("Remote binding requires a public MCP URL")
     resource_url = public_mcp_url or f"http://{host}/mcp"
-    server = create_server(base_dir, upload_roots=[upload_root])
+    server = create_server(base_dir, upload_roots=[upload_root], repositories=repositories)
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
