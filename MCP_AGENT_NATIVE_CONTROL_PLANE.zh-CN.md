@@ -1,6 +1,6 @@
 # ComfyUI MCP Skills：Agent 原生超级控制平面设计与开发路线
 
-> 状态：待开发
+> 状态：架构蓝图已审查，实施前置决策待完成
 > 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 本地工作区
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
 > 更新日期：2026-07-30
@@ -114,6 +114,20 @@ flowchart LR
 - 无适配器地启动、停止或重启宿主机上的 ComfyUI 进程。
 
 如果需要管理 ComfyUI 进程，应增加可选 `RuntimeController` 端口，并按部署方式实现 Docker、systemd、Windows Service 等适配器。默认实现只报告 `restart_required`，不执行宿主机命令。
+
+### 2.6 实施就绪门禁
+
+本文可以作为产品蓝图、目标架构和最终验收母规范，但在阶段 G0 验收前不能作为开发 Agent 的唯一实施依据，也不得直接下达“实现阶段 G”这一宽泛任务。
+
+正式功能开发必须先冻结并验证五项前置决策：
+
+1. 规范领域 ID、canonical Resource URI 和旧 URI 只读别名。
+2. SQLite/PostgreSQL 共用的 `ControlPlaneUnitOfWork` 与 Outbox 事务边界。
+3. 项目级 Workflow、不可变 Revision 和服务器 Deployment 的归属关系。
+4. HTTP 各固定 Toolset 与 stdio 的主体、scope 来源和高风险启用规则。
+5. 原子文件仓库到数据库的备份、事务导入、一致性校验和单一事实源切换。
+
+门禁通过的证据必须包含：评审通过的领域 schema、可执行迁移演练、事务失败注入测试、旧 URI 兼容读取，以及由隔离 contract harness 验证的最小 Revision → Plan → Job 模型。G0 不切换生产 Workflow 或执行链；真实数据回填和真实执行分别由 G3、G4 验收。任何一项未通过，文档状态保持“实施前置决策待完成”。
 
 ---
 
@@ -468,8 +482,9 @@ MCP `2026-07-28` 移除了协议会话、HTTP GET 事件流和 SSE 重放。即�
 - `limit` 范围为 1–200。
 - 返回不透明 `next_cursor`。
 - 不返回其他主体的参数、路径或输出。
+- `server_id` 只匹配 Job 最新 ExecutionAttempt 的 `server_id`；完整 Attempt 历史通过 Job Resource 读取，不能因历史 Attempt 命中而重复返回 Job。
 
-`job.list` 不得扫描 `FileRunRepository` 的摘要文件实现筛选。阶段 G 直接以可查询 Repository 落地：本地 SQLite、生产 PostgreSQL 至少建立 `(owner_id, created_at DESC, job_id)`、`(owner_id, status, created_at DESC, job_id)`、`(owner_id, workflow_id, created_at DESC, job_id)` 复合索引，并使用 `(created_at, job_id)` keyset cursor。原子文件后端只保留小规模兼容读取和迁移，不新增脆弱的二级索引文件。
+`comfyui.job.list` 不得扫描 `FileRunRepository` 的摘要文件实现筛选。阶段 G1 先交付 SQLite/PostgreSQL 的 JobRepository list 查询：至少建立 `(owner_id, created_at DESC, job_id)`、`(owner_id, status, created_at DESC, job_id)`、`(owner_id, workflow_id, created_at DESC, job_id)` 复合索引，并使用 `(created_at, job_id)` keyset cursor；阶段 H 再开放 MCP Tool。原子文件后端只保留限时只读回滚和迁移诊断，不新增脆弱的二级索引文件。
 
 ### 5.2 观察面：只读运维
 
@@ -517,7 +532,7 @@ comfyui:operate
 | `comfyui.queue.clear` | 清空等待队列 | `dry_run` + 精确确认 + 审计 |
 | `comfyui.server.interrupt` | 调用全局 `/interrupt` | 明确标记为全局操作，禁止伪装成单 Job 取消 |
 
-若 Compatibility Matrix 探测到新版 ComfyUI 的 `/api/jobs/{job_id}/cancel`，`job.cancel` 可以使用其原子定向取消语义；否则运行中 Job 返回 `UNSAFE_CANCEL`，并在 `next_actions` 中指向需要 `comfyui:operate`、影响预览和审批的 `comfyui.server.interrupt`。旧 `/interrupt` 始终是全局操作，不能根据一次 404 静默降级调用。
+若 Compatibility Matrix 探测到新版 ComfyUI 的 `/api/jobs/{upstream_job_id}/cancel`，`job.cancel` 可以使用其原子定向取消语义；否则运行中 Job 返回 `UNSAFE_CANCEL`，并在 `next_actions` 中指向需要 `comfyui:operate`、影响预览和审批的 `comfyui.server.interrupt`。旧 `/interrupt` 始终是全局操作，不能根据一次 404 静默降级调用。
 
 ### 5.4 工作流管理面
 
@@ -666,7 +681,7 @@ comfyui:provision
 {
   "server_id": "local",
   "workflow_id": "portrait",
-  "base_revision": "rev_018",
+  "base_revision": "revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "operations": [
     {
       "op": "set_input",
@@ -728,9 +743,9 @@ set_metadata
 
 ```json
 {
-  "plan_id": "plan_01",
+  "plan_id": "plan_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "plan_digest": "sha256:...",
-  "workflow_revision": "rev_018",
+  "workflow_revision": "revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "resolved_parameters": {},
   "resolved_assets": [],
   "candidate_servers": [],
@@ -877,7 +892,7 @@ comfyui.capability.describe
 
 ```json
 {
-  "plan_id": "plan_01",
+  "plan_id": "plan_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "plan_digest": "sha256:...",
   "status": "ready",
   "revision": 7,
@@ -924,26 +939,27 @@ comfyui.capability.describe
 
 ```text
 comfyui://servers/{server_id}/capabilities
-comfyui://workflows/{server_id}/{workflow_id}
-comfyui://workflows/{server_id}/{workflow_id}/graph
-comfyui://workflows/{server_id}/{workflow_id}/revisions/{revision_id}
-comfyui://workflows/{server_id}/{workflow_id}/revisions/{revision_id}/dependencies
+comfyui://workflows/{workflow_id}
+comfyui://workflows/{workflow_id}/graph
+comfyui://workflows/{workflow_id}/revisions/{revision_id}
+comfyui://workflows/{workflow_id}/revisions/{revision_id}/dependencies
+comfyui://deployments/{deployment_id}
 comfyui://plans/{plan_id}
-comfyui://jobs/{server_id}/{prompt_id}
+comfyui://jobs/{job_id}
 comfyui://experiments/{experiment_id}
 comfyui://experiments/{experiment_id}/variants/{variant_id}
-comfyui://assets/{server_id}/{asset_id}
-comfyui://artifacts/{server_id}/{prompt_id}/{index}
+comfyui://assets/{asset_id}
+comfyui://artifacts/{artifact_id}
 comfyui://lineage/{artifact_id}
 comfyui://diagnostics/{diagnostic_id}
-comfyui://provisioning/{server_id}/{request_id}
+comfyui://provisioning/{request_id}
 comfyui://approvals/{approval_id}
 comfyui://policies/{policy_id}/revisions/{revision_id}
 comfyui://config/export/{bundle_id}
 comfyui://events/{subject_kind}/{subject_id}{?after_sequence,limit}
 ```
 
-`comfyui://artifacts/...` 是新结果唯一发出的规范 URI。已发布的 `comfyui://outputs/...` 作为只读别名解析到同一 Artifact，在读取结果中返回 `canonical_uri`；至少跨一个主版本保留别名并记录使用量，确认无调用方后才能按发布策略移除，不复制媒体或生成第二份血缘。
+规范 URI 只使用项目领域 ID，不包含 `server_id`、ComfyUI `prompt_id` 或输出枚举位置。已发布的 `comfyui://workflows/{server_id}/{workflow_id}`、`comfyui://assets/{server_id}/{asset_id}`、`comfyui://jobs/{server_id}/{prompt_id}` 与 `comfyui://outputs/{server_id}/{prompt_id}/{index}` 只作为只读别名；解析后返回 `canonical_uri`，至少跨一个主版本保留并记录使用量。别名不得创建第二个领域对象、复制媒体或生成第二份血缘。
 
 Resource 设计规则：
 
@@ -954,7 +970,7 @@ Resource 设计规则：
 - Job、Experiment、Provisioning 和 Revision 通过 `subscriptions/listen` 发更新提示；通知只使缓存失效，不承载历史。
 - 输出媒体使用 Resource Link；必要时可提供受鉴权、短 TTL 的 HTTPS 下载 URI，不内联到普通 JSON 结果。
 
-`resources/templates/list` 至少声明 Workflow、Revision、Plan、Job、Experiment、Variant、Asset、Artifact、Diagnostic、Provisioning、Approval 和 Event URI 模式。当前实现已经声明 Workflow、Asset、Job 和旧 Output 模式；阶段 H 增加规范 Artifact 模板和兼容别名说明，后续阶段随领域对象交付同步增加模板，不能等阶段 Q 一次补齐。
+`resources/templates/list` 至少声明 Workflow、Revision、Deployment、Plan、Job、Experiment、Variant、Asset、Artifact、Diagnostic、Provisioning、Approval 和 Event URI 模式。当前实现已经声明服务器绑定的旧 Workflow、Asset、Job 和 Output 模式；G1–G4 按对象切换顺序增加 canonical 模板与只读别名，后续阶段随领域对象交付同步增加模板，不能等阶段 Q 一次补齐。
 
 以下数据仍适合 Tool 查询，而不是静态 Resource 列表：
 
@@ -1010,6 +1026,19 @@ flowchart TD
 
 Agent 要完整管理时可以同时注册四个端点。远程部署必须分离高风险端口和 Token；`tools/list` 可按每次请求的授权 scope 过滤，但不能按连接历史变化，Tool 调用和 Resource 读取仍需再次授权。
 
+### 7.3 HTTP 与 stdio 身份契约
+
+HTTP 端点和 stdio 必须在进程启动时固定 Toolset，不能通过 Tool 调用、连接历史或运行时 profile 改变。Authoring Token 不隐含也不要求 `execute`；scope 之间默认没有继承关系。
+
+- 每个 HTTP Toolset 使用独立 app/server factory。认证层验证 Token 和主体；端点声明允许进入的 scope 集，Tool handler、Resource handler 和订阅过滤器再按同一中央授权矩阵检查具体能力。
+- Execution 端点接受 `execute`；Authoring 接受 `author`；Operations 接受 `observe` 或 `operate`；Admin/Provisioning 接受 `configure`、`provision` 或 `audit`。SDK 外层若只能表达“全部 required scopes”，由项目认证中间件实现 any-of 端点准入，不能强迫无关 scope 组合。
+- Resource 与 `subscriptions/listen` 使用创建/读取目标对象所需的同一 scope 和 `principal_id` 所有权规则；订阅不能绕过 Toolset 边界。
+- stdio 在启动时读取固定的 `COMFYUI_MCP_PRINCIPAL_ID`、`COMFYUI_MCP_SCOPES` 和 `COMFYUI_MCP_TOOLSET`。未配置时只允许兼容的本地 Execution Toolset，主体为 `local-stdio`，scope 仅为 `comfyui:execute`。
+- stdio 的 Authoring、Operations、Admin/Provisioning 必须显式配置主体、scope、Toolset，并设置独立高风险 enable 开关；不能因“本地进程”自动获得管理员权限。
+- Token 轮换可以保持 `principal_id`，但不得扩大原对象所有权或缓存中的可见 Tool/Resource 集。
+
+固定启动配置必须进入审计启动记录；请求期间只消费不可变授权上下文。
+
 ---
 
 ## 8. 应用层与基础设施改造
@@ -1060,13 +1089,14 @@ Application Services
        ↓
 Domain Ports
   ├─ ComfyUIGateway / ComfyUIManagerGateway
-  ├─ WorkflowRepository / RevisionRepository
-  ├─ PlanRepository / RunRepository / ExperimentRepository
-  ├─ AssetRepository / LineageRepository
+  ├─ WorkflowRepository / RevisionRepository / DeploymentRepository
+  ├─ PlanRepository / JobRepository / ExperimentRepository
+  ├─ AssetRepository / ArtifactRepository / LineageRepository
   ├─ ProvisioningRepository / TransferRepository
-  ├─ EventRepository / WorkLeaseRepository
+  ├─ EventRepository / WorkItemRepository / WorkLeaseRepository
   ├─ PolicyRepository / ApprovalRepository / AuditRepository
   ├─ ServerConfigRepository / SecretProvider
+  ├─ ControlPlaneUnitOfWork / OutboxRepository
   └─ RuntimeController（可选）
        ↓
 Infrastructure Adapters
@@ -1082,16 +1112,22 @@ class TemplateGateway(Protocol): ...
 class LogGateway(Protocol): ...
 class ComfyUIManagerGateway(Protocol): ...
 class WorkflowRevisionRepository(Protocol): ...
+class WorkflowDeploymentRepository(Protocol): ...
 class PlanRepository(Protocol): ...
+class JobRepository(Protocol): ...
 class ExperimentRepository(Protocol): ...
 class LineageRepository(Protocol): ...
+class ArtifactRepository(Protocol): ...
 class ProvisioningRepository(Protocol): ...
 class TransferRepository(Protocol): ...
 class EventRepository(Protocol): ...
+class OutboxRepository(Protocol): ...
+class WorkItemRepository(Protocol): ...
 class WorkLeaseRepository(Protocol): ...
 class PolicyRepository(Protocol): ...
 class ApprovalRepository(Protocol): ...
 class ServerConfigRepository(Protocol): ...
+class ControlPlaneUnitOfWork(Protocol): ...
 class SecretProvider(Protocol): ...
 class RuntimeController(Protocol): ...
 ```
@@ -1116,8 +1152,13 @@ class RuntimeController(Protocol): ...
 ```mermaid
 erDiagram
     WORKFLOW ||--o{ WORKFLOW_REVISION : has
+    WORKFLOW_REVISION ||--o{ WORKFLOW_DEPLOYMENT : deployed_as
+    SERVER ||--o{ WORKFLOW_DEPLOYMENT : hosts
     WORKFLOW_REVISION ||--o{ EXECUTION_PLAN : planned_from
+    WORKFLOW_DEPLOYMENT ||--o{ EXECUTION_PLAN : selected_by
     EXECUTION_PLAN ||--o{ JOB : commits
+    JOB ||--o{ EXECUTION_ATTEMPT : tries
+    JOB o|--o| IDEMPOTENCY_RECORD : resolved_by
     EXPERIMENT ||--o{ VARIANT : contains
     VARIANT ||--|| EXECUTION_PLAN : resolves_to
     JOB ||--o{ ARTIFACT : produces
@@ -1130,16 +1171,49 @@ erDiagram
 
 对象不变量：
 
-- Workflow 是稳定身份，Revision 是不可变内容。
-- Published Revision 只是 Workflow 的一个可变指针。
-- Plan 是解析后的不可变快照，必须绑定输入对象摘要。
-- Job 绑定实际 Plan 和 Revision，不能只保存当前 workflow ID。
-- 快速动态 run 必须先物化并自动提交低风险 Plan；Job 模型中 `plan_id` 非空，诊断、重试和列表不区分两种 Job 形态。
+- Workflow 是项目级逻辑身份，不属于某台服务器；Revision 是不可变、可移植内容。
+- Deployment 是 Revision 在服务器上的部署记录，绑定 `workflow_id + revision_id + server_id`，持有 `enabled`、`validation_status` 和 `published` 布尔状态；数据库保证同一 `workflow_id + server_id` 最多一个 Deployment 为 `published=true`。publish 在同一事务中撤销旧 Deployment 并发布新 Deployment；Routing 只能从兼容、启用且已发布的 Deployment 中选择。
+- Plan 是解析后的不可变快照，必须绑定 Revision、Deployment、输入对象摘要和固定服务器。
+- 快速动态 run 必须先物化并自动提交最小低风险 Plan；自阶段 G4 切换起所有新 Job 的 `plan_id`、`revision_id` 和 `deployment_id` 非空。G1 导入且无法证明历史 Revision 的旧 Job 保留可空绑定并标记 `legacy_migrated=true`，不得伪造历史关联；诊断、重试和列表必须显式处理该兼容状态。
 - Experiment Variant 绑定自己的 Plan，不能共享可变参数字典。
 - Artifact 是执行输出；Asset 是可复用输入。Artifact promote 后仍保留来源。
+- Artifact 使用独立 `artifact_id`；保存 `job_id`、server、上游节点、输出索引及 `filename/subfolder/type`，归档、复制或重新索引不改变规范身份。
+- IdempotencyRecord 是独立持久化对象，以 `owner_id + scope + key` 唯一约束绑定请求摘要和可空 `job_id`；提交结果未知时它可以先于上游 ID 存在，不能通过扫描 Job 猜测幂等状态。
 - Policy Revision 不可变；Approval 绑定确切 Policy 和 Plan digest。
 - Diagnostic Report 只引用证据，不修改原 Job。
 - Audit 记录事实，不作为业务状态的唯一存储。
+
+最小字段契约：
+
+```text
+Workflow
+  workflow_id
+
+WorkflowRevision
+  revision_id, workflow_id, graph, parameter_schema, dependency_contract
+
+WorkflowDeployment
+  deployment_id, workflow_id, revision_id, server_id
+  enabled, validation_status, published
+
+Job
+  job_id, plan_id?, revision_id?, deployment_id?, owner_id, status
+  retry_of, created_at, legacy_migrated
+
+ExecutionAttempt
+  attempt_id, job_id, attempt, server_id
+  upstream_prompt_id, upstream_job_id?, client_id, submission_state
+
+IdempotencyRecord
+  owner_id, scope, key, request_digest, state, job_id?
+  client_id, claimed_at, expires_at
+
+Artifact
+  artifact_id, job_id, server_id, upstream_node_id, upstream_output_index
+  filename, subfolder, storage_type, media_type, digest
+```
+
+`attempt` 是 Job 内有序的 ExecutionAttempt 序号，不是 `job_id` 的组成部分。一个 Job 是否允许多个 Attempt 由显式 retry plan 决定；无论采用新 Attempt 还是新 Job，旧 Attempt 都不可变且可审计。
 
 ### 8.6 统一事件模型
 
@@ -1149,7 +1223,7 @@ Job、Experiment、Provisioning、Transfer 和 Revision 使用统一事件外层
 {
   "event_id": "evt_01",
   "event_type": "job.progress",
-  "subject_uri": "comfyui://jobs/local/prompt-id",
+  "subject_uri": "comfyui://jobs/job_01",
   "sequence": 17,
   "occurred_at": "2026-07-30T21:00:00Z",
   "principal_id": "agent-prod",
@@ -1180,9 +1254,74 @@ Job、Experiment、Provisioning、Transfer 和 Revision 使用统一事件外层
 
 HTTP 常驻服务可以内置 worker，也可以部署独立 `comfyui-mcp-worker`。stdio 进程退出后只能在下次启动时恢复，不能承诺离线期间继续推进 Experiment 或 Provisioning；要满足“断线后继续执行”，生产部署必须运行常驻 worker。ComfyUI 已接受的单 Job 不受 MCP 进程退出影响。
 
-现有原子文件仓库可以继续服务单进程和单机恢复，但不能支撑跨主机 lease、递增 sequence 与多对象事务。阶段 G 应定义可迁移的 Repository schema：本地部署使用 SQLite 事务，生产多 worker 使用 PostgreSQL 的唯一约束、行级锁或原子 compare-and-swap；领域对象、work item 和首个事件必须在同一短事务中提交。所有 schema 变更通过可回滚迁移完成，不能用共享目录上的 `FileLock` 冒充分布式协调。
+现有原子文件仓库可以继续服务切换前的单进程恢复，但不能支撑跨主机 lease、递增 sequence 与多对象事务。阶段 G0 定义 SQLite/PostgreSQL schema 和 Unit of Work，G1 完成干净切换，G5 才引入 Event/Lease/Orchestrator。不能用共享目录上的 `FileLock` 冒充分布式协调。
 
-### 8.8 ComfyUI 终端执行链
+### 8.8 Unit of Work、Outbox 与存储切换
+
+多 Repository 原子性由显式事务端口保证，不能依赖 Application Service 按顺序调用若干各自原子的 Repository：
+
+```python
+from types import TracebackType
+from typing import Protocol
+
+
+class ControlPlaneUnitOfWork(Protocol):
+    workflows: WorkflowRepository
+    revisions: WorkflowRevisionRepository
+    deployments: WorkflowDeploymentRepository
+    plans: PlanRepository
+    jobs: JobRepository
+    work_items: WorkItemRepository
+    events: EventRepository
+    outbox: OutboxRepository
+
+    def __enter__(self) -> "ControlPlaneUnitOfWork": ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> bool | None: ...
+    def commit(self) -> None: ...
+    def rollback(self) -> None: ...
+```
+
+同一 commit 必须使用同一数据库连接和事务，原子写入 aggregate、work item、首个领域事件和 Outbox 通知记录；任何一步失败全部 rollback。MCP Resource 更新、WebSocket 或外部消息发布只能由提交后的 Outbox dispatcher 执行，不能在事务提交前发送。SQLite 和 PostgreSQL 实现必须通过相同失败注入契约测试。
+
+未调用 `commit()` 或异常退出时，`__exit__` 必须 rollback，且不得返回 `True` 吞掉异常；commit 后 Unit of Work 进入关闭状态并拒绝继续写入。所有 Repository 必须共享该 Unit of Work 的同一数据库连接和事务。接口使用字符串前向引用，保持 Python 3.10 兼容，不依赖 `typing.Self`。
+
+文件仓库迁移采用干净切换，不长期双写：
+
+事实源切换按 aggregate 域独立进行，不使用一个全局布尔 `store_version`。`store_migrations` 至少记录 `aggregate_kind`、`version`、`status`、`checksum` 和 `switched_at`。G1 只切换 Job、ExecutionAttempt、Asset 和 Artifact；Workflow、Revision、Deployment 到 G3 才切换；管理审计在其独立迁移阶段前继续使用现有持久化，不得被 G1 的成功状态误标为已迁移。
+
+```text
+停止写入并取得迁移锁
+  -> 备份 data/
+  -> 在数据库单事务中幂等导入
+  -> 校验对象数、摘要、所有权和引用
+  -> 原子更新 schema_migrations 与对应 aggregate 的 store_migrations
+  -> 数据库成为该 aggregate 的唯一写入事实源
+  -> 该 aggregate 的文件仓库仅提供限时只读回滚/诊断
+```
+
+迁移失败时数据库事务回滚，并继续使用该 aggregate 的文件仓库；切换成功后禁止该 aggregate 回退写入旧文件。每个 migration 有版本、checksum、up/down 可行性声明和重复执行测试。`FileLock` 只保护切换前的本地文件，不参与数据库并发控制。
+
+#### 8.8.1 旧数据确定性回填
+
+迁移开始时先生成只读 manifest，记录每个源文件的相对路径、SHA-256、`mtime_ns` 和大小；备份必须保留这些值。所有派生 ID 使用 UTF-8、无空白的 canonical JSON 数组计算完整 SHA-256。数组第一项是对象 kind，第二项是以无前导零正整数 `-vN` 结尾的固定版本 namespace，其余项保持字符串、整数、布尔值和 null 的 JSON 类型。内容摘要和请求摘要可从 raw 64 位小写 hex 或 `sha256:` 前缀形式读入，但进入 tuple 前必须统一去掉前缀，canonical 表示永远是 raw 64hex。tuple 最多 16 个 component，单个字符串最多 4096 字符，整数使用有符号 64 位范围，canonical UTF-8 payload 最多 16384 字节；任何字段语义或预算违规都必须停止该 aggregate 切换并进入冲突报告：
+
+- 旧 Job：`job_` + `sha256(["job", "legacy-job-v1", server_id, prompt_id])`。
+- 旧 Artifact：`artifact_` + `sha256(["artifact", "legacy-artifact-v1", job_id, upstream_node_id, output_key, output_index, filename, subfolder, storage_type])`。
+- 现有 Asset 保留原 `asset_id`；若记录缺失或冲突则迁移失败，不静默重编号。
+- 旧 Job 缺少 `created_at` 时使用 manifest 中源记录的 `mtime_ns`，转换为 UTC 时间并记录 `created_at_source="legacy_file_mtime"`；迁移重试必须复用同一 manifest，不能读取已经变化的当前文件时间。
+- 旧 Workflow 先对规范化 graph、parameter schema 和有效元数据计算内容摘要。同名且摘要相同的服务器工作流合并为一个项目级 Workflow 和多个 Deployment；同名但摘要不同的工作流不得合并，其项目级 ID 使用 `workflow_` + `sha256(["workflow", "legacy-workflow-v1", server_id, workflow_id])`，旧 URI 分别映射到对应 canonical URI。若旧 `workflow_id` 本身完整匹配规范 `workflow_<32 或 64 位小写 hex>` 形态，也必须按该冲突公式派生新项目 ID，不能直接占用规范 ID 空间。
+- 初始 Revision ID 使用 `revision_` + `sha256(["revision", "legacy-revision-v1", workflow_id, content_digest])`；相同源记录重复迁移必须得到相同 Workflow、Revision、Job 和 Artifact ID。
+- 旧幂等记录的 `scope` 固定为 `legacy-execute:{server_id}`，与现有按 server/owner/key 的唯一性一致。已关联 `prompt_id` 的记录指向同一 deterministic Job；`submission_unknown` 且无 `prompt_id` 的记录使用 `job_` + `sha256(["job", "legacy-unknown-v1", owner_id, server_id, idempotency_key, request_digest])` 建立保守的未知状态 Job 与 Attempt，保留 `client_id` 并禁止自动重提。
+- manifest 快照时仍处于 `reserved` 且未超过现有 300 秒租约的记录表示写入未静止，必须中止该 aggregate 迁移；已过期 reservation 迁移为 `state="expired"` 的 IdempotencyRecord，不创建 Job，后续 claim 可以原子替换该过期记录，不能让它继续占用有效幂等键。
+
+manifest、ID 版本、canonical JSON 规则和冲突报告属于迁移审计证据。任何摘要、所有权、输出定位或旧 URI 映射冲突都必须停止该 aggregate 切换，不能选择“最后写入者获胜”。
+
+### 8.9 ComfyUI 终端执行链
 
 所有执行入口最终必须收敛到一条可对账链路：
 
@@ -1198,15 +1337,17 @@ Published Revision + arguments + Asset URI
   -> 经校验的 /view 流式读取或同服务器输入引用
 ```
 
+标识映射必须保持三个命名空间：`job_id` 是本项目领域 ID；`upstream_prompt_id` 是传统 `/prompt` 返回值；`upstream_job_id` 是新版 `/api/jobs` 标识且可以为空。每次提交生成不可变 ExecutionAttempt，记录 attempt、server 和两个上游 ID；retry 创建新 Attempt 或新 Job（按 retry plan 语义），不得覆盖旧映射。
+
 - `/features`、`/object_info`、模型目录、`/api/jobs` 和 Manager 能力按服务器版本缓存，并在 plan/commit 边界重新验证必要事实；可选端点不存在不是整台服务器离线。
 - `/prompt` 返回 `error` 或 `node_errors` 时保存为提交失败证据；网络中断导致结果未知时，按稳定 `client_id` 在 `/queue` 和 `/history` 对账，禁止盲目重提。
 - `/ws` 可能断线或丢事件，只用于低延迟 Progress；Job 终态和输出以 `/history/{prompt_id}` 为准，排队/运行状态由 `/queue` 补充。
 - Job 曾被接受但在宽限期后同时缺失于 queue/history 时进入 `lost`，由 JobReconciler 生成诊断和显式 retry plan；新提交创建带 `retry_of` 的 Job，不能复用旧 prompt ID。
 - 输出引用只接受 ComfyUI 返回的 `filename`、`subfolder`、`type` 组合，并经过路径、所有权、媒体类型和大小上限校验后访问 `/view`。`storage_type=output` 参数只接受同服务器 Output URI；绑定下一工作流时必须按 `LoadImageOutput`、`LoadImage` 或已验证自定义节点选择直接引用、服务端复制或下载上传。
 - Artifact 枚举必须覆盖 ComfyUI history 的 `images`、`gifs`、`audio` 和 `video` 键；未知输出键保留节点证据并标记 `unclassified_outputs`，不能静默遗漏。
-- 排队 Job 用 `/queue` 定向删除；支持 `/api/jobs/{job_id}/cancel` 的服务器可原子取消指定运行 Job。其他版本的运行中 Job 没有可靠定向取消，`/interrupt`、清队列和 `/free` 必须走独立 Tool、影响预览、scope、Policy 和审计。
+- 排队 Job 用保存的 `upstream_prompt_id` 调用 `/queue` 定向删除；Capability Matrix 确认后才用 `upstream_job_id` 调用 `/api/jobs/{upstream_job_id}/cancel`。404 只表示该映射或端点结果，不得自动降级到 `/interrupt`，也不得判断整台服务器离线。其他版本的运行中 Job 没有可靠定向取消，`/interrupt`、清队列和 `/free` 必须走独立 Tool、影响预览、scope、Policy 和审计。
 
-### 8.9 统计与估计边界
+### 8.10 统计与估计边界
 路由和执行估计需要历史数据，但必须避免伪精确：
 
 - 统计维度至少包含 server、workflow revision、模型、尺寸、steps 和 batch。
@@ -1260,36 +1401,119 @@ Published Revision + arguments + Asset URI
 
 每一阶段必须形成可独立使用的纵向切片，并且可以单独测试、提交和回滚。不要先建立大量空接口，再等待最后一阶段串联。
 
-### 阶段 G：领域身份、Revision 与权限骨架（P0）
+### 阶段 G0：身份、事务与持久化决策（P0，实施门禁）
 
 交付：
 
-- 为 Workflow、Revision、Plan、Job、Experiment、Asset、Artifact 和 Policy 定义稳定 ID。
-- 扩展 scopes：`observe`、`author`、`operate`、`configure`、`provision`、`audit`。
-- 建立 Tool、Resource、subscription 统一授权矩阵。
-- 实现通用 plan digest、request ID、revision 和 audit 外层契约。
-- 建立不可变 Revision Repository 和原子提交协议。
-- 建立持久化 Event Repository、WorkLease Repository 和 `OperationOrchestrator` 恢复骨架。
-- 建立 `JobReconciler` work type、服务器代际观测和 `lost` 状态迁移。
-- 为 Job Repository 建立 owner/status/workflow/created_at 复合索引和 keyset cursor；原子文件后端只作为迁移兼容层。
-- 定义统一 Tool annotations、icons 和风险元数据策略。
-- 建立 Capability Catalog / Tool Inventory，支持固定 Toolset、scope、搜索和按需 schema。
-- 建立 Agent Eval Harness，记录工具选择、调用数、token 和端到端成功率。
-- 建立 ComfyUI、Manager、MCP Host、MCP 扩展与可选 API Compatibility Matrix。
-- 保持现有 `comfyui:execute` 行为兼容。
+- Workflow、Revision、Deployment、Plan、Job、ExecutionAttempt、IdempotencyRecord、Asset 和 Artifact 的字段 schema、规范 ID 与 canonical URI。
+- 旧 `server_id/workflow_id`、`server_id/asset_id`、`server_id/prompt_id` 和 Output URI 的只读别名解析规则。
+- SQLite schema、`schema_migrations`、按 aggregate 记录的 `store_migrations`、索引，以及可运行的 `ControlPlaneUnitOfWork` 最小实现；G0 只用测试 aggregate/work item/event/outbox 验证事务，不启动生产 Outbox dispatcher 或 Orchestrator。
+- 文件仓库备份、幂等导入、一致性校验、原子切换和失败回滚演练。
+- 最小 Revision → Plan → Job 兼容切片的 ADR 与隔离 contract harness；禁止只交付空接口，也不得在 G0 切换生产 Workflow 或动态执行链。
 
 验收：
 
-- 相同内容产生稳定摘要，不同内容不能碰撞到同一提交。
-- 缺少 scope 的请求在进入业务层前被拒绝。
+- 同一领域对象在重试、归档、复制和上游 ID 变化后保持同一 canonical URI。
+- 事务失败注入证明 aggregate、work item、event 和 outbox 要么全部提交，要么全部回滚。
+- 迁移可重复执行；失败后对应 aggregate 的文件仓库仍是唯一事实源，成功切换后数据库只成为该 aggregate 的唯一写入源。
+- contract harness 证明模型、事务和兼容索引可落地；真实 Workflow 回填与动态 run 切换仍分别由 G3、G4 完成。
+- 维护者审查五项前置决策并将文档状态改为“可实施”后，G1 才能开始。
+
+### 阶段 G1：现有 Job 与 Asset 数据迁移（P0）
+
+交付：
+
+- 将 `FileRunRepository`、`FileAssetRepository` 和现有所有权/幂等记录事务导入 SQLite。
+- 以领域 `job_id`、`asset_id`、`artifact_id` 回填规范对象，保留上游 prompt/output 映射；旧 reservation 与 `submission_unknown` 按第 8.8.1 节迁移为 IdempotencyRecord 和必要的保守状态 Job。
+- JobRepository 提供基于 `(owner_id, created_at DESC, job_id)` 等复合索引的 keyset list 查询；`comfyui.job.list` MCP Tool 到阶段 H 再开放。
+- 旧 Asset、Job 和 Output Resource URI 继续只读可用并返回 `canonical_uri`。
+
+验收：
+
+- 迁移前后对象数、摘要、owner、状态、输出和幂等查询一致。
+- 重复迁移不生成重复对象；中途失败不产生半切换状态。
+- 旧 Job 的 `created_at` 来源、确定性 ID 和旧输出 Artifact 映射符合第 8.8.1 节；迁移重试复用同一 manifest。
+- 无法证明历史 Revision 的旧 Job 保持 `legacy_migrated=true` 且 Plan/Revision/Deployment 绑定为空；迁移不得把当前 Workflow 错当作历史执行快照。
+- 迁移完成后，相同 owner/scope/key 与 request digest 返回原 Job 或原未知状态，不重复提交；不同摘要保持幂等冲突。
+- 现有动态工作流 Tool 仍能真实生图；本阶段不引入 Orchestrator。
+
+### 阶段 G2：授权与固定 Toolset（P0）
+
+交付：
+
+- 中央 scope 常量和 Tool、Resource、subscription 统一授权矩阵。
+- Execution、Authoring、Operations、Admin/Provisioning 四个固定 Toolset factory。
+- HTTP any-of 端点准入、逐能力授权和固定 `principal_id` 上下文。
+- stdio 的 `COMFYUI_MCP_PRINCIPAL_ID`、`COMFYUI_MCP_SCOPES`、`COMFYUI_MCP_TOOLSET` 与高风险 enable 契约。
+- 在扩展认证、上传和 ComfyUI 可选 API 前，先按第 14.6 节拆分两个超过 500 行的热点模块。
+
+验收：
+
+- Authoring-only Token 无需 `execute`；执行 Token 无法读取或调用 author/operate/admin 能力。
 - Tool 可见性与实际调用、Resource 读取和订阅权限一致。
-- 并发修改返回 revision conflict，不发生静默覆盖。
-- 服务重启能抢占过期租约并恢复非终态工作项；双 worker 不会重复推进同一步。
-- Resource 快照和领域事件持久化；Subscription 断线后通过 re-listen + Resource refetch 得到当前状态，不能宣称协议 replay。
-- 每个固定 Toolset 符合活动面预算；`tools/list` 不因连接内状态或 Tool 调用副作用变化。
-- 至少使用一个中型模型和一个小型本地模型执行工具选择基线 Eval。
-- Host 不支持 MRTR Elicitation、subscriptions、Tasks 或 Apps 时有明确降级路径。
-- 旧动态工作流 Tool 仍可完成真实生图。
+- `tools/list` 不因连接历史或 Tool 调用副作用变化。
+- stdio 默认仅有本地 execute；高风险 Toolset 缺少显式配置时拒绝启动。
+
+### 阶段 G3：最小 Revision 与 Deployment 切片（P0）
+
+交付：
+
+- 每个旧 `data/{server_id}/{workflow_id}` 工作流回填项目级 Workflow、初始 Revision 和服务器 Deployment。
+- 不可变 Revision Repository、Deployment Repository，以及保证同一 Workflow/Server 最多一个 `published=true` Deployment 的原子 publish 协议。
+- `revision.list`；`workflow.describe` 在本阶段只返回 Workflow 身份、Revision 摘要和 Deployment validation/published 状态，阶段 I 以向后兼容方式增加语义图、依赖和输出契约。
+- 旧动态 Tool 继续按已发布 Deployment 绑定的 Revision 执行。
+
+验收：
+
+- Revision 内容不可变；并发修改返回 conflict，不静默覆盖。
+- 同一 Revision 可有多个 Deployment，每个服务器独立记录验证和发布状态。
+- 同名旧 Workflow 的合并或冲突拆分、初始 Revision ID 和旧 Workflow URI 映射符合第 8.8.1 节；重复迁移结果稳定。
+- rollback 创建新 Revision；旧 Job 和旧 URI 仍能解析原内容。
+
+### 阶段 G4：最小 Plan 与执行身份切换（P0）
+
+交付：
+
+- 单服务器 `ExecutionPlanningService` 最小实现：固定 Revision、Deployment、参数快照、Asset 引用、server 和 digest。
+- 动态 run 在同一 `ControlPlaneUnitOfWork` 中自动物化低风险 Plan，再创建规范 Job。
+- Job 使用 `job_id` 并绑定非空 `plan_id`；ExecutionAttempt 保存 `upstream_prompt_id` 和可空 `upstream_job_id`。
+- 旧 `server_id + prompt_id` 查询只作为兼容索引。
+
+验收：
+
+- 切换后的所有新 Job 都绑定 Plan 和 Revision，不存在临时 nullable `plan_id` 迁移窗口。
+- 网络结果未知时按 client/request 映射对账，不生成第二个 Job 或重复 `/prompt`。
+- retry 保留旧 Job/Attempt 证据并建立明确关联，不覆盖上游 ID。
+
+### 阶段 G5：Event 与 Orchestrator 恢复骨架（P0）
+
+交付：
+
+- Event、WorkItem、WorkLease、Outbox Repository 和 `OperationOrchestrator`。
+- Unit of Work 原子提交、lease/fencing、checkpoint 和提交后通知。
+- 只实现一个真实 work type：`JobReconciler`，包括服务器代际观测和 `lost` 状态迁移。
+
+验收：
+
+- 服务重启能抢占过期租约；双 worker 不会重复推进同一步。
+- aggregate、首个 work item、event 和 outbox 在一个数据库事务中提交。
+- Subscription 断线后通过 re-listen + Resource refetch 恢复当前状态，不宣称协议 replay。
+
+### 阶段 G6：Catalog、Eval 与 Compatibility Matrix（P0/P1）
+
+交付：
+
+- Capability Catalog / Tool Inventory、统一 annotations、icons 和风险元数据。
+- Agent Eval Harness，记录工具选择、调用数、token 和端到端成功率。
+- ComfyUI、Manager、MCP Host、MCP 扩展与可选 API Compatibility Matrix。
+- Host 不支持 MRTR Elicitation、subscriptions、Tasks 或 Apps 时的降级路径。
+
+验收：
+
+- 每个固定 Toolset 符合活动面预算；Capability search 不改变当前 `tools/list`。
+- 至少一个中型模型和一个小型本地模型完成工具选择基线 Eval。
+- Matrix 覆盖第 11.14 节的最低、最新、无 Manager、传统 `/prompt` 和新版 Jobs API 组合。
+- G6 不阻塞 G1–G5 的首个用户可见纵向交付。
 
 ### 阶段 H：可观测性与 CLI 能力下限（P0）
 
@@ -1305,7 +1529,7 @@ Published Revision + arguments + Asset URI
 - `comfyui.server.free`
 - 统一的 cursor 分页与脱敏组件
 - Job Resource 的 `ResourceUpdated` 发布、`subscriptions/listen` 和 `job.get`/Resource refetch 降级
-- Workflow、Asset、Job、Artifact 的 Resource templates
+- Workflow、Revision、Deployment、Asset、Job、Artifact 的 canonical Resource templates 与旧 URI 只读别名
 - 第一批只读 MCP Prompt：环境观察与 Job 状态检查
 
 验收：
@@ -1355,7 +1579,7 @@ Published Revision + arguments + Asset URI
 - `comfyui.admin.workflow.change.commit`
 - Revision list、diff、publish 和 rollback
 - 第一阶段仅支持 `set_input`、`connect`、`disconnect`、`expose_parameter` 四种领域操作
-- Draft 与 Published Revision 分离
+- Draft Revision 与 Deployment 的 `published` 状态分离
 - Tool/Resource list changed 和 Revision subscription
 
 验收：
@@ -1364,22 +1588,23 @@ Published Revision + arguments + Asset URI
 - 非法连接在 plan 阶段被拒绝，并指出两端端口类型。
 - plan 显示结构化 diff、依赖变化和输出契约变化。
 - 过期 plan 或 base revision 变化时 commit 返回冲突。
-- publish 后动态 Tool schema 更新；现有 Job 仍指向原 Revision。
+- Deployment publish 后动态 Tool schema 更新；现有 Job 仍指向原 Revision 和 Deployment 快照。
 - rollback 创建新 Revision，不删除历史。
 - 节点增删替换、subgraph 与高层 recipe 必须在最小闭环稳定后分批加入，不属于阶段 J 首次验收。
 
-### 阶段 K：执行计划、Policy 与多服务器路由（P1）
+### 阶段 K：高级 Policy 与多服务器路由（P1）
+
+阶段 G4 已交付单服务器最小 `ExecutionPlanningService`，并保证切换后的新 Job 具有非空 `plan_id`。本阶段只扩展计划能力，不再次迁移 Job 基本形态；`legacy_migrated=true` 的历史兼容记录继续保持可解释的可空绑定。
 
 交付：
 
-- `ExecutionPlanningService`
+- 扩展 `ExecutionPlanningService` 的多 Deployment 候选解析
 - `RoutingService`
 - `PolicyService` 与只读 Policy evaluate
-- `comfyui.execution.plan`
-- `comfyui.execution.commit`
+- 完整 `comfyui.execution.plan` / `comfyui.execution.commit`
 - Execution Plan 计算 `execution_slots`、`submission_window` 和资产 `reuse_mode`
 - `comfyui.route.explain`
-- 参数、资产、Revision、服务器和预算的完整解析
+- 参数、资产、Revision、Deployment、服务器、Policy 和预算的完整解析
 - 基于历史数据的可选耗时估计
 
 验收：
@@ -1640,27 +1865,48 @@ Published Revision + arguments + Asset URI
 4. 审计 pending 可以独立恢复。
 5. 路径逃逸、SSRF、任意 Git 来源和凭据导出请求被拒绝。
 
+### 11.14 三层验证环境与 Compatibility Matrix
+
+功能状态只能按以下三层证据逐级提升：
+
+1. **领域单元测试。** 纯模型、摘要、状态机、授权矩阵、Unit of Work 失败注入和迁移属性测试；不访问网络。
+2. **可控 ComfyUI contract server。** 固定 `/prompt`、queue/history、Jobs API、userdata、Manager 与故障响应，用于 CI 验证 capability 降级、超时、401/403/404/5xx、断线和幂等。
+3. **门禁式真实集成。** 使用真实 MCP 2026 Client 与真实 ComfyUI，验证上传、执行、Progress、Resource refetch、输出复用、取消和多 worker 恢复。GPU 生成放在发布前专用 Runner 或人工门禁，不要求普通 PR CI 下载完整模型。
+
+Compatibility Matrix 至少固定以下组合：
+
+- 当前最低支持 ComfyUI 与最新 ComfyUI。
+- 无 Manager 与一个明确受支持的 Manager 版本。
+- 仅传统 `/prompt` 与支持 `/api/jobs` 的实例。
+- 支持 `subscriptions/listen` / MRTR 的 2026 MCP Client 与不支持这些可选能力的降级 Client。
+- SQLite 单进程、PostgreSQL 双 worker 和 stdio-only 恢复边界。
+
+每个矩阵单元记录版本、能力探测结果、测试场景、最后验证提交和状态。`implemented` 不能替代第三层 `verified`。
+
 ---
 
 ## 12. 开发顺序建议
 
-回家后继续开发时，不要先把旧 CLI 命令逐个搬完。建议按能尽快证明“超级增强”的纵向切片推进：
+在阶段 G0 门禁完成前，唯一正式开发任务是：定义并验证控制平面规范身份、SQLite Unit of Work、旧文件数据迁移，以及最小 Revision/Plan 模型的隔离 contract harness。G0 不切换生产事实源或执行链；之后按可独立回滚的纵向切片推进：
 
-1. **先建立 Revision、Plan、Event Repository、scope 和 Orchestrator 基础。**
-   这是后续图编辑、审批、路由、批量恢复和回滚共用的不变量。
-2. **同时补齐可观测工具、Job Resource 订阅、Resource templates 和第一批只读 Prompt。**
-   Agent 必须先能观察环境；支持订阅时优先接收更新，不支持或断线时 refetch 当前 Resource。
-3. **提取导入、转换、schema 和依赖检查，建立语义图。**
-   第一项明显超越 CLI 的交付应是 `workflow.describe`。
-4. **实现一个最小图修改闭环。**
-   先支持 `set_input`、`connect`、`disconnect`、`expose_parameter`，完成 plan → diff → commit → publish。
-5. **实现 Execution Plan，并让动态 run 内部自动物化低风险 Plan。**
-   所有 Job 统一绑定 Plan；先单服务器，再加入多服务器路由和 Policy。
-6. **补资产血缘和 Job diagnose。**
-   形成“执行 → 产物复用 → 失败恢复”的连续体验。
-   资产复用必须先识别 `LoadImageOutput`、`LoadImage` 和存储可达性，不能把同服务器等同于零复制。
-7. **再实现 Experiment、供应链安装和高级运行时控制。**
-   这些能力建立在前述 Revision、Plan、Policy、Job 和 Asset 模型之上。
+1. **G1 迁移现有 Job/Asset，为这两个 aggregate 建立数据库单一事实源。**
+   保持旧 URI 和动态执行兼容，不同时引入 Orchestrator。
+2. **G2 固定 Toolset 与身份授权，并先拆分热点模块。**
+   Tool、Resource、Subscription 和 stdio 使用同一能力矩阵。
+3. **G3 建立 Workflow、Revision、Deployment 最小闭环。**
+   旧工作流回填初始 Revision/Deployment，保留动态 Tool。
+4. **G4 让动态 run 自动物化单服务器 Plan。**
+   从切换点开始所有新 Job 使用规范 `job_id`、非空 `plan_id` 和独立上游 ID；历史兼容 Job 保留 `legacy_migrated` 标记。
+5. **G5 用 JobReconciler 证明 Event、UoW、lease 和崩溃恢复。**
+   先证明一个真实 work type，再扩展 Experiment、Provisioning 和 Transfer。
+6. **G6 建立 Catalog、Eval 和 Compatibility Matrix。**
+   它们校准工具面，但不阻塞 G1–G5 的用户可见交付。
+7. **再推进 H–J 的观察、语义图和图修改。**
+   第一项明显超越 CLI 的交付是 `workflow.describe`。
+8. **阶段 K 扩展多服务器路由和 Policy。**
+   不重新定义 Plan/Job 基本不变量。
+9. **最后补资产血缘、Experiment、供应链安装和高级运行时控制。**
+   资产复用必须识别加载节点目录语义和存储可达性，不能把同服务器等同于零复制。
 
 第一个“超级增强里程碑”建议交付：
 
@@ -1682,8 +1928,9 @@ comfyui.execution.commit
 对应 Resources：
 
 ```text
-comfyui://workflows/{server}/{workflow}/graph
-comfyui://workflows/{server}/{workflow}/revisions/{revision}
+comfyui://workflows/{workflow_id}/graph
+comfyui://workflows/{workflow_id}/revisions/{revision_id}
+comfyui://deployments/{deployment_id}
 comfyui://plans/{plan_id}
 ```
 
@@ -1779,13 +2026,34 @@ not_started | in_progress | implemented | verified | deferred
 
 当前 `ExecutionService`、`JobService`、`AssetService`、Repository 和 Gateway 分层可以继续使用，不需要推倒重写。主要新增工作是：
 
-1. 建立 Workflow Revision，而不是让 workflow 文件承担全部状态。
+1. 将服务器绑定的旧 Workflow 拆为项目级 Workflow、不可变 Revision 和服务器 Deployment。
 2. 将旧 CLI 的导入、转换和 schema 逻辑提取为纯业务服务。
-3. 新增 Plan、Experiment、Lineage、Policy 和 Approval Repository。
-4. 将 ComfyUI 可选端点隔离到 capability-aware Gateway。
-5. 在 MCP Adapter 前增加按主体动态 Tool Inventory。
+3. 通过 `ControlPlaneUnitOfWork` 管理 Plan、Job、WorkItem、Event 和 Outbox，不让独立 Repository 形成伪事务。
+4. 将 ComfyUI 可选端点隔离到 capability-aware Gateway，并区分领域 ID 与上游 ID。
+5. 在 MCP Adapter 前增加按主体和固定 Toolset 过滤的 Tool Inventory。
 
-最大工程风险不是代码量，而是同时推进过多领域对象。第一阶段只应建立 Revision、语义图、最小 graph change 和 Tool Inventory；Experiment、跨服务器和 Provisioning 后置。
+最大工程风险不是代码量，而是同时推进过多领域对象。第一阶段严格按 G0–G5 证明身份、迁移、Revision/Deployment、最小 Plan 和一个真实恢复 work type；Experiment、跨服务器和 Provisioning 后置。
+
+### 14.6 新功能前的热点模块预拆分
+
+当前 `src/comfyui_mcp_skills/adapters/http/server.py` 为 538 行，`src/comfyui_mcp_skills/infrastructure/comfyui/client.py` 为 576 行。阶段 G2/H/O 增加认证、Toolset、Manager、Queue、Userdata 和 Jobs API 前，先按现有行为测试做无功能变化拆分：
+
+```text
+adapters/http/
+  auth.py
+  limits.py
+  uploads.py
+  app.py
+
+infrastructure/comfyui/
+  core_client.py
+  jobs_client.py
+  userdata_client.py
+  manager_client.py
+  capabilities.py
+```
+
+拆分必须保持公共 Gateway 端口稳定、迁移全部调用方，并通过现有 HTTP/Client 契约测试；不得保留双实现或兼容转发层。后续单文件不得再次同时承担认证、传输、能力探测和业务路由。
 
 ---
 
@@ -2038,7 +2306,7 @@ capability.invoke
 - 小型且稳定的发布目录可保留动态 Tool，获得最佳输入 schema 体验。
 - 大型目录默认只注册强 schema 的 `comfyui.workflow.execute`；Agent 先用 `workflow.list/describe` 获取该 Revision 的参数 schema，服务端再次验证 arguments。
 - 动态 Tool 集合只因 publish、unpublish、schema Revision 或授权目录变化而改变，并发送 `tools/list_changed`；不得通过 favorite、recent、pin 或 Tool 调用副作用改变连接内列表。
-- Tool 名绑定 Published Revision；执行时仍物化 Plan，防止发布指针变化导致漂移。
+- Tool 名绑定当前已发布 Deployment 的 Revision schema；执行时仍物化并保存 Deployment、Revision 和 Plan 快照，防止后续 publish 导致漂移。
 - `tools/list` 分页、缓存和确定性排序降低传输与 prompt cache 成本，但不能假设所有 Host 都会按需加载页面，因此服务端仍需保持单端点窄工具面。
 
 ### 16.5 响应细节分级
@@ -2181,15 +2449,17 @@ Agent 不应在对话中记住：
 
 ### 17.3 必须新增到主路线的基础设施
 
-原路线还缺五个前置项：
+实施主路线包含七项基础设施，并明确落入不同子阶段：
 
-1. **Operation Orchestrator**：通过持久化 work item、lease、fencing token 和 checkpoint 推进并恢复 Experiment、Provisioning 与 Transfer。
-2. **Event Repository**：原子分配 subject sequence，支撑审计、诊断、状态迁移证据和多 worker 去重；不承担 MCP Subscription replay。
-3. **Capability Catalog / Tool Inventory**：负责固定 Toolset、scope、搜索和按需 schema，不改变连接内 `tools/list`。
-4. **Agent Eval Harness**：持续测量工具选择、上下文和任务成功率。
-5. **Compatibility Matrix**：记录 ComfyUI、Manager、MCP Host、MCP 扩展和可选 API 支持情况。
+1. **ControlPlane Unit of Work + Outbox（G0/G5）**：保证 aggregate、work item、event 和通知意图共享事务。
+2. **数据库迁移与分域单一事实源（G0/G1/G3）**：版本化 schema、确定性幂等导入、校验和按 aggregate 原子切换，禁止长期双写；G1 切换 Job/Asset，G3 切换 Workflow/Revision/Deployment。
+3. **Operation Orchestrator（G5）**：通过持久化 work item、lease、fencing token 和 checkpoint 推进并恢复复合任务。
+4. **Event Repository（G5）**：原子分配 subject sequence，支撑审计、诊断、状态迁移证据和多 worker 去重；不承担 MCP Subscription replay。
+5. **Capability Catalog / Tool Inventory（G6）**：负责固定 Toolset、scope、搜索和按需 schema，不改变连接内 `tools/list`。
+6. **Agent Eval Harness（G6）**：持续测量工具选择、上下文和任务成功率。
+7. **Compatibility Matrix（G6）**：记录 ComfyUI、Manager、MCP Host、MCP 扩展和可选 API 支持情况。
 
-这些基础设施应加入阶段 G；阶段 M/O 只增加各自 work type，阶段 Q 只做 MCP 协议投影，不能到验收时再补持久化语义。
+阶段 M/O 只增加各自 work type，阶段 Q 只做 MCP 协议投影，不能到验收时再补身份、事务或持久化语义。
 
 ### 17.4 最终决策
 
@@ -2200,3 +2470,7 @@ Agent 不应在对话中记住：
 在这个约束下，完整功能不会必然增加 Agent 压力。相反，语义图、组合操作、Resource URI、持久化 Orchestrator 和服务端确定性处理会显著减少 Agent 手工解析 JSON、复制大对象、轮询和拼接命令的负担。
 
 如果不实现固定 Toolset、Event Repository、Orchestrator、细节分级和 Eval，本文规划的完整工具面会超过多数 Agent 的稳定选择能力，Experiment 与 Provisioning 的恢复承诺也无法成立，不应直接发布。
+
+在 G0 五项实施前置决策通过前，不得下达笼统的“实现阶段 G”任务。第一条可执行任务固定为：
+
+> **定义并验证控制平面规范身份、SQLite Unit of Work、旧文件数据迁移，以及最小 Revision/Plan 模型的隔离 contract harness；不得在 G0 切换生产 Workflow 或执行链。**
