@@ -447,6 +447,21 @@ def fixed_tools() -> list[Tool]:
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
         Tool(
+            name="comfyui.revision.diff",
+            description="Compare two immutable revisions of one workflow.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "from_revision_id": {"type": "string", "minLength": 1},
+                    "to_revision_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["from_revision_id", "to_revision_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
             name="comfyui.workflow.describe",
             description="Describe one server's published workflow revision and deployment.",
             input_schema={

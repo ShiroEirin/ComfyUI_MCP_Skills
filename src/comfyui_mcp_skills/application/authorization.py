@@ -58,6 +58,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.node.describe": frozenset({Scope.OBSERVE}),
     "comfyui.model.list": frozenset({Scope.OBSERVE}),
     "comfyui.revision.list": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+    "comfyui.revision.diff": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
     "comfyui.workflow.describe": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
     "comfyui.workflow.dependencies.check": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
 }

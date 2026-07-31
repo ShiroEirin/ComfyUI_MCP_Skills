@@ -27,6 +27,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import decorate_tool
 from comfyui_mcp_skills.application.admin import MAX_ADMIN_REQUEST_ID_LENGTH, WorkflowAdmin
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
     WorkflowValidationService,
@@ -41,6 +42,9 @@ from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     RepositoryBundle,
     create_repository_bundle,
+)
+from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
+    SQLiteWorkflowChangeRepository,
 )
 from comfyui_mcp_skills.infrastructure.persistence.workflows import (
     FileWorkflowRepository,
@@ -78,6 +82,16 @@ def create_admin_server(
             ),
             WorkflowValidationService(),
             repositories.workflows,
+        )
+    workflow_changes = None
+    if repositories.store is not None and repositories.workflow_store == "sqlite":
+        workflow_changes = WorkflowChangeService(
+            SQLiteWorkflowChangeRepository(repositories.store),
+            WorkflowGraphService(
+                ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+            ),
+            WorkflowValidationService(),
+            actor=actor,
         )
 
     async def list_tools(
@@ -133,6 +147,113 @@ def create_admin_server(
                             )
                         ]
                         if workflow_import is not None
+                        else []
+                    ),
+                    *(
+                        [
+                            Tool(
+                                name="comfyui.admin.workflow.change.plan",
+                                description=(
+                                    "Plan validated graph operations against a published Revision."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        **identity,
+                                        "operations": {
+                                            "type": "array",
+                                            "minItems": 1,
+                                            "maxItems": 100,
+                                            "items": {"type": "object"},
+                                        },
+                                    },
+                                    "required": ["server_id", "workflow_id", "operations"],
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=False,
+                                    idempotent_hint=False,
+                                    open_world_hint=True,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.workflow.change.commit",
+                                description=(
+                                    "Commit a bound, unexpired change plan as an unpublished "
+                                    "Revision."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        "plan_id": {"type": "string", "minLength": 1},
+                                        "plan_digest": {
+                                            "type": "string",
+                                            "minLength": 64,
+                                            "maxLength": 64,
+                                        },
+                                    },
+                                    "required": ["plan_id", "plan_digest"],
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=False,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.workflow.publish",
+                                description="Atomically publish one validated Workflow Deployment.",
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        "deployment_id": {"type": "string", "minLength": 1}
+                                    },
+                                    "required": ["deployment_id"],
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=True,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.workflow.rollback",
+                                description=(
+                                    "Create and publish a new Revision from a historical target."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        **identity,
+                                        **request_id,
+                                        "target_revision_id": {"type": "string", "minLength": 1},
+                                    },
+                                    "required": [
+                                        "server_id",
+                                        "workflow_id",
+                                        "target_revision_id",
+                                        "request_id",
+                                    ],
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=True,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                        ]
+                        if workflow_changes is not None
                         else []
                     ),
                     Tool(
@@ -276,6 +397,63 @@ def create_admin_server(
                     result["commit"] = await anyio.to_thread.run_sync(
                         lambda: workflow_import.commit(preview)
                     )
+            elif params.name == "comfyui.admin.workflow.change.plan":
+                if workflow_changes is None:
+                    raise MCPError(code=INVALID_PARAMS, message="Workflow change unavailable")
+                _validate_keys(arguments, {"server_id", "workflow_id", "operations"})
+                server_id = _required_string(arguments, "server_id")
+                workflow_id = _required_string(arguments, "workflow_id")
+                operations = arguments.get("operations")
+                if not isinstance(operations, list) or not all(
+                    isinstance(operation, dict) for operation in operations
+                ):
+                    raise TypeError("operations must be an array of objects")
+                gateway = gateway_factory(servers.connection(server_id))
+                object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.plan(
+                        workflow_id,
+                        server_id,
+                        operations,
+                        object_info=object_info,
+                    )
+                )
+            elif params.name == "comfyui.admin.workflow.change.commit":
+                if workflow_changes is None:
+                    raise MCPError(code=INVALID_PARAMS, message="Workflow change unavailable")
+                _validate_keys(arguments, {"plan_id", "plan_digest"})
+                plan_id = _required_string(arguments, "plan_id")
+                plan_digest = _required_string(arguments, "plan_digest")
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.commit(plan_id, plan_digest)
+                )
+            elif params.name == "comfyui.admin.workflow.publish":
+                if workflow_changes is None:
+                    raise MCPError(code=INVALID_PARAMS, message="Workflow publish unavailable")
+                _validate_keys(arguments, {"deployment_id"})
+                deployment_id = _required_string(arguments, "deployment_id")
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.publish(deployment_id)
+                )
+            elif params.name == "comfyui.admin.workflow.rollback":
+                if workflow_changes is None:
+                    raise MCPError(code=INVALID_PARAMS, message="Workflow rollback unavailable")
+                _validate_keys(
+                    arguments,
+                    {"server_id", "workflow_id", "target_revision_id", "request_id"},
+                )
+                server_id = _required_string(arguments, "server_id")
+                workflow_id = _required_string(arguments, "workflow_id")
+                target_revision_id = _required_string(arguments, "target_revision_id")
+                request_id = _required_string(arguments, "request_id")
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.rollback(
+                        workflow_id,
+                        server_id,
+                        target_revision_id,
+                        request_id,
+                    )
+                )
             elif params.name == "comfyui.admin.workflow.set_enabled":
                 _validate_keys(arguments, {"server_id", "workflow_id", "enabled", "request_id"})
                 server_id = _required_string(arguments, "server_id")

@@ -33,6 +33,14 @@ class WorkflowNotFound(ComfyUISkillsError):
     code = "WORKFLOW_NOT_FOUND"
 
 
+class WorkflowChangeNotFound(ComfyUISkillsError):
+    code = "WORKFLOW_CHANGE_NOT_FOUND"
+
+
+class WorkflowChangeConflict(ComfyUISkillsError):
+    code = "WORKFLOW_CHANGE_CONFLICT"
+
+
 class ServerNotFound(ComfyUISkillsError):
     code = "SERVER_NOT_FOUND"
 

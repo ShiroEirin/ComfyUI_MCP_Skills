@@ -99,7 +99,7 @@ class WorkflowImportService:
         semantic = self._graphs.describe(graph, object_info=object_info, media_type=media_type)
         parameters = semantic["parameters"]
         dependencies = semantic["dependencies"]
-        digest = _content_digest(graph, parameters, dependencies)
+        digest = _content_digest(graph, parameters, dependencies, semantic["outputs"])
         deprecated = _deprecated_nodes(graph, node_replacements or {})
         issues = tuple(dict(issue) for issue in validation["issues"])
         manual = bool(unsupported or dropped or issues or dependencies["coverage"] != "complete")
@@ -178,6 +178,11 @@ class WorkflowImportService:
                 "description": "",
                 "enabled": True,
                 "parameters": preview.parameter_schema,
+                "_output_contract": {
+                    "version": 1,
+                    "coverage": "complete",
+                    "outputs": preview.semantic_graph["outputs"],
+                },
             },
             dependency_contract=preview.dependency_contract,
             content_digest=preview.content_digest,
@@ -210,10 +215,23 @@ def _deprecated_nodes(
 
 
 def _content_digest(
-    graph: dict[str, Any], parameters: dict[str, Any], dependencies: dict[str, Any]
+    graph: dict[str, Any],
+    parameters: dict[str, Any],
+    dependencies: dict[str, Any],
+    outputs: list[dict[str, Any]],
 ) -> str:
     payload = json.dumps(
-        {"graph": graph, "parameters": parameters, "dependencies": dependencies},
+        {
+            "identity_version": 2,
+            "graph": graph,
+            "parameters": parameters,
+            "dependencies": dependencies,
+            "output_contract": {
+                "version": 1,
+                "coverage": "complete",
+                "outputs": outputs,
+            },
+        },
         ensure_ascii=False,
         allow_nan=False,
         sort_keys=True,

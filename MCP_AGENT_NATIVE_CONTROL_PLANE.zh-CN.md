@@ -1578,6 +1578,8 @@ Published Revision + arguments + Asset URI
 - 旧转换 fixture 在新服务上结果等价；Reroute、connected widget 和 control marker 各有直接回归用例。
 
 ### 阶段 J：图级编辑、diff 与发布（P0）
+> 实施状态：2026-07-31 已完成。已交付四种边界化图操作的 plan/commit、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；节点增删替换、subgraph 和高层 recipe 仍按范围留待后续阶段。
+
 
 交付：
 

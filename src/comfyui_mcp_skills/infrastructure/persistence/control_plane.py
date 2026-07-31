@@ -967,6 +967,61 @@ _G5_IDENTITY_MERGE_UP = (
 )
 
 
+_PHASE_J_WORKFLOW_CHANGE_UP = (
+    f"""
+    CREATE TABLE workflow_change_plans (
+        plan_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("plan_id", "plan_")}),
+        workflow_id TEXT NOT NULL,
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        base_revision_id TEXT NOT NULL,
+        operations_json TEXT NOT NULL,
+        graph_json TEXT NOT NULL,
+        parameter_schema_json TEXT NOT NULL,
+        dependency_contract_json TEXT NOT NULL,
+        content_digest TEXT NOT NULL CHECK({_sha256_check("content_digest")}),
+        plan_digest TEXT NOT NULL UNIQUE CHECK({_sha256_check("plan_digest")}),
+        diff_json TEXT NOT NULL,
+        actor TEXT NOT NULL CHECK(length(actor) BETWEEN 1 AND 128),
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        committed_revision_id TEXT,
+        FOREIGN KEY(workflow_id, base_revision_id)
+            REFERENCES workflow_revisions(workflow_id, revision_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id, committed_revision_id)
+            REFERENCES workflow_revisions(workflow_id, revision_id) ON DELETE RESTRICT,
+        CHECK(committed_revision_id IS NULL OR typeof(committed_revision_id) = 'text')
+    )
+    """,
+    """
+    CREATE INDEX ix_workflow_change_plans_expiry
+    ON workflow_change_plans(expires_at, plan_id) WHERE committed_revision_id IS NULL
+    """,
+    f"""
+    CREATE TABLE workflow_rollback_requests (
+        actor TEXT NOT NULL CHECK(length(actor) BETWEEN 1 AND 128),
+        request_id TEXT NOT NULL CHECK(length(request_id) BETWEEN 1 AND 256),
+        request_digest TEXT NOT NULL CHECK({_sha256_check("request_digest")}),
+        workflow_id TEXT NOT NULL,
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        target_revision_id TEXT NOT NULL,
+        replaced_revision_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        deployment_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(actor, request_id),
+        FOREIGN KEY(workflow_id, target_revision_id)
+            REFERENCES workflow_revisions(workflow_id, revision_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id, replaced_revision_id)
+            REFERENCES workflow_revisions(workflow_id, revision_id) ON DELETE RESTRICT,
+        FOREIGN KEY(deployment_id, workflow_id, revision_id, server_id)
+            REFERENCES workflow_deployments(
+                deployment_id, workflow_id, revision_id, server_id
+            ) ON DELETE RESTRICT
+    )
+    """,
+)
+
+
 _MIGRATIONS = (
     SchemaMigration(
         1,
@@ -995,6 +1050,13 @@ _MIGRATIONS = (
         _G5_IDENTITY_MERGE_UP,
         (),
         feasibility_note="forward-only append-safe upstream identity reconciliation",
+    ),
+    SchemaMigration(
+        5,
+        "phase-j-workflow-change-plans",
+        _PHASE_J_WORKFLOW_CHANGE_UP,
+        (),
+        feasibility_note="forward-only immutable workflow change plan storage",
     ),
 )
 

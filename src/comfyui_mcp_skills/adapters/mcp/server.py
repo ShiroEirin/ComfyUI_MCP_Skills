@@ -74,6 +74,7 @@ from comfyui_mcp_skills.application.orchestration import (
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
     WorkflowValidationService,
@@ -98,10 +99,14 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
 from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
     SQLiteLegacyResourceAliasReader,
 )
+from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
+    SQLiteWorkflowChangeRepository,
+)
 
 G3_AUTHORING_TOOLS = frozenset(
     {
         "comfyui.revision.list",
+        "comfyui.revision.diff",
         "comfyui.workflow.describe",
         "comfyui.workflow.dependencies.check",
     }
@@ -160,6 +165,16 @@ def create_server(
     workflow_inspection = (
         WorkflowInspectionService(workflow_repository, workflow_graphs, WorkflowValidationService())
         if repositories.workflow_store == "sqlite"
+        else None
+    )
+    workflow_changes = (
+        WorkflowChangeService(
+            SQLiteWorkflowChangeRepository(repositories.store),
+            workflow_graphs,
+            WorkflowValidationService(),
+            actor=authorization.principal_id,
+        )
+        if repositories.store is not None and repositories.workflow_store == "sqlite"
         else None
     )
     fixed_surface = [*fixed_tools(), *phase_h_tools()]
@@ -462,6 +477,16 @@ def create_server(
                     for revision in revisions
                 ]
                 return tool_result({"workflow_id": workflow_id, "revisions": summaries})
+            if params.name == "comfyui.revision.diff":
+                validate_fixed_arguments(arguments, {"from_revision_id", "to_revision_id"})
+                if workflow_changes is None:
+                    raise ValueError("Workflow revision diff requires the SQLite Workflow store")
+                from_revision_id = required_string(arguments, "from_revision_id")
+                to_revision_id = required_string(arguments, "to_revision_id")
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.diff(from_revision_id, to_revision_id)
+                )
+                return tool_result(result)
             if params.name in {
                 "comfyui.workflow.describe",
                 "comfyui.workflow.dependencies.check",

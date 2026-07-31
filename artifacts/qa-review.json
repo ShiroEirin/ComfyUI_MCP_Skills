@@ -1,36 +1,33 @@
 {
   "qaMode": "deep",
-  "scope": "Phase I API/Editor workflow import, semantic graph Resources, deterministic parameter roles, dependency coverage, validation, unpublished Revision commit, MCP tool/prompt integration, and CLI compatibility",
+  "scope": "Phase J bounded graph change plan/commit, immutable structured Revision diff, atomic publish, idempotent rollback, dynamic Tool schema switching, Revision subscriptions, canonical V2 content identity, and legacy output-contract compatibility",
   "outcome": "pass",
-  "conclusion": "Phase I is complete: imports are loss-aware and validation-gated; semantic Resources resolve published immutable Revisions only and are size bounded; dependency coverage fails closed for unknown loaders and migrated contracts; Admin commit creates validated unpublished Revisions; and file/SQLite capability surfaces remain consistent.",
+  "conclusion": "Phase J is complete: graph edits are validation-gated and cycle-safe; plans bind expiry and published base identity; commits reuse canonical immutable Revisions; publish atomically switches Deployments without mutating existing Jobs; rollback is durable, atomic, and actor/request-idempotent; and MCP clients receive stable conflict/not-found errors.",
   "findings": [],
   "fileReferences": [
-    "src/comfyui_mcp_skills/application/workflow_conversion.py",
-    "src/comfyui_mcp_skills/application/workflow_graph.py",
+    "src/comfyui_mcp_skills/application/workflow_change.py",
     "src/comfyui_mcp_skills/application/workflow_import.py",
-    "src/comfyui_mcp_skills/application/workflow_inspection.py",
-    "src/comfyui_mcp_skills/domain/workflow_semantics.py",
+    "src/comfyui_mcp_skills/domain/errors.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/workflow_changes.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_workflows.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/control_plane.py",
     "src/comfyui_mcp_skills/adapters/mcp/admin.py",
-    "src/comfyui_mcp_skills/adapters/mcp/resources.py",
     "src/comfyui_mcp_skills/adapters/mcp/server.py",
-    "src/comfyui_mcp_skills/adapters/mcp/prompts.py",
-    "comfyui_skills_cli/commands/workflow.py",
-    "tests/test_phase_i_workflows.py",
-    "tests/test_workflow_convert_node_inputs.py",
-    "tests/test_mcp_prompts.py",
-    "tests/test_mcp_resource_aliases.py"
+    "src/comfyui_mcp_skills/adapters/mcp/tooling.py",
+    "tests/test_phase_j_workflow_changes.py",
+    "tests/test_control_plane_sqlite.py"
   ],
   "commands": [
-    {"command": "uv run ruff check <Phase I changed paths>", "result": "passed"},
+    {"command": "uv run ruff check <Phase J changed paths>", "result": "passed"},
     {"command": "uv run mypy src/comfyui_mcp_skills", "result": "passed"},
-    {"command": "uv run python -m pytest --cov --cov-report=term-missing -q", "result": "517 passed, 1 skipped; coverage 84.66%"},
+    {"command": "uv run python -m pytest --cov --cov-report=term-missing -q", "result": "528 passed, 1 skipped; coverage 84.63%"},
     {"command": "uv run pip-audit", "result": "no known vulnerabilities; local project package not on PyPI"},
     {"command": "uv build", "result": "sdist and wheel built"}
   ],
   "independentReview": {
-    "code": "PASS after two remediation cycles; all reported HIGH and MEDIUM findings resolved, final Reroute target-slot review PASS",
-    "security": "PASS; unpublished Revisions are not exposed by semantic Resources, media references are bounded, and unknown dependency loaders fail closed",
-    "python": "PASS; ruff and mypy clean on all Phase I changed paths",
-    "database": "PASS; immutable Revision creation remains idempotent and returns actual persisted publication state"
+    "code": "PASS after three remediation cycles; all eight original findings and four compatibility follow-ups resolved",
+    "security": "PASS; plan digests bind expiry, public diffs omit raw graphs, rollback request reuse conflicts safely, and MCP errors remain structured",
+    "python": "PASS; ruff and mypy clean on all Phase J changed paths",
+    "database": "PASS; commit/publish/rollback transactions preserve immutable Revision and Deployment identities with durable idempotency"
   }
 }

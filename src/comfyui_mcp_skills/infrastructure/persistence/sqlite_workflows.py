@@ -344,13 +344,17 @@ def _revision_digest(
     parameter_schema: dict[str, Any],
     dependency_contract: dict[str, Any],
 ) -> str:
-    payload = _canonical_json(
-        {
-            "graph": graph,
-            "parameters": parameter_schema.get("parameters", {}),
-            "dependencies": dependency_contract,
-        }
-    )
+    value = {
+        "identity_version": 2,
+        "graph": graph,
+        "parameters": parameter_schema.get("parameters", {}),
+        "dependencies": dependency_contract,
+        "output_contract": parameter_schema.get("_output_contract"),
+    }
+    metadata = parameter_schema.get("_revision")
+    if isinstance(metadata, dict) and metadata:
+        value["revision_metadata"] = metadata
+    payload = _canonical_json(value)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
