@@ -12,10 +12,16 @@ from typing import Any
 
 from comfyui_mcp_skills.application.ports import WorkflowRepository
 from comfyui_mcp_skills.domain.control_plane import derived_control_plane_id
+from comfyui_mcp_skills.domain.errors import PayloadTooLarge
 from comfyui_mcp_skills.domain.workflow_schema import normalize_parameters
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
+from comfyui_mcp_skills.infrastructure.persistence.orchestration_schedule import (
+    schedule_job_reconciliation,
+)
 
 FailureInjector = Callable[[str], None]
+
+_MAX_INPUT_SNAPSHOT_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +59,10 @@ class ExecutionPlanningService:
             "resolved_inputs": resolved_inputs if resolved_inputs is not None else arguments,
         }
         inputs_json = _canonical_json(input_snapshot)
-        input_digest = hashlib.sha256(inputs_json.encode()).hexdigest()
+        encoded_inputs = inputs_json.encode("utf-8")
+        if len(encoded_inputs) > _MAX_INPUT_SNAPSHOT_BYTES:
+            raise PayloadTooLarge("Execution Plan input snapshot exceeds 1 MiB")
+        input_digest = hashlib.sha256(encoded_inputs).hexdigest()
         created_at = datetime.now(timezone.utc).isoformat()
         connection = _connect(self._store)
         try:
@@ -145,6 +154,14 @@ class ExecutionPlanningService:
                 """,
                 (attempt_id, job_id, server_id, client_id, created_at),
             )
+            schedule_job_reconciliation(
+                connection,
+                job_id=job_id,
+                server_id=server_id,
+                owner_id=owner_id,
+                occurred_at=created_at,
+            )
+            _inject(failure_injector, "after_reconciliation_schedule")
             _verify_identity(
                 connection,
                 job_id=job_id,

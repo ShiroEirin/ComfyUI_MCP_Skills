@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -24,6 +25,7 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
+from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.adapters.mcp.tooling import (
@@ -50,6 +52,11 @@ from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.orchestration import (
+    ComfyUIReconcileProbe,
+    JobReconciler,
+    OperationOrchestrator,
+)
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
@@ -57,6 +64,9 @@ from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
+from comfyui_mcp_skills.infrastructure.persistence.orchestration import (
+    SQLiteOrchestrationRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     RepositoryBundle,
     create_repository_bundle,
@@ -117,11 +127,42 @@ def create_server(
     subscription_bus = InMemorySubscriptionBus()
     listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
     change_monitor = WorkflowChangeMonitor(base_dir, subscription_bus)
+    orchestration_runtime: OrchestrationRuntime | None = None
+    orchestration_repository: SQLiteOrchestrationRepository | None = None
+    if repositories.store is not None and repositories.run_store == "sqlite":
+        orchestration_repository = SQLiteOrchestrationRepository(repositories.store)
+        reconciler = JobReconciler(
+            orchestration_repository,
+            ComfyUIReconcileProbe(servers, gateway_factory),
+        )
+        orchestration_runtime = OrchestrationRuntime(
+            OperationOrchestrator(orchestration_repository, {"job.reconcile": reconciler}),
+            orchestration_repository,
+            subscription_bus,
+            worker_id=f"mcp-{uuid.uuid4().hex}",
+        )
+
+    async def authorized_listen(ctx: Any, params: Any) -> Any:
+        if orchestration_repository is not None:
+            owner_id = current_owner()
+            uris = params.notifications.resource_subscriptions or ()
+            for uri in uris:
+                if not str(uri).startswith("comfyui://jobs/"):
+                    continue
+                resource_owner = await anyio.to_thread.run_sync(
+                    orchestration_repository.job_owner_for_uri, str(uri)
+                )
+                if resource_owner is None or resource_owner != owner_id:
+                    raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
+        return await listen_handler(ctx, params)
 
     @asynccontextmanager
     async def lifespan(_server: Server[dict[str, object]]) -> AsyncIterator[dict[str, object]]:
         async with anyio.create_task_group() as task_group:
             task_group.start_soon(change_monitor.run)
+            if orchestration_runtime is not None:
+                task_group.start_soon(orchestration_runtime.run_worker)
+                task_group.start_soon(orchestration_runtime.run_outbox)
             try:
                 yield {}
             finally:
@@ -452,5 +493,5 @@ def create_server(
         on_list_resource_templates=resource_handlers.list_templates,
         on_read_resource=resource_handlers.read_resource,
         lifespan=lifespan,
-        on_subscriptions_listen=listen_handler,
+        on_subscriptions_listen=authorized_listen,
     )

@@ -254,3 +254,17 @@ def test_dynamic_submit_returns_non_null_g4_identity(tmp_path: Path) -> None:
             "FROM execution_attempts WHERE job_id = ?",
             (job.job_id,),
         ).fetchone() == ("prompt-g4", "upstream-job-g4", "submitted")
+
+
+def test_planning_rejects_oversized_input_snapshot(tmp_path: Path) -> None:
+    store = _project(tmp_path)
+    service = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
+
+    with pytest.raises(Exception, match="input snapshot exceeds"):
+        service.materialize(
+            server_id="local",
+            workflow_id="portrait",
+            owner_id="principal",
+            arguments={"prompt": "x" * (1024 * 1024)},
+            client_id="client-large",
+        )

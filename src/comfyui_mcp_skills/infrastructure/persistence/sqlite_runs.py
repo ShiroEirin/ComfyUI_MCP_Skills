@@ -24,8 +24,9 @@ _STATUS_PRIORITY = {
     "cancelled": 5,
     "interrupted": 5,
     "error": 5,
+    "lost": 5,
 }
-_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "interrupted", "error"})
+_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "interrupted", "error", "lost"})
 
 
 class SQLiteRunRepository:

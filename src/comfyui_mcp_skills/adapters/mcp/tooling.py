@@ -34,6 +34,7 @@ JOB_SCHEMA: dict[str, Any] = {
                 "error",
                 "interrupted",
                 "cancelled",
+                "lost",
             ],
         },
         "outputs": {"type": "array", "items": {"type": "object"}},

@@ -16,7 +16,7 @@ from comfyui_mcp_skills.domain.models import Job
 
 logger = logging.getLogger(__name__)
 
-_TERMINAL_STATUSES = {"completed", "error", "interrupted", "cancelled"}
+_TERMINAL_STATUSES = {"completed", "error", "interrupted", "cancelled", "lost"}
 _VIDEO_EXTENSIONS = {".avi", ".gif", ".mkv", ".mov", ".mp4", ".webm"}
 _AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 
@@ -47,6 +47,8 @@ class JobService:
             raise JobNotFound("prompt_id must not be empty")
         saved = self._runs.get(server_id, prompt_id)
         self._authorize_owner(saved, prompt_id, owner_id)
+        if saved is not None and saved.status == "lost":
+            return saved
         gateway = self._gateway_factory(self._servers.connection(server_id))
         if deadline is None:
             history = gateway.get_history(prompt_id)

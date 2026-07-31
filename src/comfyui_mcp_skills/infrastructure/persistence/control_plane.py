@@ -894,6 +894,50 @@ _G1_SCHEMA_UP = (
     """,
 )
 
+_G5_ORCHESTRATION_UP = (
+    """
+    CREATE TABLE operation_work_items (
+        work_item_id TEXT NOT NULL PRIMARY KEY,
+        subject_uri TEXT NOT NULL,
+        work_type TEXT NOT NULL CHECK(length(work_type) > 0),
+        payload_json TEXT NOT NULL,
+        checkpoint_json TEXT NOT NULL DEFAULT '{}',
+        status TEXT NOT NULL CHECK(status IN ('pending', 'running', 'completed', 'failed')),
+        next_attempt_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(subject_uri, work_type),
+        CHECK(typeof(work_item_id) = 'text' AND length(work_item_id) > 0),
+        CHECK(typeof(subject_uri) = 'text' AND length(subject_uri) > 0)
+    )
+    """,
+    """
+    CREATE INDEX ix_operation_work_items_ready
+    ON operation_work_items(status, next_attempt_at, created_at, work_item_id)
+    """,
+    """
+    CREATE TABLE work_leases (
+        work_item_id TEXT NOT NULL PRIMARY KEY
+            REFERENCES operation_work_items(work_item_id) ON DELETE RESTRICT,
+        worker_id TEXT NOT NULL CHECK(length(worker_id) > 0),
+        fencing_token INTEGER NOT NULL CHECK(
+            typeof(fencing_token) = 'integer' AND fencing_token > 0
+        ),
+        acquired_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX ix_work_leases_expiry ON work_leases(expires_at, work_item_id)",
+    """
+    CREATE TABLE server_generation_observations (
+        server_id TEXT NOT NULL PRIMARY KEY,
+        generation TEXT NOT NULL,
+        observed_at TEXT NOT NULL,
+        CHECK(typeof(server_id) = 'text' AND length(server_id) > 0)
+    )
+    """,
+)
+
 _MIGRATIONS = (
     SchemaMigration(
         1,
@@ -908,6 +952,13 @@ _MIGRATIONS = (
         _G1_SCHEMA_UP,
         (),
         feasibility_note="transactional forward-only migration before G1 aggregate cutover",
+    ),
+    SchemaMigration(
+        3,
+        "g5-event-orchestrator",
+        _G5_ORCHESTRATION_UP,
+        (),
+        feasibility_note="transactional forward-only migration for durable G5 orchestration",
     ),
 )
 

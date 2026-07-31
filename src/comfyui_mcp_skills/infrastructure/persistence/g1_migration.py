@@ -968,8 +968,8 @@ def cutover_g1_import_plan(
 
 def _require_g1_schema(connection: sqlite3.Connection) -> None:
     version = connection.execute("SELECT max(version) FROM schema_migrations").fetchone()
-    if version is None or version[0] != 2:
-        raise RehearsalFailure("G1 cutover requires initialized SQLite schema version 2")
+    if version is None or version[0] is None or int(version[0]) < 2:
+        raise RehearsalFailure("G1 cutover requires initialized SQLite schema version 2+")
     required_columns = {
         "jobs": {"error", "outputs_json", "execution_origin"},
         "idempotency_records": {"lease_token", "workflow_id"},
