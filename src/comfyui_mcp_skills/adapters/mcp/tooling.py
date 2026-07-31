@@ -461,6 +461,21 @@ def fixed_tools() -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
+        Tool(
+            name="comfyui.workflow.dependencies.check",
+            description="Check required nodes and models for a published workflow revision.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string", "minLength": 1},
+                    "server_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["workflow_id", "server_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
     ]
     return [decorate_tool(tool) for tool in tools]
 

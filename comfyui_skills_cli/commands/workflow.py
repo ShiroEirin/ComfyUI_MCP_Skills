@@ -10,6 +10,12 @@ from typing import Any
 
 import typer
 
+from comfyui_mcp_skills.application.workflow_conversion import (
+    convert_editor_node_inputs,
+    convert_editor_workflow,
+)
+from comfyui_mcp_skills.application.workflow_graph import WorkflowValidationService
+from comfyui_mcp_skills.domain.workflow_semantics import ParameterRoleRegistry
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
     project_migration_lock,
@@ -158,104 +164,12 @@ def _get_type_guess(value: Any) -> str:
 def _extract_schema(
     workflow_data: dict[str, Any], media_type: str = "image"
 ) -> dict[str, dict[str, Any]]:
-    """Extract parameters from API-format workflow and build schema.
-
-    *media_type* selects additional field-exposure rules beyond the base
-    set.  ``"image"`` (default) uses only the generic rules.
-    ``"audio"`` adds audio-specific fields like tags, lyrics, bpm, etc.
-    ``"video"`` adds video-specific fields like format, codec, fps, etc.
-    """
-    expose_fields = dict(_AUTO_EXPOSE_FIELDS)
-    if media_type in _MEDIA_TYPE_FIELDS:
-        expose_fields.update(_MEDIA_TYPE_FIELDS[media_type])
-
-    raw_params: list[dict[str, Any]] = []
-
-    for node_id, node in workflow_data.items():
-        if not isinstance(node, dict):
-            continue
-        inputs = node.get("inputs")
-        if not isinstance(inputs, dict):
-            continue
-
-        class_type = (node.get("class_type") or "").strip()
-        for field, value in inputs.items():
-            # Skip linked inputs (arrays = connections)
-            if isinstance(value, list):
-                continue
-
-            # Determine exposure
-            storage_type = ""
-            if class_type in _LOAD_OUTPUT_IMAGE_CLASSES and field == "image":
-                exposed, required = True, True
-                description = "Reference an image from this server's output history"
-                field_type = "image"
-                storage_type = "output"
-            elif class_type in _LOAD_IMAGE_CLASSES and field == "image":
-                exposed, required = True, True
-                description = "Upload an image"
-                field_type = "image"
-            elif field in expose_fields:
-                info = expose_fields[field]
-                exposed = info["exposed"]
-                required = info["required"]
-                description = info["description"]
-                field_type = _get_type_guess(value)
-            else:
-                exposed = False
-                required = False
-                description = ""
-                field_type = _get_type_guess(value)
-
-            if not exposed:
-                continue
-
-            raw_params.append(
-                {
-                    "node_id": str(node_id),
-                    "field": field,
-                    "type": field_type,
-                    "required": required,
-                    "description": description,
-                    "default": value,
-                    "class_type": class_type,
-                }
-            )
-            if storage_type:
-                raw_params[-1]["storage_type"] = storage_type
-
-    # Assign unique names
-    field_counts: dict[str, int] = {}
-    for p in raw_params:
-        field_counts[p["field"]] = field_counts.get(p["field"], 0) + 1
-
-    parameters: dict[str, dict[str, Any]] = {}
-    for p in raw_params:
-        name = _friendly_name(p["field"])
-        if field_counts[p["field"]] > 1:
-            # Disambiguate with node title or id
-            title = _get_node_title(workflow_data.get(p["node_id"], {}))
-            suffix = _normalize_title(title) if title else p["node_id"]
-            name = f"{name}_{suffix}"
-
-        # Ensure unique
-        base_name = name
-        counter = 2
-        while name in parameters:
-            name = f"{base_name}_{counter}"
-            counter += 1
-
-        parameters[name] = {
-            "node_id": p["node_id"],
-            "field": p["field"],
-            "required": p["required"],
-            "type": p["type"],
-            "description": p["description"],
-        }
-        if p.get("storage_type"):
-            parameters[name]["storage_type"] = p["storage_type"]
-
-    return parameters
+    """Extract legacy CLI parameters through the shared Phase I role registry."""
+    parameters = ParameterRoleRegistry.default().extract(workflow_data, media_type=media_type)
+    return {
+        name: {key: value for key, value in parameter.items() if key != "role"}
+        for name, parameter in parameters.items()
+    }
 
 
 def _friendly_name(field: str) -> str:
@@ -306,61 +220,13 @@ def _suggest_workflow_id(data: dict[str, Any], filename: str = "") -> str:
 def _convert_editor_to_api(
     editor_data: dict[str, Any], object_info: dict[str, Any]
 ) -> dict[str, Any]:
-    """Convert editor-format workflow to API format.
-
-    Ported from ui/workflow_format.py EditorWorkflowConverter.
-    """
-    nodes = editor_data.get("nodes", [])
-    links = editor_data.get("links", [])
-    unknown_types = sorted(
-        {
-            str(node.get("type", "")).strip()
-            for node in nodes
-            if isinstance(node, dict)
-            and str(node.get("type", "")).strip()
-            and str(node.get("type", "")).strip() not in {"Reroute", "Note"}
-            and not isinstance(object_info.get(str(node.get("type", "")).strip()), dict)
-        }
-    )
-    if unknown_types:
-        raise ValueError("Unknown ComfyUI node types: " + ", ".join(unknown_types))
-
-    node_by_id: dict[int, dict[str, Any]] = {}
-    for node in nodes:
-        if isinstance(node, dict) and node.get("id") is not None:
-            node_by_id[int(node["id"])] = node
-
-    # Build link map: (target_node_id, target_slot) → (source_node_id_str, source_slot)
-    link_map: dict[tuple[int, int], tuple[str, int]] = {}
-    for link in links:
-        if not isinstance(link, list) or len(link) < 5:
-            continue
-        source = _resolve_reroute(int(link[1]), int(link[2]), node_by_id, links)
-        if source is not None:
-            link_map[(int(link[3]), int(link[4]))] = source
-
-    api_workflow: dict[str, Any] = {}
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        node_id = node.get("id")
-        class_type = (node.get("type") or "").strip()
-        if node_id is None or not class_type or class_type in {"Reroute", "Note"}:
-            continue
-
-        node_info = object_info.get(class_type)
-        if not isinstance(node_info, dict):
-            continue
-
-        title = (node.get("title") or class_type).strip()
-        inputs = _convert_node_inputs(node, class_type, node_info, link_map)
-        api_workflow[str(node_id)] = {
-            "inputs": inputs,
-            "class_type": class_type,
-            "_meta": {"title": title},
-        }
-
-    return api_workflow
+    """Convert Editor JSON through the shared loss-aware Phase I converter."""
+    graph, unsupported, dropped = convert_editor_workflow(editor_data, object_info)
+    if unsupported:
+        raise ValueError("Unknown ComfyUI node types: " + ", ".join(unsupported))
+    if dropped:
+        raise ValueError("Editor conversion would drop fields: " + ", ".join(dropped))
+    return graph
 
 
 def _resolve_reroute(
@@ -394,52 +260,9 @@ def _convert_node_inputs(
     node_info: dict[str, Any],
     link_map: dict[tuple[int, int], tuple[str, int]],
 ) -> dict[str, Any]:
-    node_id = int(node["id"])
-    input_slots = node.get("inputs", [])
-    if not isinstance(input_slots, list):
-        input_slots = []
-    widget_values = node.get("widgets_values", [])
-    if not isinstance(widget_values, list):
-        widget_values = []
-
-    converted: dict[str, Any] = {}
-    connected_names: set[str] = set()
-
-    for slot_idx, slot in enumerate(input_slots):
-        if not isinstance(slot, dict):
-            continue
-        slot_name = (slot.get("name") or "").strip()
-        if not slot_name:
-            continue
-        link_tuple = link_map.get((node_id, slot_idx))
-        if link_tuple is None:
-            continue
-        converted[slot_name] = [link_tuple[0], link_tuple[1]]
-        connected_names.add(slot_name)
-
-    widget_field_names = _get_widget_field_names_from_schema(node_info)
-
-    control_fields = _get_control_after_generate_fields(node_info)
-    widget_idx = 0
-
-    for field_name in widget_field_names:
-        if field_name in connected_names:
-            widget_idx += 1
-            continue
-        if widget_idx >= len(widget_values):
-            break
-        converted[field_name] = widget_values[widget_idx]
-        widget_idx += 1
-        if field_name in control_fields and widget_idx < len(widget_values):
-            val = widget_values[widget_idx]
-            if isinstance(val, str) and val.lower() in {
-                "fixed",
-                "increment",
-                "decrement",
-                "randomize",
-            }:
-                widget_idx += 1
-
+    """Preserve the legacy helper through the shared Editor converter."""
+    del class_type
+    converted, _dropped = convert_editor_node_inputs(node, node_info, link_map)
     return converted
 
 
@@ -563,6 +386,20 @@ def _import_from_file(
 
     filename = os.path.basename(json_path)
     workflow_id = name or _suggest_workflow_id(data, filename)
+    client = ComfyUIClient(
+        server_url=server_config.get("url", "http://127.0.0.1:8188"),
+        auth=server_config.get("auth", ""),
+    )
+    try:
+        object_info = client.get_object_info()
+    except Exception as exc:
+        output_error(
+            ctx,
+            "SERVER_ERROR",
+            f"Cannot fetch object_info for workflow validation: {exc}",
+            hint="ComfyUI server must be online to validate imported workflows.",
+        )
+        return
 
     # Detect format and convert if needed
     if _is_api_workflow(data):
@@ -571,20 +408,6 @@ def _import_from_file(
     elif _is_editor_workflow(data):
         format_detected = "editor"
         output_event(ctx, "converting", format="editor→api")
-        client = ComfyUIClient(
-            server_url=server_config.get("url", "http://127.0.0.1:8188"),
-            auth=server_config.get("auth", ""),
-        )
-        try:
-            object_info = client.get_object_info()
-        except Exception as exc:
-            output_error(
-                ctx,
-                "SERVER_ERROR",
-                f"Cannot fetch object_info for format conversion: {exc}",
-                hint="ComfyUI server must be online to convert editor-format workflows.",
-            )
-            return
         try:
             api_data = _convert_editor_to_api(data, object_info)
         except ValueError as exc:
@@ -601,6 +424,12 @@ def _import_from_file(
             "INVALID_FORMAT",
             "Unrecognized workflow format. Expected ComfyUI API or editor format.",
         )
+        return
+
+    validation = WorkflowValidationService().validate_api(api_data, object_info)
+    if not validation["valid"]:
+        summary = "; ".join(issue["message"] for issue in validation["issues"][:10])
+        output_error(ctx, "VALIDATION_FAILED", summary)
         return
 
     # Generate schema
@@ -740,6 +569,12 @@ def _import_from_server(
         )
         return
 
+    try:
+        object_info = client.get_object_info()
+    except Exception as exc:
+        output_error(ctx, "SERVER_ERROR", f"Cannot fetch object_info for validation: {exc}")
+        return
+
     # Import each workflow
     results = []
     for wf_path in workflow_paths:
@@ -756,13 +591,23 @@ def _import_from_server(
             api_data = data
         elif _is_editor_workflow(data):
             try:
-                object_info = client.get_object_info()
                 api_data = _convert_editor_to_api(data, object_info)
             except Exception as exc:
                 results.append({"path": wf_path, "status": "failed", "error": str(exc)})
                 continue
         else:
             results.append({"path": wf_path, "status": "skipped", "error": "Unrecognized format"})
+            continue
+
+        validation = WorkflowValidationService().validate_api(api_data, object_info)
+        if not validation["valid"]:
+            results.append(
+                {
+                    "path": wf_path,
+                    "status": "failed",
+                    "error": "; ".join(issue["message"] for issue in validation["issues"][:10]),
+                }
+            )
             continue
 
         filename = os.path.basename(wf_path)

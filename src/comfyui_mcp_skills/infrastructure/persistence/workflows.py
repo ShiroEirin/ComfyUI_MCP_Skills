@@ -63,6 +63,24 @@ class FileWorkflowRepository:
     def describe(self, workflow_id: str, server_id: str) -> dict[str, Any]:
         raise RuntimeError("Workflow descriptions require the G3 SQLite cutover")
 
+    def get_revision(self, revision_id: str) -> dict[str, Any]:
+        raise RuntimeError("Workflow revisions require the G3 SQLite cutover")
+
+    def get_published_revision(self, workflow_id: str) -> dict[str, Any]:
+        raise RuntimeError("Published Workflow revisions require the G3 SQLite cutover")
+
+    def create_revision(
+        self,
+        *,
+        workflow_id: str,
+        server_id: str,
+        graph: dict[str, Any],
+        parameter_schema: dict[str, Any],
+        dependency_contract: dict[str, Any],
+        content_digest: str,
+    ) -> dict[str, Any]:
+        raise RuntimeError("Workflow imports require the G3 SQLite cutover")
+
     def _load(self, server_id: str, workflow_id: str) -> Workflow | None:
         directory = self._safe_directory(server_id, workflow_id)
         schema_path = directory / "schema.json"

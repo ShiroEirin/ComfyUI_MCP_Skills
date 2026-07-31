@@ -8,6 +8,7 @@ import mimetypes
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import anyio
 from mcp.server import ServerRequestContext
@@ -33,6 +34,7 @@ from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.resource_aliases import ResourceAliasReader, ResourceTarget
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.workflow_inspection import WorkflowInspectionService
 from comfyui_mcp_skills.domain.control_plane import parse_legacy_resource_uri
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
@@ -40,6 +42,7 @@ from comfyui_mcp_skills.domain.errors import (
     ServerNotFound,
     WorkflowNotFound,
 )
+from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
@@ -47,6 +50,7 @@ from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 EnabledWorkflows = Callable[[], list[Workflow]]
 _MAX_OUTPUT_BYTES = 25 * 1024 * 1024
+_MAX_JSON_RESOURCE_BYTES = 1024 * 1024
 
 
 def _resource_scope_allowed(kind: str, *, required: bool) -> bool:
@@ -78,6 +82,7 @@ def create_resource_handlers(
     *,
     resource_aliases: ResourceAliasReader | None = None,
     require_authorization: bool = False,
+    workflow_inspection: WorkflowInspectionService | None = None,
 ) -> ResourceHandlers:
     async def list_templates(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -99,6 +104,31 @@ def create_resource_handlers(
                     name="Canonical workflow metadata",
                     mime_type="application/json",
                 ),
+            ),
+            *(
+                [
+                    (
+                        "workflow",
+                        ResourceTemplate(
+                            uri_template="comfyui://workflows/{workflow_id}/graph",
+                            name="Semantic workflow graph",
+                            mime_type="application/json",
+                        ),
+                    ),
+                    *[
+                        (
+                            "workflow",
+                            ResourceTemplate(
+                                uri_template=f"comfyui://workflows/{{workflow_id}}/{view}",
+                                name=f"Semantic workflow {view}",
+                                mime_type="application/json",
+                            ),
+                        )
+                        for view in ("nodes", "edges", "parameters", "outputs")
+                    ],
+                ]
+                if workflow_inspection is not None
+                else []
             ),
             (
                 "revision",
@@ -205,6 +235,7 @@ def create_resource_handlers(
                 gateway_factory=gateway_factory,
                 resource_aliases=resource_aliases,
                 require_authorization=require_authorization,
+                workflow_inspection=workflow_inspection,
             )
         except MCPError:
             raise
@@ -214,6 +245,7 @@ def create_resource_handlers(
             ServerNotFound,
             WorkflowNotFound,
             ValueError,
+            LookupError,
         ) as exc:
             raise MCPError(
                 code=INVALID_PARAMS,
@@ -235,8 +267,27 @@ async def _read_resource(
     gateway_factory: GatewayFactory,
     resource_aliases: ResourceAliasReader | None = None,
     require_authorization: bool = False,
+    workflow_inspection: WorkflowInspectionService | None = None,
 ) -> ReadResourceResult:
     uri = str(params.uri)
+    semantic_ref = _semantic_workflow_ref(uri)
+    if semantic_ref is not None:
+        _require_resource_scope("workflow", required=require_authorization)
+        if workflow_inspection is None:
+            raise ValueError("Semantic workflow Resources are unavailable")
+        workflow_id, view = semantic_ref
+        document = await anyio.to_thread.run_sync(
+            lambda: workflow_inspection.graph_resource(workflow_id)
+        )
+        if view != "graph":
+            semantic = document["semantic_graph"]
+            document = {
+                "workflow_id": document["workflow_id"],
+                "revision_id": document["revision_id"],
+                "content_digest": document["content_digest"],
+                view: semantic[view],
+            }
+        return _json_resource(uri, document)
     legacy_kind = parse_legacy_resource_uri(uri)
     if legacy_kind is not None:
         _require_resource_scope(legacy_kind.kind, required=require_authorization)
@@ -300,6 +351,38 @@ async def _read_resource(
                 uri=response_uri,
                 mime_type="application/json",
                 text=json.dumps(document, ensure_ascii=False),
+            )
+        ],
+        ttl_ms=5_000,
+        cache_scope="private",
+    )
+
+
+def _semantic_workflow_ref(uri: str) -> tuple[str, str] | None:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "comfyui" or parsed.netloc != "workflows":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if (
+        len(parts) != 2
+        or parts[1] not in {"graph", "nodes", "edges", "parameters", "outputs"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        return None
+    return validate_identifier(parts[0], field="workflow_id"), parts[1]
+
+
+def _json_resource(uri: str, document: dict[str, Any]) -> ReadResourceResult:
+    text = json.dumps(document, ensure_ascii=False)
+    if len(text.encode("utf-8")) > _MAX_JSON_RESOURCE_BYTES:
+        raise ValueError("JSON Resource exceeds 1 MiB")
+    return ReadResourceResult(
+        contents=[
+            TextResourceContents(
+                uri=uri,
+                mime_type="application/json",
+                text=text,
             )
         ],
         ttl_ms=5_000,

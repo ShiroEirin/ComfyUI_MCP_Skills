@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +25,23 @@ from mcp_types import INVALID_PARAMS
 from comfyui_mcp_skills import __version__
 from comfyui_mcp_skills.adapters.mcp.tooling import decorate_tool
 from comfyui_mcp_skills.application.admin import MAX_ADMIN_REQUEST_ID_LENGTH, WorkflowAdmin
+from comfyui_mcp_skills.application.ports import ComfyUIGateway
+from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.workflow_graph import (
+    WorkflowGraphService,
+    WorkflowValidationService,
+)
+from comfyui_mcp_skills.application.workflow_import import WorkflowImportService
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError
+from comfyui_mcp_skills.domain.workflow_semantics import (
+    DependencyExtractorRegistry,
+    ParameterRoleRegistry,
+)
+from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
+from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
+    RepositoryBundle,
+    create_repository_bundle,
+)
 from comfyui_mcp_skills.infrastructure.persistence.workflows import (
     FileWorkflowRepository,
 )
@@ -32,11 +49,16 @@ from comfyui_mcp_skills.infrastructure.persistence.workflows import (
 logger = logging.getLogger(__name__)
 
 
+GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+
+
 def create_admin_server(
     base_dir: Path,
     *,
     enabled: bool = False,
     actor: str = "stdio-admin",
+    repositories: RepositoryBundle | None = None,
+    gateway_factory: GatewayFactory = create_gateway,
 ) -> Server[dict[str, object]]:
     if not enabled:
         raise PermissionError("Admin MCP requires an explicit enabled=True configuration")
@@ -46,6 +68,17 @@ def create_admin_server(
         FileWorkflowRepository(base_dir),
         actor=actor,
     )
+    repositories = repositories or create_repository_bundle(base_dir)
+    servers = ServerRegistry(base_dir)
+    workflow_import = None
+    if repositories.workflow_store == "sqlite":
+        workflow_import = WorkflowImportService(
+            WorkflowGraphService(
+                ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+            ),
+            WorkflowValidationService(),
+            repositories.workflows,
+        )
 
     async def list_tools(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -67,6 +100,41 @@ def create_admin_server(
             tools=[
                 decorate_tool(tool)
                 for tool in [
+                    *(
+                        [
+                            Tool(
+                                name="comfyui.admin.workflow.import",
+                                description=(
+                                    "Preview an API or Editor workflow import and optionally "
+                                    "commit one validated, unpublished Revision."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        **identity,
+                                        "source": {"type": "object"},
+                                        "media_type": {
+                                            "type": "string",
+                                            "enum": ["image", "audio", "video"],
+                                            "default": "image",
+                                        },
+                                        "commit": {"type": "boolean", "default": False},
+                                    },
+                                    "required": ["server_id", "workflow_id", "source"],
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=False,
+                                    idempotent_hint=True,
+                                    open_world_hint=True,
+                                ),
+                            )
+                        ]
+                        if workflow_import is not None
+                        else []
+                    ),
                     Tool(
                         name="comfyui.admin.workflow.set_enabled",
                         description="Enable or disable one configured workflow.",
@@ -159,7 +227,56 @@ def create_admin_server(
         arguments = dict(params.arguments or {})
         context_request_id = "" if ctx.request_id is None else str(ctx.request_id)
         try:
-            if params.name == "comfyui.admin.workflow.set_enabled":
+            if params.name == "comfyui.admin.workflow.import":
+                if workflow_import is None:
+                    raise MCPError(code=INVALID_PARAMS, message="Workflow import unavailable")
+                _validate_keys(
+                    arguments,
+                    {"server_id", "workflow_id", "source", "media_type", "commit"},
+                )
+                server_id = _required_string(arguments, "server_id")
+                workflow_id = _required_string(arguments, "workflow_id")
+                source = arguments.get("source")
+                if not isinstance(source, dict):
+                    raise TypeError("source must be an object")
+                media_type = arguments.get("media_type", "image")
+                if media_type not in {"image", "audio", "video"}:
+                    raise TypeError("media_type must be image, audio, or video")
+                commit = arguments.get("commit", False)
+                if not isinstance(commit, bool):
+                    raise TypeError("commit must be a boolean")
+                gateway = gateway_factory(servers.connection(server_id))
+                object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
+                replacement_reader = getattr(gateway, "get_node_replacements", None)
+                if callable(replacement_reader):
+                    try:
+                        replacements = await anyio.to_thread.run_sync(replacement_reader)
+                    except ComfyUISkillsError:
+                        replacements = {}
+                else:
+                    replacements = {}
+                if not isinstance(replacements, dict):
+                    replacements = {}
+                preview = await anyio.to_thread.run_sync(
+                    lambda: workflow_import.preview(
+                        source,
+                        workflow_id=workflow_id,
+                        server_id=server_id,
+                        object_info=object_info,
+                        media_type=str(media_type),
+                        node_replacements={
+                            str(old): str(new)
+                            for old, new in replacements.items()
+                            if isinstance(old, str) and isinstance(new, str)
+                        },
+                    )
+                )
+                result = preview.to_public_dict()
+                if commit:
+                    result["commit"] = await anyio.to_thread.run_sync(
+                        lambda: workflow_import.commit(preview)
+                    )
+            elif params.name == "comfyui.admin.workflow.set_enabled":
                 _validate_keys(arguments, {"server_id", "workflow_id", "enabled", "request_id"})
                 server_id = _required_string(arguments, "server_id")
                 workflow_id = _required_string(arguments, "workflow_id")

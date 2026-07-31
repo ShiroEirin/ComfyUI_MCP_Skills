@@ -23,6 +23,7 @@ from mcp_types import INVALID_PARAMS
 from comfyui_mcp_skills.adapters.mcp.tooling import current_scopes
 from comfyui_mcp_skills.application.authorization import AuthorizationContext, Scope
 from comfyui_mcp_skills.domain.control_plane import ControlPlaneKind, validate_control_plane_id
+from comfyui_mcp_skills.domain.identifiers import validate_identifier
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,11 +76,28 @@ def create_prompt_handlers(
                 ),
             ],
         ),
+        Prompt(
+            name="select-or-import-workflow",
+            description="Select a published workflow or safely preview an immutable import.",
+            arguments=[
+                PromptArgument(
+                    name="goal",
+                    description="Bounded natural-language generation goal.",
+                    required=True,
+                ),
+                PromptArgument(
+                    name="server_id",
+                    description="Optional configured ComfyUI server ID.",
+                    required=False,
+                ),
+            ],
+        ),
     )
     prompt_scopes = {
         "operate-job": frozenset({Scope.EXECUTE}),
         "diagnose-failure": frozenset({Scope.EXECUTE}),
         "inspect-dependencies": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+        "select-or-import-workflow": frozenset({Scope.AUTHOR}),
     }
 
     def visible_prompts() -> tuple[Prompt, ...]:
@@ -123,6 +141,12 @@ def create_prompt_handlers(
             _reject_unknown_arguments(arguments, {"workflow_id", "revision_id"})
             text = _inspect_dependencies_prompt(workflow_id, revision_id)
             description = "Inspect dependency metadata without exposing workflow payloads."
+        elif params.name == "select-or-import-workflow":
+            goal = _required_text(arguments, "goal", maximum=1000)
+            server_id = _optional_server_id(arguments, "server_id")
+            _reject_unknown_arguments(arguments, {"goal", "server_id"})
+            text = _select_or_import_prompt(goal, server_id)
+            description = "Select an existing workflow or preview a safe immutable import."
         else:
             raise MCPError(
                 code=INVALID_PARAMS,
@@ -152,6 +176,23 @@ def _optional_id(arguments: dict[str, str], name: str, kind: ControlPlaneKind) -
         return ""
     try:
         return validate_control_plane_id(kind, value)
+    except ValueError as exc:
+        raise MCPError(code=INVALID_PARAMS, message=f"Invalid prompt argument: {name}") from exc
+
+
+def _required_text(arguments: dict[str, str], name: str, *, maximum: int) -> str:
+    value = arguments.get(name)
+    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+        raise MCPError(code=INVALID_PARAMS, message=f"Invalid prompt argument: {name}")
+    return value.strip()
+
+
+def _optional_server_id(arguments: dict[str, str], name: str) -> str:
+    value = arguments.get(name, "")
+    if value == "":
+        return ""
+    try:
+        return validate_identifier(value, field=name)
     except ValueError as exc:
         raise MCPError(code=INVALID_PARAMS, message=f"Invalid prompt argument: {name}") from exc
 
@@ -215,4 +256,31 @@ def _inspect_dependencies_prompt(workflow_id: str, revision_id: str) -> str:
 5. Never request, reproduce, or expose credentials or tokens. Never expose
    authorization headers, raw generation prompts, or filesystem paths. Never expose
    workflow graph payloads or resolved inputs.
+"""
+
+
+def _select_or_import_prompt(goal: str, server_id: str) -> str:
+    server_constraint = (
+        f"Restrict discovery and import preview to configured server {server_id}."
+        if server_id
+        else (
+            "Use the configured default server unless the caller selects another advertised server."
+        )
+    )
+    return f"""Select or safely import a workflow for this goal: {goal}
+
+1. {server_constraint}
+2. Call comfyui.capability.search exactly once for relevant published workflows, then
+   call comfyui.workflow.describe at most three times. Use semantic summaries only;
+   never request raw workflow graph payloads or resolved inputs.
+3. Prefer a compatible published workflow. If none exists, use the separate
+   comfyui.admin.workflow.import capability in preview mode exactly once.
+4. Inspect unsupported_nodes, dropped_fields, dependencies, validation issues, and
+   requires_manual_review. Commit at most once only when requires_manual_review is
+   false and dependency coverage is complete. Never publish the imported Revision
+   automatically.
+5. Stop after selecting one workflow or returning one import result. Do not poll,
+   loop, or start a hosted/background worker.
+6. Never request, reproduce, or expose credentials, tokens, authorization headers,
+   filesystem paths, raw workflow graph payloads, or resolved inputs.
 """

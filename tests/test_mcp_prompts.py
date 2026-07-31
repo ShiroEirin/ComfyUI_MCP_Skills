@@ -33,6 +33,7 @@ async def test_prompt_handlers_list_and_render_bounded_safe_guidance() -> None:
         "operate-job",
         "diagnose-failure",
         "inspect-dependencies",
+        "select-or-import-workflow",
     ]
     assert listed.cache_scope == "private"
     assert all(prompt.arguments for prompt in listed.prompts)
@@ -76,6 +77,29 @@ async def test_prompt_handlers_list_and_render_bounded_safe_guidance() -> None:
 
 
 @pytest.mark.anyio
+async def test_select_or_import_prompt_enforces_preview_before_commit() -> None:
+    handlers = create_prompt_handlers()
+
+    rendered = await handlers.get_prompt(
+        None,
+        GetPromptRequestParams(
+            name="select-or-import-workflow",
+            arguments={"goal": "Generate a portrait", "server_id": "local"},
+        ),
+    )
+
+    text = rendered.messages[0].content.text
+    assert "comfyui.capability.search" in text
+    assert "comfyui.workflow.describe" in text
+    assert "comfyui.admin.workflow.import" in text
+    assert "requires_manual_review" in text
+    assert "preview" in text.lower()
+    assert "Commit at most once" in text
+    assert "dependency coverage is complete" in text
+    assert "Never publish" in text
+
+
+@pytest.mark.anyio
 async def test_server_registers_low_level_prompt_handlers(tmp_path: Path) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps({"default_server": "local", "servers": []}),
@@ -110,7 +134,7 @@ async def test_server_registers_low_level_prompt_handlers(tmp_path: Path) -> Non
             AuthorizationContext(
                 "author", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
             ),
-            {"inspect-dependencies"},
+            {"inspect-dependencies", "select-or-import-workflow"},
         ),
         (
             AuthorizationContext("operations", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS),

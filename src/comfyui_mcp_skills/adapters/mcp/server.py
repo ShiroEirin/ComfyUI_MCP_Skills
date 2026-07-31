@@ -56,7 +56,11 @@ from comfyui_mcp_skills.application.authorization import (
     scopes_for_resource,
     tool_visible,
 )
-from comfyui_mcp_skills.application.capabilities import CapabilityCatalog, ToolInventory
+from comfyui_mcp_skills.application.capabilities import (
+    CAPABILITY_SPECS,
+    CapabilityCatalog,
+    ToolInventory,
+)
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
@@ -70,10 +74,19 @@ from comfyui_mcp_skills.application.orchestration import (
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.workflow_graph import (
+    WorkflowGraphService,
+    WorkflowValidationService,
+)
+from comfyui_mcp_skills.application.workflow_inspection import WorkflowInspectionService
 from comfyui_mcp_skills.domain.control_plane import parse_legacy_resource_uri
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
+from comfyui_mcp_skills.domain.workflow_semantics import (
+    DependencyExtractorRegistry,
+    ParameterRoleRegistry,
+)
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
 from comfyui_mcp_skills.infrastructure.persistence.orchestration import (
     SQLiteOrchestrationRepository,
@@ -86,7 +99,13 @@ from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
     SQLiteLegacyResourceAliasReader,
 )
 
-G3_AUTHORING_TOOLS = frozenset({"comfyui.revision.list", "comfyui.workflow.describe"})
+G3_AUTHORING_TOOLS = frozenset(
+    {
+        "comfyui.revision.list",
+        "comfyui.workflow.describe",
+        "comfyui.workflow.dependencies.check",
+    }
+)
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 logger = logging.getLogger(__name__)
 
@@ -135,9 +154,28 @@ def create_server(
     jobs = JobService(servers, run_repository, gateway_factory)
     discovery = DiscoveryService(servers, gateway_factory)
     observation = ObservationService(servers, gateway_factory)
+    workflow_graphs = WorkflowGraphService(
+        ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+    )
+    workflow_inspection = (
+        WorkflowInspectionService(workflow_repository, workflow_graphs, WorkflowValidationService())
+        if repositories.workflow_store == "sqlite"
+        else None
+    )
     fixed_surface = [*fixed_tools(), *phase_h_tools()]
-    capability_catalog = CapabilityCatalog.default()
-    tool_inventory = ToolInventory(fixed_surface, max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT)
+    capability_catalog = CapabilityCatalog(
+        spec
+        for spec in CAPABILITY_SPECS
+        if repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS
+    )
+    tool_inventory = ToolInventory(
+        (
+            tool
+            for tool in fixed_surface
+            if tool_visible(tool.name, authorization.toolset, authorization.scopes)
+        ),
+        max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT,
+    )
 
     subscription_bus = InMemorySubscriptionBus()
     listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
@@ -235,6 +273,7 @@ def create_server(
         enabled_workflows,
         resource_aliases=resource_aliases,
         require_authorization=enforce_authorization,
+        workflow_inspection=workflow_inspection,
     )
     prompt_handlers = create_prompt_handlers(authorization, require_authorization=True)
 
@@ -423,28 +462,25 @@ def create_server(
                     for revision in revisions
                 ]
                 return tool_result({"workflow_id": workflow_id, "revisions": summaries})
-            if params.name == "comfyui.workflow.describe":
+            if params.name in {
+                "comfyui.workflow.describe",
+                "comfyui.workflow.dependencies.check",
+            }:
                 validate_fixed_arguments(arguments, {"workflow_id", "server_id"})
                 workflow_id = required_string(arguments, "workflow_id")
                 server_id = required_string(arguments, "server_id")
-                description = await anyio.to_thread.run_sync(
-                    lambda: workflow_repository.describe(workflow_id, server_id)
+                gateway = gateway_factory(servers.connection(server_id))
+                if workflow_inspection is None:
+                    raise ValueError("Workflow inspection requires the SQLite Workflow store")
+                operation = (
+                    workflow_inspection.describe
+                    if params.name == "comfyui.workflow.describe"
+                    else workflow_inspection.dependencies_check
                 )
-                return tool_result(
-                    {
-                        key: description[key]
-                        for key in (
-                            "server_id",
-                            "workflow_id",
-                            "description",
-                            "revision_id",
-                            "deployment_id",
-                            "content_digest",
-                            "validation_status",
-                            "published",
-                        )
-                    }
+                result = await anyio.to_thread.run_sync(
+                    lambda: operation(workflow_id, server_id, gateway)
                 )
+                return tool_result(result)
             if params.name == "comfyui.job.get":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id"})
                 server_id = required_string(arguments, "server_id")

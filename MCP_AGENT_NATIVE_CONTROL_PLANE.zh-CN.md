@@ -1547,6 +1547,8 @@ Published Revision + arguments + Asset URI
 - Resource templates 可被 Host 发现，旧 Output 模板明确标记为 Artifact 兼容别名。
 
 ### 阶段 I：导入、语义图与依赖报告（P0）
+> 实施状态：2026-07-31 已完成。已交付 API/Editor 导入预览、不可变 Revision 提交、语义图分面 Resources、确定性参数角色、依赖报告与选择/导入 Prompt；图级修改与发布仍属于阶段 J。
+
 
 交付：
 
