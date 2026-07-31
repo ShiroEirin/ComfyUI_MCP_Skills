@@ -1,38 +1,33 @@
 {
   "qaMode": "deep",
-  "scope": "G1 Job/Asset deterministic migration, SQLite repositories, atomic store routing, legacy resource aliases, stale File repository fencing, retention, and live ComfyUI execution",
+  "scope": "G3 immutable Workflow Revision/Deployment cutover and G4 immutable Plan/canonical Job/Attempt execution identity cutover",
   "outcome": "pass",
-  "conclusion": "G1 quality gates, independent closeout reviews, and a real ComfyUI Anima workflow execution pass with no remaining P0/P1/HIGH findings.",
+  "conclusion": "G3/G4 cutovers pass static analysis, full regression, transactional persistence, identity, recovery, monotonic state, owner isolation, and MCP public-output checks with no remaining P0/P1 findings.",
   "findings": [],
   "fileReferences": [
-    "src/comfyui_mcp_skills/infrastructure/persistence/control_plane.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/g1_migration.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/file_migration.py",
+    "src/comfyui_mcp_skills/application/planning.py",
+    "src/comfyui_mcp_skills/application/execution.py",
+    "src/comfyui_mcp_skills/application/jobs.py",
+    "src/comfyui_mcp_skills/domain/models.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/g3_migration.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_workflows.py",
     "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_runs.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_assets.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/repository_factory.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/resource_aliases.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/store_fencing.py",
-    "src/comfyui_mcp_skills/adapters/mcp/resources.py",
-    "comfyui_skills_cli/history_writer.py"
+    "src/comfyui_mcp_skills/adapters/mcp/server.py",
+    "src/comfyui_mcp_skills/adapters/mcp/tooling.py",
+    "tests/test_g3_persistence.py",
+    "tests/test_g3_mcp_authoring.py",
+    "tests/test_g4_planning.py"
   ],
   "commands": [
-    {"command": "uv run ruff check <G1 source and test scope>", "result": "passed"},
+    {"command": "uv run ruff check --fix src/comfyui_mcp_skills tests/test_g4_planning.py", "result": "passed"},
+    {"command": "uv run ruff format src/comfyui_mcp_skills tests/test_g4_planning.py", "result": "passed"},
     {"command": "uv run mypy src/comfyui_mcp_skills", "result": "passed"},
-    {"command": "uv run python -m pytest -q", "result": "391 passed, 1 skipped"},
-    {"command": "uv run python -m pytest --cov --cov-report=term-missing -q", "result": "390 passed, 1 skipped; 83.38% coverage; 80% gate passed before final fencing regression test"},
-    {"command": "node run_workflow_args.js run local/anima-txt2img-aesthetic-lora ../../runtime/comfyui-manager/args/g1_live_smoke.json", "result": "success; prompt_id fe6ec5aa-f66f-40c7-a2b8-daee44dbe7fb; output g1-live-smoke_00001_.png"}
+    {"command": "uv run python -m pytest -q tests/test_g4_planning.py", "result": "5 passed"},
+    {"command": "uv run python -m pytest -q", "result": "411 passed, 1 skipped"}
   ],
-  "liveSmoke": {
-    "workflow": "local/anima-txt2img-aesthetic-lora",
-    "promptId": "fe6ec5aa-f66f-40c7-a2b8-daee44dbe7fb",
-    "seed": 734083764,
-    "output": "D:/github/comfyui-good-anima/v2mini-opt-mini/runtime/comfyui-manager/outputs/anima/2026-07-30/g1-live-smoke_00001_.png",
-    "observed": "2048x2048 image decoded successfully"
-  },
   "independentReview": {
-    "code": "PASS; P0 0, P1 0",
-    "security": "PASS; HIGH 0",
-    "database": "PASS; HIGH 0"
+    "code": "PASS; final closeout found no P0/P1 after all state-machine and recovery fixes",
+    "security": "Prior G4 review findings fixed: owner-bound digest, resolved-input snapshot, filtered public fields",
+    "database": "Prior G4 review findings fixed: canonical identity preservation, monotonic finalize, terminal-state fencing"
   }
 }

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 from collections.abc import Callable, Generator
 from typing import Any, Protocol
 
@@ -11,6 +12,8 @@ from comfyui_mcp_skills.domain.models import Asset, Job, Workflow
 class WorkflowRepository(Protocol):
     def list(self) -> list[Workflow]: ...
     def get(self, server_id: str, workflow_id: str) -> Workflow | None: ...
+    def list_revisions(self, workflow_id: str) -> builtins.list[dict[str, Any]]: ...
+    def describe(self, workflow_id: str, server_id: str) -> dict[str, Any]: ...
 
 
 class RunRepository(Protocol):

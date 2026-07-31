@@ -125,9 +125,7 @@ class MigrationManifest:
             if not isinstance(item, dict):
                 raise ManifestDriftError(f"manifest entry {index} must be an object")
             if any(not isinstance(key, str) for key in item):
-                raise ManifestDriftError(
-                    f"manifest entry {index} field names must be strings"
-                )
+                raise ManifestDriftError(f"manifest entry {index} field names must be strings")
             item_fields = set(item)
             if item_fields != entry_fields:
                 unknown = sorted(item_fields - entry_fields)

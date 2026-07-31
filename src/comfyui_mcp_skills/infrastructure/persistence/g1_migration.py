@@ -1135,9 +1135,7 @@ def _verify_related_rows(
         return
     identifier_set = set(identifiers)
     relation_index = projection.columns.index(relation_column)
-    expected = tuple(
-        row for row in projection.rows if row[relation_index] in identifier_set
-    )
+    expected = tuple(row for row in projection.rows if row[relation_index] in identifier_set)
     columns_sql = ", ".join(projection.columns)
     actual: list[tuple[object, ...]] = []
     for start in range(0, len(identifiers), 400):
@@ -1154,9 +1152,7 @@ def _verify_related_rows(
         sorted(actual, key=lambda row: tuple(row[index] for index in key_indexes))
     )
     if ordered_actual != expected:
-        raise RehearsalFailure(
-            f"database related ID set mismatch in {projection.table}"
-        )
+        raise RehearsalFailure(f"database related ID set mismatch in {projection.table}")
 
 
 def _verify_foreign_keys(connection: sqlite3.Connection) -> None:

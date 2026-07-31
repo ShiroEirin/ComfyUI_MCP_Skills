@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
@@ -13,6 +15,9 @@ from comfyui_mcp_skills.domain.workflow_schema import (
     normalize_parameters,
     validate_parameter_targets,
 )
+from comfyui_mcp_skills.infrastructure.persistence.store_fencing import (
+    assert_file_store_active,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,9 +25,13 @@ logger = logging.getLogger(__name__)
 class FileWorkflowRepository:
     def __init__(self, base_dir: Path) -> None:
         self._base_dir = base_dir.resolve()
+        self._aggregate_kinds = frozenset({"workflow", "revision", "deployment"})
         self._root = (self._base_dir / "data").resolve()
 
+        assert_file_store_active(self._base_dir, self._aggregate_kinds)
+
     def list(self) -> list[Workflow]:
+        assert_file_store_active(self._base_dir, self._aggregate_kinds)
         if not self._root.exists():
             return []
         workflows: list[Workflow] = []
@@ -45,7 +54,14 @@ class FileWorkflowRepository:
         return workflows
 
     def get(self, server_id: str, workflow_id: str) -> Workflow | None:
+        assert_file_store_active(self._base_dir, self._aggregate_kinds)
         return self._load(server_id, workflow_id)
+
+    def list_revisions(self, workflow_id: str) -> builtins.list[dict[str, Any]]:
+        raise RuntimeError("Workflow revisions require the G3 SQLite cutover")
+
+    def describe(self, workflow_id: str, server_id: str) -> dict[str, Any]:
+        raise RuntimeError("Workflow descriptions require the G3 SQLite cutover")
 
     def _load(self, server_id: str, workflow_id: str) -> Workflow | None:
         directory = self._safe_directory(server_id, workflow_id)

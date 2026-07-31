@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from comfyui_mcp_skills.application.ports import AssetRepository, RunRepository
+from comfyui_mcp_skills.application.ports import AssetRepository, RunRepository, WorkflowRepository
 from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
@@ -16,12 +16,15 @@ from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
 from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_assets import SQLiteAssetRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
+from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
 
 StoreBackend = Literal["file", "sqlite"]
 
+_WORKFLOW_AGGREGATES = frozenset({"workflow", "revision", "deployment"})
 _JOB_AGGREGATES = frozenset({"job", "execution_attempt", "idempotency_record", "artifact"})
 _ASSET_AGGREGATES = frozenset({"asset"})
-_ROUTED_AGGREGATES = _JOB_AGGREGATES | _ASSET_AGGREGATES
+_ROUTED_AGGREGATES = _WORKFLOW_AGGREGATES | _JOB_AGGREGATES | _ASSET_AGGREGATES
 
 
 class StoreRoutingError(RuntimeError):
@@ -32,8 +35,10 @@ class StoreRoutingError(RuntimeError):
 class RepositoryBundle:
     """Repositories and the immutable backend choice made for this process."""
 
+    workflows: WorkflowRepository
     runs: RunRepository
     assets: AssetRepository
+    workflow_store: StoreBackend
     run_store: StoreBackend
     asset_store: StoreBackend
     store: SQLiteControlPlaneStore | None
@@ -59,8 +64,10 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
     database_path = project_root / "data" / "control-plane.sqlite3"
     if not database_path.exists():
         return RepositoryBundle(
+            workflows=FileWorkflowRepository(project_root),
             runs=FileRunRepository(project_root),
             assets=FileAssetRepository(project_root),
+            workflow_store="file",
             run_store="file",
             asset_store="file",
             store=None,
@@ -70,6 +77,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
     try:
         store.initialize()
         states = _read_migration_states(store.path)
+        workflow_store = _backend_for_group("workflow", _WORKFLOW_AGGREGATES, states)
         run_store = _backend_for_group("job", _JOB_AGGREGATES, states)
         asset_store = _backend_for_group("asset", _ASSET_AGGREGATES, states)
     except StoreRoutingError:
@@ -77,8 +85,13 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
     except (OSError, sqlite3.Error, RuntimeError, ValueError) as exc:
         raise StoreRoutingError(f"cannot establish repository routing: {exc}") from exc
 
+    workflows: WorkflowRepository
     runs: RunRepository
     assets: AssetRepository
+    if workflow_store == "sqlite":
+        workflows = SQLiteWorkflowRepository(store)
+    else:
+        workflows = FileWorkflowRepository(project_root)
     if run_store == "sqlite":
         runs = SQLiteRunRepository(store)
     else:
@@ -88,8 +101,10 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
     else:
         assets = FileAssetRepository(project_root)
     return RepositoryBundle(
+        workflows=workflows,
         runs=runs,
         assets=assets,
+        workflow_store=workflow_store,
         run_store=run_store,
         asset_store=asset_store,
         store=store,
@@ -107,7 +122,7 @@ def _read_migration_states(database_path: Path) -> tuple[_MigrationState, ...]:
             """
             SELECT aggregate_kind, version, status, checksum, switched_at
             FROM store_migrations
-            WHERE aggregate_kind IN (?, ?, ?, ?, ?)
+            WHERE aggregate_kind IN (?, ?, ?, ?, ?, ?, ?, ?)
             ORDER BY aggregate_kind, version
             """,
             tuple(sorted(_ROUTED_AGGREGATES)),

@@ -225,6 +225,11 @@ class JobService:
             client_id=saved.client_id if saved else "",
             request_digest=saved.request_digest if saved else "",
             owner_id=saved.owner_id if saved else owner_id,
+            job_id=saved.job_id if saved else "",
+            plan_id=saved.plan_id if saved else "",
+            revision_id=saved.revision_id if saved else "",
+            deployment_id=saved.deployment_id if saved else "",
+            plan_digest=saved.plan_digest if saved else "",
         )
 
     @staticmethod

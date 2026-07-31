@@ -25,6 +25,7 @@ _STATUS_PRIORITY = {
     "interrupted": 5,
     "error": 5,
 }
+_TERMINAL_STATUSES = frozenset({"completed", "cancelled", "interrupted", "error"})
 
 
 class SQLiteRunRepository:
@@ -178,7 +179,7 @@ class SQLiteRunRepository:
         return hashlib.sha256(payload).hexdigest()
 
     def save(self, job: Job, *, lease_token: str = "") -> None:
-        job_id = derive_legacy_job_id(job.server_id, job.prompt_id)
+        job_id = job.job_id or derive_legacy_job_id(job.server_id, job.prompt_id)
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
@@ -268,9 +269,16 @@ class SQLiteRunRepository:
                 str(existing[1]) != job.owner_id or str(existing[2]) != job.workflow_id
             ):
                 raise RuntimeError("job identity is already owned by a different request")
-            if existing is None or _STATUS_PRIORITY.get(
-                str(existing[0]), 0
-            ) <= _STATUS_PRIORITY.get(job.status, 0):
+            existing_status = str(existing[0]) if existing is not None else ""
+            if (
+                existing is None
+                or existing_status == job.status
+                or (
+                    existing_status not in _TERMINAL_STATUSES
+                    and _STATUS_PRIORITY.get(existing_status, 0)
+                    <= _STATUS_PRIORITY.get(job.status, 0)
+                )
+            ):
                 connection.execute(
                     """
                     INSERT INTO jobs(
@@ -386,9 +394,12 @@ class SQLiteRunRepository:
                 SELECT execution_attempts.upstream_prompt_id, execution_attempts.server_id,
                        jobs.workflow_id, jobs.status, jobs.error, jobs.outputs_json,
                        COALESCE(idempotency_records.key, ''), execution_attempts.client_id,
-                       COALESCE(idempotency_records.request_digest, ''), jobs.owner_id
+                       COALESCE(idempotency_records.request_digest, ''), jobs.owner_id,
+                       jobs.job_id, jobs.plan_id, jobs.revision_id, jobs.deployment_id,
+                       COALESCE(execution_plans.plan_digest, '')
                 FROM jobs
                 JOIN execution_attempts ON execution_attempts.job_id = jobs.job_id
+                LEFT JOIN execution_plans ON execution_plans.plan_id = jobs.plan_id
                 {join}
                 WHERE {predicate}
                 """,
@@ -409,6 +420,11 @@ class SQLiteRunRepository:
             client_id=row[7],
             request_digest=row[8],
             owner_id=row[9],
+            job_id=row[10] if row[11] else "",
+            plan_id=row[11] or "",
+            revision_id=row[12] or "",
+            deployment_id=row[13] or "",
+            plan_digest=row[14] or "",
         )
 
     def _delete_reserved(

@@ -38,8 +38,12 @@ JOB_SCHEMA: dict[str, Any] = {
         },
         "outputs": {"type": "array", "items": {"type": "object"}},
         "error": {"type": "string"},
-        "idempotency_key": {"type": "string"},
-        "client_id": {"type": "string"},
+        "job_id": {"type": "string"},
+        "plan_id": {"type": "string"},
+        "revision_id": {"type": "string"},
+        "deployment_id": {"type": "string"},
+        "plan_digest": {"type": "string"},
+        "job_uri": {"type": "string"},
     },
     "required": [
         "prompt_id",
@@ -48,8 +52,12 @@ JOB_SCHEMA: dict[str, Any] = {
         "status",
         "outputs",
         "error",
-        "idempotency_key",
-        "client_id",
+        "job_id",
+        "plan_id",
+        "revision_id",
+        "deployment_id",
+        "plan_digest",
+        "job_uri",
     ],
     "additionalProperties": False,
 }
@@ -106,6 +114,9 @@ def job_dict(job: Job) -> dict[str, Any]:
     data["outputs"] = list(job.outputs)
     data.pop("request_digest", None)
     data.pop("owner_id", None)
+    data.pop("idempotency_key", None)
+    data.pop("client_id", None)
+    data["job_uri"] = f"comfyui://jobs/{job.job_id}" if job.job_id else ""
     return data
 
 
@@ -308,5 +319,32 @@ def fixed_tools() -> list[Tool]:
             },
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
+        Tool(
+            name="comfyui.revision.list",
+            description="List immutable revisions for one workflow.",
+            input_schema={
+                "type": "object",
+                "properties": {"workflow_id": {"type": "string", "minLength": 1}},
+                "required": ["workflow_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.workflow.describe",
+            description="Describe one server's published workflow revision and deployment.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string", "minLength": 1},
+                    "server_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["workflow_id", "server_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
     ]

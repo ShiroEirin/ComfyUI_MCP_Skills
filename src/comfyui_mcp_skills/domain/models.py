@@ -63,3 +63,8 @@ class Job:
     client_id: str = ""
     request_digest: str = ""
     owner_id: str = ""
+    job_id: str = ""
+    plan_id: str = ""
+    revision_id: str = ""
+    deployment_id: str = ""
+    plan_digest: str = ""

@@ -50,6 +50,7 @@ from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
@@ -63,8 +64,8 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
 from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
     SQLiteLegacyResourceAliasReader,
 )
-from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
 
+G3_AUTHORING_TOOLS = frozenset({"comfyui.revision.list", "comfyui.workflow.describe"})
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 logger = logging.getLogger(__name__)
 
@@ -80,9 +81,10 @@ def create_server(
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
-    catalog = WorkflowCatalog(FileWorkflowRepository(base_dir))
-    servers = ServerRegistry(base_dir)
     repositories = repositories or create_repository_bundle(base_dir)
+    workflow_repository = repositories.workflows
+    catalog = WorkflowCatalog(workflow_repository)
+    servers = ServerRegistry(base_dir)
     enforce_authorization = authorization is not None
     authorization = authorization or AuthorizationContext(
         "internal", frozenset(Scope), Toolset.EXECUTION
@@ -94,8 +96,20 @@ def create_server(
         upload_roots=upload_roots if upload_roots is not None else [base_dir / "uploads"],
         max_bytes=max_upload_bytes,
     )
+    planning = (
+        ExecutionPlanningService(repositories.store, workflow_repository)
+        if repositories.store is not None
+        and repositories.workflow_store == "sqlite"
+        and repositories.run_store == "sqlite"
+        else None
+    )
     execution = ExecutionService(
-        catalog, servers, run_repository, asset_repository, gateway_factory
+        catalog,
+        servers,
+        run_repository,
+        asset_repository,
+        gateway_factory,
+        planning=planning,
     )
     jobs = JobService(servers, run_repository, gateway_factory)
     discovery = DiscoveryService(servers, gateway_factory)
@@ -147,6 +161,7 @@ def create_server(
         if enforce_authorization and granted_scopes is None:
             return [], {}
         active_scopes = granted_scopes or authorization.scopes
+        g3_tools_enabled = repositories.workflow_store == "sqlite"
         include_dynamic = (
             not enforce_authorization or authorization.toolset is Toolset.EXECUTION
         ) and (granted_scopes is None or Scope.EXECUTE in active_scopes)
@@ -178,12 +193,17 @@ def create_server(
             tools.extend(
                 tool
                 for tool in fixed_tools()
-                if tool_visible(tool.name, authorization.toolset, active_scopes)
+                if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
+                and tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
                 workflow_map = {}
         else:
-            tools.extend(fixed_tools())
+            tools.extend(
+                tool
+                for tool in fixed_tools()
+                if g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS
+            )
         return tools, workflow_map
 
     async def list_tools(
@@ -274,6 +294,44 @@ def create_server(
                         abandon_on_cancel=True,
                     )
                 return tool_result(job_dict(job))
+            if params.name == "comfyui.revision.list":
+                validate_fixed_arguments(arguments, {"workflow_id"})
+                workflow_id = required_string(arguments, "workflow_id")
+                revisions = await anyio.to_thread.run_sync(
+                    lambda: workflow_repository.list_revisions(workflow_id)
+                )
+                summaries = [
+                    {
+                        "revision_id": revision["revision_id"],
+                        "workflow_id": revision["workflow_id"],
+                        "content_digest": revision["content_digest"],
+                        "created_at": revision["created_at"],
+                    }
+                    for revision in revisions
+                ]
+                return tool_result({"workflow_id": workflow_id, "revisions": summaries})
+            if params.name == "comfyui.workflow.describe":
+                validate_fixed_arguments(arguments, {"workflow_id", "server_id"})
+                workflow_id = required_string(arguments, "workflow_id")
+                server_id = required_string(arguments, "server_id")
+                description = await anyio.to_thread.run_sync(
+                    lambda: workflow_repository.describe(workflow_id, server_id)
+                )
+                return tool_result(
+                    {
+                        key: description[key]
+                        for key in (
+                            "server_id",
+                            "workflow_id",
+                            "description",
+                            "revision_id",
+                            "deployment_id",
+                            "content_digest",
+                            "validation_status",
+                            "published",
+                        )
+                    }
+                )
             if params.name == "comfyui.job.get":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id"})
                 server_id = required_string(arguments, "server_id")

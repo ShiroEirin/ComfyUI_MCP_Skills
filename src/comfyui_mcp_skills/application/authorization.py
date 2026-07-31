@@ -47,6 +47,8 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.node.list": frozenset({Scope.OBSERVE}),
     "comfyui.node.describe": frozenset({Scope.OBSERVE}),
     "comfyui.model.list": frozenset({Scope.OBSERVE}),
+    "comfyui.revision.list": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+    "comfyui.workflow.describe": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
 }
 _RESOURCE_SCOPES: dict[str, frozenset[Scope]] = {
     "workflow": frozenset({Scope.EXECUTE, Scope.OBSERVE, Scope.AUTHOR}),
