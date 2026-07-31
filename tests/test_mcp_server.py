@@ -17,6 +17,7 @@ from mcp.shared.exceptions import MCPError
 from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
 from comfyui_mcp_skills.adapters.mcp.server import create_server
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
+from comfyui_mcp_skills.application.authorization import AuthorizationContext, Scope, Toolset
 
 
 class FakeGateway:
@@ -319,7 +320,13 @@ async def test_capability_search_does_not_mutate_active_tool_list(tmp_path: Path
 async def test_read_only_discovery_tools_are_paginated(tmp_path: Path) -> None:
     _project(tmp_path)
     gateway = FakeGateway()
-    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
 
     async with Client(server) as client:
         names = {tool.name for tool in (await client.list_tools()).tools}

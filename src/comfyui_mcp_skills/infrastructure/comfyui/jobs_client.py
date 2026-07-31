@@ -10,6 +10,8 @@ from typing import Any
 
 from comfyui_mcp_skills.infrastructure.comfyui.client_protocol import SharedClient
 
+_MAX_QUEUE_RESPONSE_BYTES = 8 * 1024 * 1024
+
 
 class JobsClient(SharedClient):
     """Own prompt execution, history, queue, and WebSocket behavior."""
@@ -83,9 +85,14 @@ class JobsClient(SharedClient):
         return resp.json()
 
     def get_queue(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
-        resp = self._get("/queue", timeout=self._query_timeout(timeout_seconds))
-        resp.raise_for_status()
-        return resp.json()
+        data = self._get_json_bounded(
+            "/queue",
+            max_bytes=_MAX_QUEUE_RESPONSE_BYTES,
+            timeout=self._query_timeout(timeout_seconds),
+        )
+        if not isinstance(data, dict):
+            raise ValueError("ComfyUI queue response is invalid")
+        return data
 
     def _query_timeout(self, timeout_seconds: float | None) -> float:
         if timeout_seconds is None:

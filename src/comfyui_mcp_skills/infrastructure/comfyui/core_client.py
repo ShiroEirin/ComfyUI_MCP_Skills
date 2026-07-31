@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import math
 import mimetypes
 import os
 import uuid
@@ -11,6 +13,27 @@ from typing import Any
 from urllib.parse import quote
 
 import requests
+
+_MAX_JSON_NUMBER_CHARS = 128
+
+
+def _bounded_json_int(value: str) -> int:
+    if len(value) > _MAX_JSON_NUMBER_CHARS:
+        raise ValueError("ComfyUI JSON integer is too large")
+    return int(value)
+
+
+def _bounded_json_float(value: str) -> float:
+    if len(value) > _MAX_JSON_NUMBER_CHARS:
+        raise ValueError("ComfyUI JSON number is too large")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("ComfyUI JSON number is not finite")
+    return result
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"ComfyUI JSON constant is unsupported: {value}")
 
 
 class _MultipartStream:
@@ -82,6 +105,39 @@ class CoreClient:
             timeout=timeout,
             **kwargs,
         )
+
+    def _get_json_bounded(self, path: str, *, max_bytes: int, **kwargs: Any) -> Any:
+        if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
+            raise ValueError("max_bytes must be a positive integer")
+        response = self._get(path, stream=True, allow_redirects=False, **kwargs)
+        try:
+            response.raise_for_status()
+            content_length = response.headers.get("Content-Length")
+            if content_length is not None:
+                try:
+                    declared = int(content_length)
+                except ValueError as exc:
+                    raise ValueError("ComfyUI response Content-Length is invalid") from exc
+                if declared < 0 or declared > max_bytes:
+                    raise ValueError("ComfyUI JSON response is too large")
+            payload = bytearray()
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                payload.extend(chunk)
+                if len(payload) > max_bytes:
+                    raise ValueError("ComfyUI JSON response is too large")
+            try:
+                return json.loads(
+                    payload.decode("utf-8"),
+                    parse_int=_bounded_json_int,
+                    parse_float=_bounded_json_float,
+                    parse_constant=_reject_json_constant,
+                )
+            except (json.JSONDecodeError, UnicodeDecodeError, RecursionError, ValueError) as exc:
+                raise ValueError("ComfyUI JSON response is invalid") from exc
+        finally:
+            response.close()
 
     def _post(self, path: str, json_data: Any = None, **kwargs: Any) -> requests.Response:
         timeout = kwargs.pop("timeout", self.timeout)

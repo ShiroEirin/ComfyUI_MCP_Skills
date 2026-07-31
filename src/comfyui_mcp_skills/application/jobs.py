@@ -2,17 +2,33 @@
 
 from __future__ import annotations
 
+import builtins
 import logging
 import mimetypes
 import re
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from comfyui_mcp_skills.application.pagination import (
+    decode_keyset_cursor,
+    encode_keyset_cursor,
+)
 from comfyui_mcp_skills.application.ports import ComfyUIGateway, RunRepository
 from comfyui_mcp_skills.application.servers import ServerRegistry
-from comfyui_mcp_skills.domain.errors import JobNotFound, ServerOffline, UnsafeCancel
+from comfyui_mcp_skills.domain.control_plane import (
+    canonical_resource_uri,
+    validate_control_plane_id,
+)
+from comfyui_mcp_skills.domain.errors import (
+    JobNotFound,
+    ServerOffline,
+    UnsafeCancel,
+    WorkflowArgumentsError,
+)
+from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Job
 
 logger = logging.getLogger(__name__)
@@ -23,6 +39,21 @@ _AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
 _SAFE_ERROR_FIELD = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_ERROR_MESSAGES = 8
 _MAX_ERROR_LENGTH = 2048
+_JOB_LIST_STATUSES = frozenset(
+    {
+        "reserved",
+        "submission_unknown",
+        "submitted",
+        "queued",
+        "running",
+        "completed",
+        "error",
+        "interrupted",
+        "cancelled",
+        "lost",
+    }
+)
+_MAX_JOB_LIST_LIMIT = 100
 
 
 class JobService:
@@ -35,6 +66,104 @@ class JobService:
         self._servers = servers
         self._runs = runs
         self._gateway_factory = gateway_factory
+
+    def list(
+        self,
+        *,
+        owner_id: str,
+        limit: int = 50,
+        status: str = "",
+        workflow_id: str = "",
+        server_id: str = "",
+        created_after: str = "",
+        cursor: str = "",
+    ) -> dict[str, Any]:
+        """List one owner's canonical jobs using filter-bound keyset pagination."""
+        if not isinstance(owner_id, str) or not owner_id or "\x00" in owner_id:
+            raise WorkflowArgumentsError("owner_id must be a non-empty string")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= _MAX_JOB_LIST_LIMIT
+        ):
+            raise WorkflowArgumentsError(
+                f"limit must be an integer between 1 and {_MAX_JOB_LIST_LIMIT}"
+            )
+        if not isinstance(status, str) or (status and status not in _JOB_LIST_STATUSES):
+            raise WorkflowArgumentsError("status must be a supported job status")
+        if not isinstance(cursor, str):
+            raise WorkflowArgumentsError("cursor must be an opaque string")
+        workflow_id = self._list_identifier(workflow_id, field="workflow_id")
+        server_id = self._list_identifier(server_id, field="server_id")
+        created_after = self._list_timestamp(created_after, field="created_after")
+        filters = {
+            "owner_id": owner_id,
+            "status": status,
+            "workflow_id": workflow_id,
+            "server_id": server_id,
+            "created_after": created_after,
+        }
+        after_created_at = ""
+        after_job_id = ""
+        if cursor:
+            try:
+                after_created_at, after_job_id = decode_keyset_cursor(cursor, filters=filters)
+                after_created_at = self._list_timestamp(after_created_at, field="cursor created_at")
+                validate_control_plane_id("job", after_job_id)
+            except ValueError as exc:
+                raise WorkflowArgumentsError(str(exc)) from exc
+        rows = self._runs.list_jobs(
+            owner_id,
+            limit=limit + 1,
+            status=status,
+            workflow_id=workflow_id,
+            server_id=server_id,
+            created_after=created_after,
+            after_created_at=after_created_at,
+            after_job_id=after_job_id,
+        )
+        page_rows = rows[:limit]
+        items = [
+            {
+                "job_uri": canonical_resource_uri("job", row["job_id"]),
+                "job_id": row["job_id"],
+                "workflow_id": row["workflow_id"],
+                "revision_id": row["revision_id"],
+                "deployment_id": row["deployment_id"],
+                "server_id": row["server_id"],
+                "status": row["status"],
+                "created_at": row["created_at"],
+            }
+            for row in page_rows
+        ]
+        next_cursor = ""
+        if len(rows) > limit:
+            last = page_rows[-1]
+            next_cursor = encode_keyset_cursor(last["created_at"], last["job_id"], filters=filters)
+        return {"items": items, "next_cursor": next_cursor}
+
+    @staticmethod
+    def _list_identifier(value: object, *, field: str) -> str:
+        if value == "":
+            return ""
+        try:
+            return validate_identifier(value, field=field)
+        except ValueError as exc:
+            raise WorkflowArgumentsError(str(exc)) from exc
+
+    @staticmethod
+    def _list_timestamp(value: object, *, field: str) -> str:
+        if value == "":
+            return ""
+        if not isinstance(value, str):
+            raise WorkflowArgumentsError(f"{field} must be an ISO-8601 timestamp")
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise WorkflowArgumentsError(f"{field} must be an ISO-8601 timestamp") from exc
+        if parsed.tzinfo is None:
+            raise WorkflowArgumentsError(f"{field} must include a timezone")
+        return parsed.astimezone(timezone.utc).isoformat()
 
     def get(self, server_id: str, prompt_id: str, *, owner_id: str = "") -> Job:
         return self._get_until(server_id, prompt_id, owner_id=owner_id)
@@ -74,7 +203,9 @@ class JobService:
                     owner_id=owner_id,
                 )
             elif status_info.get("completed", False) or history.get("outputs"):
-                outputs = tuple(self._outputs(server_id, prompt_id, history.get("outputs", {})))
+                outputs: tuple[dict[str, Any], ...] = tuple(
+                    self._outputs(server_id, prompt_id, history.get("outputs", {}))
+                )
                 job = self._copy(
                     saved,
                     server_id,
@@ -239,11 +370,13 @@ class JobService:
         )
 
     @staticmethod
-    def _in_queue(items: list[Any], prompt_id: str) -> bool:
+    def _in_queue(items: builtins.list[Any], prompt_id: str) -> bool:
         return any(len(item) > 1 and item[1] == prompt_id for item in items)
 
     @staticmethod
-    def _outputs(server_id: str, prompt_id: str, outputs: dict[str, Any]) -> list[dict[str, Any]]:
+    def _outputs(
+        server_id: str, prompt_id: str, outputs: dict[str, Any]
+    ) -> builtins.list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
         for node_output in outputs.values():
             if not isinstance(node_output, dict):

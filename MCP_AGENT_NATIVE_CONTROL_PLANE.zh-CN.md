@@ -1,9 +1,9 @@
 # ComfyUI MCP Skills：Agent 原生超级控制平面设计与开发路线
 
-> 状态：架构蓝图已审查，G0 实施前置决策已验收
+> 状态：架构蓝图已审查，G0–G6 与 H 纵向切片已验收
 > 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 本地工作区
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
-> 更新日期：2026-07-30
+> 更新日期：2026-07-31
 
 ## 目录
 
@@ -45,7 +45,7 @@ MCP 完整能力
   + CLI 难以表达的图、资产与执行智能
 ```
 
-当前实现已经完成可靠的工作流执行链，包括动态工作流 Tool、媒体上传、持久化 Job、幂等、进度、恢复查询和输出 Resource。但它仍是超级控制平面的执行内核，不是最终产品。
+当前实现已经完成可靠执行链与阶段 H 观察面：动态工作流 Tool、媒体上传、持久化 Job、幂等与恢复、Resource 更新、所有者绑定 Job 分页、队列、脱敏日志、模板/子图摘要、可选 API 能力矩阵、canonical Resources 和首批 MCP Prompts。它仍是超级控制平面的执行与观察内核，不是最终产品。
 
 后续开发不能再以“一条 CLI 命令对应一个 MCP Tool”为主线，也不能把 CLI 没有的能力视为非必要范围。应从 Agent 完成目标所需的信息、决策和闭环出发设计能力。
 
@@ -1519,6 +1519,8 @@ Published Revision + arguments + Asset URI
 
 ### 阶段 H：可观测性与 CLI 能力下限（P0）
 
+> 实施状态：2026-07-31 已完成。Manager install 仅提供非写入 capability 探测；依赖安装、Policy、Approval、Provisioning worker 等 P2 能力未在本阶段推进。
+
 交付：
 
 - `comfyui.job.list`
@@ -1527,7 +1529,7 @@ Published Revision + arguments + Asset URI
 - `comfyui.server.capabilities`
 - capability-aware Gateway 探测矩阵：`/api/jobs`、`/v2/userdata`（降级 `/userdata`）、`/node_replacements`、Manager queue/status/install
 - `comfyui.template.list`
-- `comfyui.template.subgraph.list`
+- `comfyui.subgraph.list` / `comfyui.subgraph.get`
 - `comfyui.server.free`
 - 统一的 cursor 分页与脱敏组件
 - Job Resource 的 `ResourceUpdated` 发布、`subscriptions/listen` 和 `job.get`/Resource refetch 降级

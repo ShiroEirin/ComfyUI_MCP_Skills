@@ -34,6 +34,12 @@ _LEGACY_OUTPUT_URI = "comfyui://outputs/local/prompt-1/0"
 _CANONICAL_ASSET_URI = f"comfyui://assets/{_ASSET_ID}"
 _CANONICAL_JOB_URI = f"comfyui://jobs/{_JOB_ID}"
 _CANONICAL_ARTIFACT_URI = f"comfyui://artifacts/{_ARTIFACT_ID}"
+_WORKFLOW_ID = "portrait"
+_REVISION_ID = "revision_" + "e" * 64
+_DEPLOYMENT_ID = "deployment_" + "f" * 64
+_CANONICAL_WORKFLOW_URI = f"comfyui://workflows/{_WORKFLOW_ID}"
+_CANONICAL_REVISION_URI = f"comfyui://revisions/{_REVISION_ID}"
+_CANONICAL_DEPLOYMENT_URI = f"comfyui://deployments/{_DEPLOYMENT_ID}"
 
 
 @pytest.fixture
@@ -47,6 +53,35 @@ def alias_reader(tmp_path: Path) -> SQLiteLegacyResourceAliasReader:
     store.initialize()
     with sqlite3.connect(store.path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO workflows(workflow_id, created_at) VALUES (?, ?)",
+            (_WORKFLOW_ID, _CREATED_AT),
+        )
+        connection.execute(
+            """
+            INSERT INTO workflow_revisions(
+                revision_id, workflow_id, graph_json, parameter_schema_json,
+                dependency_contract_json, content_digest, created_at
+            ) VALUES (?, ?, ?, ?, '{}', ?, ?)
+            """,
+            (
+                _REVISION_ID,
+                _WORKFLOW_ID,
+                '{"secret_prompt":"do not expose","path":"C:/private"}',
+                '{"resolved_inputs":{"token":"do not expose"}}',
+                "3" * 64,
+                _CREATED_AT,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO workflow_deployments(
+                deployment_id, workflow_id, revision_id, server_id, enabled,
+                validation_status, published, created_at
+            ) VALUES (?, ?, ?, 'local', 1, 'valid', 1, ?)
+            """,
+            (_DEPLOYMENT_ID, _WORKFLOW_ID, _REVISION_ID, _CREATED_AT),
+        )
         connection.execute(
             """
             INSERT INTO assets(
@@ -146,6 +181,47 @@ def test_alias_reader_resolves_legacy_and_canonical_uris_to_same_targets(
         assert legacy.canonical_uri == canonical_uri
 
 
+def test_alias_reader_resolves_safe_workflow_revision_and_deployment_metadata(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+) -> None:
+    workflow = alias_reader.resolve(_CANONICAL_WORKFLOW_URI, owner_id="unrelated-owner")
+    revision = alias_reader.resolve(_CANONICAL_REVISION_URI, owner_id="unrelated-owner")
+    deployment = alias_reader.resolve(_CANONICAL_DEPLOYMENT_URI, owner_id="unrelated-owner")
+
+    assert workflow is not None
+    assert workflow.metadata == {
+        "workflow_id": _WORKFLOW_ID,
+        "created_at": _CREATED_AT,
+    }
+    assert revision is not None
+    assert revision.metadata == {
+        "revision_id": _REVISION_ID,
+        "workflow_id": _WORKFLOW_ID,
+        "content_digest": "3" * 64,
+        "created_at": _CREATED_AT,
+    }
+    assert deployment is not None
+    assert deployment.metadata == {
+        "deployment_id": _DEPLOYMENT_ID,
+        "workflow_id": _WORKFLOW_ID,
+        "revision_id": _REVISION_ID,
+        "server_id": "local",
+        "enabled": True,
+        "validation_status": "valid",
+        "published": True,
+        "created_at": _CREATED_AT,
+        "content_digest": "3" * 64,
+    }
+
+    serialized = json.dumps(
+        [workflow.metadata, revision.metadata, deployment.metadata],
+        ensure_ascii=False,
+    )
+    assert "secret_prompt" not in serialized
+    assert "resolved_inputs" not in serialized
+    assert "C:/private" not in serialized
+
+
 def test_alias_reader_rejects_unknown_cross_owner_and_malformed_uris(
     alias_reader: SQLiteLegacyResourceAliasReader,
 ) -> None:
@@ -162,6 +238,10 @@ def test_alias_reader_rejects_unknown_cross_owner_and_malformed_uris(
         "comfyui://assets/job_" + "b" * 64,
         " comfyui://jobs/" + _JOB_ID,
         "comfyui://jobs/" + _JOB_ID + "\r\n",
+        _CANONICAL_WORKFLOW_URI + "?raw=1",
+        _CANONICAL_REVISION_URI + "/extra",
+        "comfyui://revisions/deployment_" + "f" * 64,
+        "comfyui://deployments/%64eployment_" + "f" * 64,
     ]
     assert all(alias_reader.resolve(uri, owner_id=_OWNER) is None for uri in malformed)
 
@@ -277,16 +357,18 @@ async def test_resource_handlers_return_canonical_identity_and_same_sqlite_fact(
 
 
 @pytest.mark.anyio
-async def test_non_execute_scope_hides_execution_templates_and_canonical_resources(
+@pytest.mark.parametrize("scope", [Scope.OBSERVE, Scope.AUTHOR])
+async def test_observe_and_author_scopes_expose_only_safe_metadata_resources(
     tmp_path: Path,
     alias_reader: SQLiteLegacyResourceAliasReader,
     monkeypatch: pytest.MonkeyPatch,
+    scope: Scope,
 ) -> None:
     monkeypatch.setattr(resource_adapter, "current_owner", lambda: _OWNER)
     monkeypatch.setattr(
         resource_adapter,
         "current_scopes",
-        lambda: frozenset({Scope.OBSERVE}),
+        lambda: frozenset({scope}),
     )
     handlers = create_resource_handlers(
         catalog=Any,  # type: ignore[arg-type]
@@ -300,7 +382,40 @@ async def test_non_execute_scope_hides_execution_templates_and_canonical_resourc
 
     templates = await handlers.list_templates(None, None)
     uris = {template.uri_template for template in templates.resource_templates}
-    assert uris == {"comfyui://workflows/{server_id}/{workflow_id}"}
+    assert uris == {
+        "comfyui://workflows/{server_id}/{workflow_id}",
+        "comfyui://workflows/{workflow_id}",
+        "comfyui://revisions/{revision_id}",
+        "comfyui://deployments/{deployment_id}",
+    }
+
+    expected_documents = {
+        _CANONICAL_WORKFLOW_URI: {
+            "workflow_id": _WORKFLOW_ID,
+            "created_at": _CREATED_AT,
+        },
+        _CANONICAL_REVISION_URI: {
+            "revision_id": _REVISION_ID,
+            "workflow_id": _WORKFLOW_ID,
+            "content_digest": "3" * 64,
+            "created_at": _CREATED_AT,
+        },
+        _CANONICAL_DEPLOYMENT_URI: {
+            "deployment_id": _DEPLOYMENT_ID,
+            "workflow_id": _WORKFLOW_ID,
+            "revision_id": _REVISION_ID,
+            "server_id": "local",
+            "enabled": True,
+            "validation_status": "valid",
+            "published": True,
+            "created_at": _CREATED_AT,
+            "content_digest": "3" * 64,
+        },
+    }
+    for uri, expected in expected_documents.items():
+        result = await handlers.read_resource(None, ReadResourceRequestParams(uri=uri))
+        assert str(result.contents[0].uri) == uri
+        assert json.loads(result.contents[0].text) == expected
 
     for uri in (_CANONICAL_ASSET_URI, _CANONICAL_JOB_URI, _CANONICAL_ARTIFACT_URI):
         with pytest.raises(MCPError) as captured:
@@ -362,3 +477,45 @@ async def test_resource_handlers_reject_malformed_alias_uris(
     with pytest.raises(MCPError) as captured:
         await handlers.read_resource(None, ReadResourceRequestParams(uri=uri))
     assert captured.value.code == -32602
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("filename", "subfolder", "storage_type"),
+    [
+        ("../private.png", "", "output"),
+        ("private.png", "../secret", "output"),
+        ("private.png", "", "input"),
+        ("private.png", "", "temp"),
+    ],
+)
+async def test_resource_download_rejects_unsafe_locator_and_storage_type(
+    tmp_path: Path,
+    filename: str,
+    subfolder: str,
+    storage_type: str,
+) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "default_server": "local",
+                "servers": [{"id": "local", "name": "Local", "url": "http://127.0.0.1:8188"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def forbidden_gateway(_config: dict[str, Any]) -> Any:
+        raise AssertionError("unsafe locator reached the gateway")
+
+    with pytest.raises(MCPError, match="Unsafe|Unsupported"):
+        await resource_adapter._download_output(
+            uri="comfyui://artifacts/artifact_" + "a" * 64,
+            mime_type="image/png",
+            server_id="local",
+            filename=filename,
+            subfolder=subfolder,
+            storage_type=storage_type,
+            servers=ServerRegistry(tmp_path),
+            gateway_factory=forbidden_gateway,
+        )

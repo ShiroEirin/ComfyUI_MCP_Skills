@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -190,6 +191,10 @@ def test_job_wait_caps_each_query_to_remaining_deadline() -> None:
             }
         else:
             response.json.return_value = {}
+        if kwargs.get("stream"):
+            encoded = json.dumps(response.json.return_value).encode("utf-8")
+            response.headers = {"Content-Length": str(len(encoded))}
+            response.iter_content.return_value = [encoded]
         return response
 
     service = JobService(registry, runs, ComfyUIGatewayAdapter)

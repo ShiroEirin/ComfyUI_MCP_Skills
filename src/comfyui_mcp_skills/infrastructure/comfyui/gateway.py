@@ -9,6 +9,7 @@ import requests
 import websocket
 
 from comfyui_mcp_skills.domain.errors import ExecutionFailed, ServerOffline
+from comfyui_mcp_skills.infrastructure.comfyui.capabilities import classify_capability_status
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 
 
@@ -60,13 +61,38 @@ class ComfyUIGatewayAdapter:
         return self._call(self._client.get_history_list, max_items, offset)
 
     def get_queue(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
-        return self._call(self._client.get_queue, timeout_seconds=timeout_seconds)
+        try:
+            return self._call(self._client.get_queue, timeout_seconds=timeout_seconds)
+        except ValueError as exc:
+            raise ExecutionFailed("ComfyUI queue response is invalid") from exc
 
     def interrupt(self, prompt_id: str = "") -> dict[str, Any]:
         return self._call(self._client.interrupt, prompt_id)
 
     def queue_delete(self, prompt_ids: list[str]) -> dict[str, Any]:
         return self._call(self._client.queue_delete, prompt_ids)
+
+    def get_logs(self) -> dict[str, Any]:
+        return self._optional_call(self._client.get_logs)
+
+    def get_workflow_templates(self) -> dict[str, Any]:
+        return self._optional_call(self._client.get_workflow_templates)
+
+    def get_subgraphs(self) -> dict[str, Any]:
+        return self._optional_call(self._client.get_subgraphs)
+
+    def get_subgraph(self, subgraph_id: str) -> dict[str, Any]:
+        return self._optional_call(self._client.get_subgraph, subgraph_id)
+
+    def get_capabilities(self) -> dict[str, Any]:
+        return self._optional_call(self._client.probe_capabilities)
+
+    def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+        return self._call(
+            self._client.free_memory,
+            unload_models=unload_models,
+            free_memory=free_memory,
+        )
 
     def ws_events(
         self,
@@ -88,6 +114,16 @@ class ComfyUIGatewayAdapter:
             raise ServerOffline("ComfyUI server is unavailable") from exc
         except requests.RequestException as exc:
             raise ExecutionFailed("ComfyUI request failed") from exc
+
+    @staticmethod
+    def _optional_call(function: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        try:
+            return {"state": "supported", "data": function(*args, **kwargs)}
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else 0
+            return {"state": classify_capability_status(status), "data": None}
+        except (requests.RequestException, ValueError, OSError):
+            return {"state": "temporarily_unavailable", "data": None}
 
     def upload_file(self, path: str, *, purpose: str, original_ref: str) -> dict[str, Any]:
         if purpose == "mask":

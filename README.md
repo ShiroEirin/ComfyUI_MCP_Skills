@@ -5,8 +5,8 @@
 ## 能力
 
 - 每个启用的工作流动态生成带 JSON Schema 的 MCP Tool；目录变化后发送 `notifications/tools/list_changed` 和 `notifications/resources/list_changed`。
-- 固定工具覆盖资产上传、持久化作业查询/取消、服务器健康、节点搜索/详情和模型搜索。
-- MCP Resources 暴露工作流、资产、作业和输出；`resources/list` 枚举工作流，模板声明所有可参数化 URI。
+- 固定工具覆盖资产上传、作业查询/取消/分页、队列、脱敏日志、可选 API 能力矩阵、模板、子图摘要和显存释放。
+- MCP Resources 同时提供旧服务器绑定 URI 与 Workflow、Revision、Deployment、Asset、Job、Artifact canonical URI；MCP Prompts 提供有界的作业操作、失败诊断和依赖观察流程。
 - 支持 stdio 和带静态 Bearer Token 的 Streamable HTTP。
 - 上传、路径、下载大小、Host、Origin、请求体、并发和速率均受边界校验。
 - 危险的工作流修改与删除位于独立、默认关闭的管理进程。
@@ -67,9 +67,9 @@ $env:COMFYUI_MCP_UPLOAD_ROOTS = "D:/media;E:/shared-assets"
 固定工具按独立逻辑端点与 scope 暴露：
 
 - 主 MCP 的 Execution / Operations / Authoring Toolset：`comfyui.capability.search` / `comfyui.capability.describe`，只搜索当前授权能力，不改变 `tools/list`。
-- Execution：5 个固定工具，包括 Catalog、`asset.upload`、`job.get`、`job.cancel`；另有最多 8 个 `comfyui.run.<server>.<workflow>` 动态工具。
-- Operations：7 个固定工具，包括 Catalog、Server、Node 和 Model 发现工具。
-- Authoring：9 个固定工具，包括 Catalog、只读发现、`revision.list` 和 `workflow.describe`。
+- Execution：6 个固定工具，包括 Catalog、`asset.upload`、`job.get`、`job.list` 和 `job.cancel`；另有最多 8 个 `comfyui.run.<server>.<workflow>` 动态工具。
+- Operations：16 个固定工具，包括 Catalog、Server、Node、Model、Queue、Log、Template、Subgraph 和可选 API 能力发现；`server.free` 需要 `comfyui:operate`。
+- Authoring：15 个固定工具，包括 Catalog、只读发现、`revision.list` 和 `workflow.describe`。
 - 独立 Admin：4 个工作流启停/删除及审计恢复工具，不暴露 Catalog，且仅由独立管理进程提供。
 
 单端点固定工具默认不超过 16 个，硬上限 20 个；排序保持确定以稳定 Host 缓存。
@@ -88,12 +88,10 @@ $env:COMFYUI_MCP_UPLOAD_ROOTS = "D:/media;E:/shared-assets"
 
 超时不会丢失作业。返回的 `prompt_id` 可继续传给 `comfyui.job.get`。
 
-Resource 模板包括：
+Resource 模板同时保留旧 URI，并声明当前 canonical 对象：
 
-- `comfyui://workflows/{server_id}/{workflow_id}`
-- `comfyui://assets/{server_id}/{asset_id}`
-- `comfyui://jobs/{server_id}/{prompt_id}`
-- `comfyui://outputs/{server_id}/{prompt_id}/{index}`
+- 旧兼容：`comfyui://workflows/{server_id}/{workflow_id}`、`comfyui://assets/{server_id}/{asset_id}`、`comfyui://jobs/{server_id}/{prompt_id}`、`comfyui://outputs/{server_id}/{prompt_id}/{index}`。
+- Canonical：`comfyui://workflows/{workflow_id}`、`comfyui://revisions/{revision_id}`、`comfyui://deployments/{deployment_id}`、`comfyui://assets/{asset_id}`、`comfyui://jobs/{job_id}`、`comfyui://artifacts/{artifact_id}`。
 
 同一服务器上的 output Resource URI 可直接作为后续工作流的 image、mask、audio 或 video 参数。服务会校验作业所有者、输出索引和媒体类型，并注入 ComfyUI 服务端引用，不下载后再上传。
 
@@ -147,6 +145,10 @@ comfyui-mcp-admin
 ## 保留策略与可观测性
 
 服务写入 JSON 结构化日志到 stderr。通过 `COMFYUI_MCP_LOG_LEVEL` 设置级别；日志只记录白名单上下文字段，不记录 Token 或请求正文。HTTP 进程维护请求总数、错误数、429 数和累计耗时的进程内指标快照。
+
+`comfyui.server.capabilities` 独立探测 Jobs API、Userdata v2/传统路径、node replacements、Manager queue/status/install、日志、模板和子图端点。每项结果明确区分 `supported`、`unsupported`、`unauthorized`、`temporarily_unavailable`；可选端点失败不会把整台服务器标为离线。Manager install 仅作非写入能力探测，本阶段不执行安装。
+
+`comfyui.job.list` 只在 SQLite Job store 切换完成后出现，使用所有者绑定的 keyset cursor；文件回滚后端不会扫描摘要文件。Queue、Log、Template 和 Subgraph 列表均有上限与不透明 cursor，日志和元数据输出会移除凭据、原始 prompt、工作流图和本地敏感路径。
 
 元数据清理是显式维护操作，不在请求路径自动删除：
 

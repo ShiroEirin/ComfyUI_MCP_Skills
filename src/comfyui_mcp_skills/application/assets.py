@@ -18,6 +18,7 @@ from comfyui_mcp_skills.domain.errors import (
     UnsupportedMediaType,
     UploadFailed,
 )
+from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Asset
 
 
@@ -151,10 +152,12 @@ class AssetService:
             raise UploadFailed(f"ComfyUI upload failed: {exc}") from exc
         finally:
             staged.unlink(missing_ok=True)
-        name = str(uploaded.get("name", ""))
-        subfolder = str(uploaded.get("subfolder", ""))
-        if not name:
-            raise UploadFailed("ComfyUI upload returned an empty filename")
+        try:
+            name, subfolder = validate_media_locator(
+                uploaded.get("name"), uploaded.get("subfolder", "")
+            )
+        except ValueError as exc:
+            raise UploadFailed("ComfyUI upload returned an unsafe media locator") from exc
         comfyui_ref = f"{subfolder}/{name}" if subfolder else name
         asset = Asset(
             asset_id=f"asset_{uuid.uuid4().hex}",
@@ -175,6 +178,13 @@ class AssetService:
         asset = self._repository.get(asset_id)
         if asset is None or (owner_id and asset.owner_id != owner_id):
             raise AssetNotFound(f"Asset not found: {asset_id}")
+        try:
+            name, subfolder = validate_media_locator(asset.name, asset.subfolder)
+        except ValueError as exc:
+            raise AssetNotFound(f"Asset has an unsafe media locator: {asset_id}") from exc
+        expected_ref = f"{subfolder}/{name}" if subfolder else name
+        if asset.comfyui_ref != expected_ref:
+            raise AssetNotFound(f"Asset has an unsafe media locator: {asset_id}")
         return asset
 
     def _is_authorized(self, path: Path) -> bool:

@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
-ResourceTargetKind = Literal["asset", "job", "artifact"]
+ResourceTargetKind = Literal["workflow", "revision", "deployment", "asset", "job", "artifact"]
 
 
 @dataclass(frozen=True, slots=True)
 class ResourceTarget:
-    """An owner-authorized canonical target needed by the MCP Resource adapter."""
+    """A resolved canonical target containing only adapter-safe lookup data."""
 
     kind: ResourceTargetKind
     canonical_uri: str
@@ -20,9 +21,10 @@ class ResourceTarget:
     filename: str = ""
     subfolder: str = ""
     storage_type: str = ""
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
 
 class ResourceAliasReader(Protocol):
-    """Resolve one externally supplied URI without exposing repository internals."""
+    """Resolve canonical or legacy identities with owner checks where required."""
 
     def resolve(self, uri: str, *, owner_id: str) -> ResourceTarget | None: ...

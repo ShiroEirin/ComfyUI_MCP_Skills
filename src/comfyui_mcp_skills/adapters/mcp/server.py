@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import anyio
 from mcp.server import Server, ServerRequestContext
@@ -26,17 +27,21 @@ from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
 from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
+from comfyui_mcp_skills.adapters.mcp.prompts import create_prompt_handlers
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     EXECUTION_PROPERTY,
     JOB_SCHEMA,
+    bounded_integer,
     current_owner,
     current_scopes,
     decorate_tool,
     fixed_tools,
     job_dict,
+    optional_boolean,
     optional_string,
+    phase_h_tools,
     required_string,
     tool_result,
     validate_fixed_arguments,
@@ -47,6 +52,8 @@ from comfyui_mcp_skills.application.authorization import (
     AuthorizationContext,
     Scope,
     Toolset,
+    is_authorized,
+    scopes_for_resource,
     tool_visible,
 )
 from comfyui_mcp_skills.application.capabilities import CapabilityCatalog, ToolInventory
@@ -54,6 +61,7 @@ from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.observability import ObservationService
 from comfyui_mcp_skills.application.orchestration import (
     ComfyUIReconcileProbe,
     JobReconciler,
@@ -62,6 +70,7 @@ from comfyui_mcp_skills.application.orchestration import (
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.domain.control_plane import parse_legacy_resource_uri
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
@@ -99,7 +108,7 @@ def create_server(
     servers = ServerRegistry(base_dir)
     enforce_authorization = authorization is not None
     authorization = authorization or AuthorizationContext(
-        "internal", frozenset(Scope), Toolset.EXECUTION
+        "local-stdio", frozenset({Scope.EXECUTE}), Toolset.EXECUTION
     )
     run_repository = repositories.runs
     asset_repository = repositories.assets
@@ -125,8 +134,10 @@ def create_server(
     )
     jobs = JobService(servers, run_repository, gateway_factory)
     discovery = DiscoveryService(servers, gateway_factory)
+    observation = ObservationService(servers, gateway_factory)
+    fixed_surface = [*fixed_tools(), *phase_h_tools()]
     capability_catalog = CapabilityCatalog.default()
-    tool_inventory = ToolInventory(fixed_tools())
+    tool_inventory = ToolInventory(fixed_surface, max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT)
 
     subscription_bus = InMemorySubscriptionBus()
     listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
@@ -147,14 +158,35 @@ def create_server(
         )
 
     async def authorized_listen(ctx: Any, params: Any) -> Any:
+        active_scopes = current_scopes() or authorization.scopes
         if orchestration_repository is not None:
             owner_id = current_owner()
             uris = params.notifications.resource_subscriptions or ()
-            for uri in uris:
-                if not str(uri).startswith("comfyui://jobs/"):
+            for value in uris:
+                uri = str(value)
+                legacy = parse_legacy_resource_uri(uri)
+                kind: str
+                if legacy is not None:
+                    kind = legacy.kind
+                else:
+                    collection = urlsplit(uri).netloc
+                    kind = {
+                        "workflows": "workflow",
+                        "revisions": "revision",
+                        "deployments": "deployment",
+                        "assets": "asset",
+                        "jobs": "job",
+                        "artifacts": "artifact",
+                    }.get(collection, "")
+                required = scopes_for_resource(kind)
+                if not required or not is_authorized(active_scopes, required):
+                    raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
+                if kind in {"asset", "artifact"}:
+                    raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
+                if kind != "job":
                     continue
                 resource_owner = await anyio.to_thread.run_sync(
-                    orchestration_repository.job_owner_for_uri, str(uri)
+                    orchestration_repository.job_owner_for_uri, uri
                 )
                 if resource_owner is None or resource_owner != owner_id:
                     raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
@@ -186,7 +218,11 @@ def create_server(
     resource_aliases = (
         SQLiteLegacyResourceAliasReader(repositories.store)
         if repositories.store is not None
-        and (repositories.run_store == "sqlite" or repositories.asset_store == "sqlite")
+        and (
+            repositories.workflow_store == "sqlite"
+            or repositories.run_store == "sqlite"
+            or repositories.asset_store == "sqlite"
+        )
         else None
     )
 
@@ -200,16 +236,15 @@ def create_server(
         resource_aliases=resource_aliases,
         require_authorization=enforce_authorization,
     )
+    prompt_handlers = create_prompt_handlers(authorization, require_authorization=True)
 
     def current_tools() -> tuple[list[Tool], dict[str, Workflow]]:
         granted_scopes = current_scopes() if enforce_authorization else None
-        if enforce_authorization and granted_scopes is None:
-            return [], {}
         active_scopes = granted_scopes or authorization.scopes
         g3_tools_enabled = repositories.workflow_store == "sqlite"
         include_dynamic = (
-            not enforce_authorization or authorization.toolset is Toolset.EXECUTION
-        ) and (granted_scopes is None or Scope.EXECUTE in active_scopes)
+            authorization.toolset is Toolset.EXECUTION and Scope.EXECUTE in active_scopes
+        )
         all_workflows = workflow_tool_names(enabled_workflows()) if include_dynamic else {}
         selected_dynamic = tool_inventory.select_dynamic(all_workflows)
         workflow_map = {name: all_workflows[name] for name in selected_dynamic}
@@ -243,8 +278,9 @@ def create_server(
         if enforce_authorization or granted_scopes is not None:
             tools.extend(
                 tool
-                for tool in fixed_tools()
+                for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
+                and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
                 and tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
@@ -252,8 +288,10 @@ def create_server(
         else:
             tools.extend(
                 tool
-                for tool in fixed_tools()
-                if g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS
+                for tool in fixed_surface
+                if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
+                and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
+                and tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
         return tools, workflow_map
 
@@ -271,11 +309,9 @@ def create_server(
         arguments = dict(params.arguments or {})
         owner_id = current_owner()
         tools, workflow_map = current_tools()
-        granted_scopes = current_scopes()
-        if enforce_authorization or granted_scopes is not None:
-            visible_names = {tool.name for tool in tools}
-            if params.name not in visible_names:
-                raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {params.name}")
+        visible_names = {tool.name for tool in tools}
+        if params.name not in visible_names:
+            raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {params.name}")
         try:
             if params.name in workflow_map:
                 workflow = workflow_map[params.name]
@@ -347,7 +383,7 @@ def create_server(
                 return tool_result(job_dict(job))
             request_authorization = AuthorizationContext(
                 owner_id,
-                granted_scopes or authorization.scopes,
+                current_scopes() or authorization.scopes,
                 authorization.toolset,
             )
             if params.name == "comfyui.capability.search":
@@ -417,6 +453,29 @@ def create_server(
                     lambda: jobs.get(server_id, prompt_id, owner_id=owner_id)
                 )
                 return tool_result(job_dict(job))
+            if params.name == "comfyui.job.list":
+                validate_fixed_arguments(
+                    arguments,
+                    {"status", "workflow_id", "server_id", "created_after", "limit", "cursor"},
+                )
+                status = optional_string(arguments, "status", "", max_length=32)
+                workflow_id = optional_string(arguments, "workflow_id", "", max_length=128)
+                server_id = optional_string(arguments, "server_id", "", max_length=128)
+                created_after = optional_string(arguments, "created_after", "", max_length=64)
+                cursor = optional_string(arguments, "cursor", "", max_length=4096)
+                limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=100)
+                result = await anyio.to_thread.run_sync(
+                    lambda: jobs.list(
+                        owner_id=owner_id,
+                        status=status,
+                        workflow_id=workflow_id,
+                        server_id=server_id,
+                        created_after=created_after,
+                        limit=limit,
+                        cursor=cursor,
+                    )
+                )
+                return tool_result(result)
             if params.name == "comfyui.job.cancel":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id"})
                 server_id = required_string(arguments, "server_id")
@@ -432,6 +491,70 @@ def create_server(
                 validate_fixed_arguments(arguments, {"server_id"})
                 server_id = required_string(arguments, "server_id")
                 result = await anyio.to_thread.run_sync(lambda: discovery.health(server_id))
+                return tool_result(result)
+            if params.name == "comfyui.queue.list":
+                validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                cursor = optional_string(arguments, "cursor", "", max_length=4096)
+                limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                result = await anyio.to_thread.run_sync(
+                    lambda: observation.queue(server_id, limit=limit, cursor=cursor)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.log.read":
+                validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                cursor = optional_string(arguments, "cursor", "", max_length=4096)
+                limit = bounded_integer(arguments, "limit", 100, minimum=1, maximum=1000)
+                result = await anyio.to_thread.run_sync(
+                    lambda: observation.logs(server_id, limit=limit, cursor=cursor)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.server.capabilities":
+                validate_fixed_arguments(arguments, {"server_id"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                result = await anyio.to_thread.run_sync(lambda: observation.capabilities(server_id))
+                return tool_result(result)
+            if params.name == "comfyui.template.list":
+                validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                cursor = optional_string(arguments, "cursor", "", max_length=4096)
+                limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                result = await anyio.to_thread.run_sync(
+                    lambda: observation.templates(server_id, limit=limit, cursor=cursor)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.subgraph.list":
+                validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                cursor = optional_string(arguments, "cursor", "", max_length=4096)
+                limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                result = await anyio.to_thread.run_sync(
+                    lambda: observation.subgraphs(server_id, limit=limit, cursor=cursor)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.subgraph.get":
+                validate_fixed_arguments(arguments, {"server_id", "subgraph_id"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                subgraph_id = required_string(arguments, "subgraph_id", max_length=128)
+                result = await anyio.to_thread.run_sync(
+                    lambda: observation.subgraph(server_id, subgraph_id)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.server.free":
+                validate_fixed_arguments(arguments, {"server_id", "unload_models", "free_memory"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                unload_models = optional_boolean(arguments, "unload_models", False)
+                free_memory = optional_boolean(arguments, "free_memory", False)
+                if not (unload_models or free_memory):
+                    raise ValueError("at least one memory action must be selected")
+                result = await anyio.to_thread.run_sync(
+                    lambda: observation.free(
+                        server_id,
+                        unload_models=unload_models,
+                        free_memory=free_memory,
+                    )
+                )
                 return tool_result(result)
             if params.name == "comfyui.node.list":
                 validate_fixed_arguments(arguments, {"server_id", "query", "limit", "cursor"})
@@ -528,6 +651,8 @@ def create_server(
         on_list_resources=resource_handlers.list_resources,
         on_list_resource_templates=resource_handlers.list_templates,
         on_read_resource=resource_handlers.read_resource,
+        on_list_prompts=prompt_handlers.list_prompts,
+        on_get_prompt=prompt_handlers.get_prompt,
         lifespan=lifespan,
         on_subscriptions_listen=authorized_listen,
     )

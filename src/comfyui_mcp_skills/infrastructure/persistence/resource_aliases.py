@@ -1,4 +1,4 @@
-"""SQLite reader for owner-authorized legacy Resource aliases."""
+"""SQLite reader for canonical Resources and owner-authorized legacy aliases."""
 
 from __future__ import annotations
 
@@ -14,9 +14,12 @@ from comfyui_mcp_skills.domain.control_plane import (
 )
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 
-_CanonicalKind = Literal["asset", "job", "artifact"]
+_CanonicalKind = Literal["workflow", "revision", "deployment", "asset", "job", "artifact"]
 _MAX_RESOURCE_URI_LENGTH = 2048
 _CANONICAL_COLLECTIONS: dict[str, _CanonicalKind] = {
+    "workflows": "workflow",
+    "revisions": "revision",
+    "deployments": "deployment",
     "assets": "asset",
     "jobs": "job",
     "artifacts": "artifact",
@@ -24,7 +27,7 @@ _CANONICAL_COLLECTIONS: dict[str, _CanonicalKind] = {
 
 
 class SQLiteLegacyResourceAliasReader:
-    """Resolve legacy aliases and canonical IDs against one SQLite fact store."""
+    """Resolve canonical Resources and legacy aliases against one SQLite fact store."""
 
     def __init__(self, store: SQLiteControlPlaneStore) -> None:
         self._store = store
@@ -45,6 +48,12 @@ class SQLiteLegacyResourceAliasReader:
         if canonical is None:
             return None
         kind, object_id = canonical
+        if kind == "workflow":
+            return self._read_workflow(object_id)
+        if kind == "revision":
+            return self._read_revision(object_id)
+        if kind == "deployment":
+            return self._read_deployment(object_id)
         if kind == "asset":
             return self._read_asset(object_id, owner_id)
         if kind == "job":
@@ -91,6 +100,101 @@ class SQLiteLegacyResourceAliasReader:
         if target is None or target.canonical_uri != canonical_uri:
             return None
         return target
+
+    def _read_workflow(self, workflow_id: str) -> ResourceTarget | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT workflow_id, created_at
+                FROM workflows
+                WHERE workflow_id = ?
+                """,
+                (workflow_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        identifier = str(row[0])
+        return ResourceTarget(
+            kind="workflow",
+            canonical_uri=_canonical_top_level_uri("workflow", identifier),
+            object_id=identifier,
+            server_id="",
+            metadata={
+                "workflow_id": identifier,
+                "created_at": str(row[1]),
+            },
+        )
+
+    def _read_revision(self, revision_id: str) -> ResourceTarget | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT revision_id, workflow_id, content_digest, created_at
+                FROM workflow_revisions
+                WHERE revision_id = ?
+                """,
+                (revision_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        identifier = str(row[0])
+        return ResourceTarget(
+            kind="revision",
+            canonical_uri=_canonical_top_level_uri("revision", identifier),
+            object_id=identifier,
+            server_id="",
+            metadata={
+                "revision_id": identifier,
+                "workflow_id": str(row[1]),
+                "content_digest": str(row[2]),
+                "created_at": str(row[3]),
+            },
+        )
+
+    def _read_deployment(self, deployment_id: str) -> ResourceTarget | None:
+        connection = self._connect()
+        try:
+            row = connection.execute(
+                """
+                SELECT d.deployment_id, d.workflow_id, d.revision_id,
+                       d.server_id, d.enabled, d.validation_status,
+                       d.published, d.created_at, r.content_digest
+                FROM workflow_deployments AS d
+                JOIN workflow_revisions AS r
+                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
+                WHERE d.deployment_id = ?
+                """,
+                (deployment_id,),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            return None
+        identifier = str(row[0])
+        server_id = str(row[3])
+        return ResourceTarget(
+            kind="deployment",
+            canonical_uri=_canonical_top_level_uri("deployment", identifier),
+            object_id=identifier,
+            server_id=server_id,
+            metadata={
+                "deployment_id": identifier,
+                "workflow_id": str(row[1]),
+                "revision_id": str(row[2]),
+                "server_id": server_id,
+                "enabled": bool(row[4]),
+                "validation_status": str(row[5]),
+                "published": bool(row[6]),
+                "created_at": str(row[7]),
+                "content_digest": str(row[8]),
+            },
+        )
 
     def _read_asset(self, asset_id: str, owner_id: str) -> ResourceTarget | None:
         connection = self._connect()
@@ -221,9 +325,24 @@ def _parse_canonical_uri(uri: object) -> tuple[_CanonicalKind, str] | None:
         return None
     try:
         identifier = validate_control_plane_id(kind, parts[0])
-        canonical = canonical_resource_uri(kind, identifier)
+        canonical = _canonical_top_level_uri(kind, identifier)
     except ValueError:
         return None
     if uri != canonical:
         return None
     return kind, identifier
+
+
+def _canonical_top_level_uri(kind: _CanonicalKind, identifier: str) -> str:
+    if kind in {"revision", "deployment", "workflow"}:
+        collection = {
+            "workflow": "workflows",
+            "revision": "revisions",
+            "deployment": "deployments",
+        }[kind]
+        return f"comfyui://{collection}/{identifier}"
+    if kind == "asset":
+        return canonical_resource_uri("asset", identifier)
+    if kind == "job":
+        return canonical_resource_uri("job", identifier)
+    return canonical_resource_uri("artifact", identifier)

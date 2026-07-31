@@ -6,6 +6,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from comfyui_mcp_skills.domain.media import validate_media_locator
+
 
 @dataclass(frozen=True, slots=True)
 class Asset:
@@ -29,6 +31,16 @@ class Asset:
         result = asdict(self)
         result["resource_uri"] = self.resource_uri
         result.pop("owner_id", None)
+        try:
+            name, subfolder = validate_media_locator(self.name, self.subfolder)
+        except ValueError:
+            result.pop("name", None)
+            result.pop("subfolder", None)
+            result.pop("comfyui_ref", None)
+        else:
+            result["name"] = name
+            result["subfolder"] = subfolder
+            result["comfyui_ref"] = f"{subfolder}/{name}" if subfolder else name
         return result
 
 

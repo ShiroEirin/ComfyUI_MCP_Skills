@@ -376,6 +376,83 @@ class SQLiteRunRepository:
             join_idempotency=True,
         )
 
+    def list_jobs(
+        self,
+        owner_id: str,
+        *,
+        limit: int,
+        status: str = "",
+        workflow_id: str = "",
+        server_id: str = "",
+        created_after: str = "",
+        after_created_at: str = "",
+        after_job_id: str = "",
+    ) -> list[dict[str, str]]:
+        """Read an owner-bound page from the indexed canonical job facts."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 101:
+            raise ValueError("limit must be an integer between 1 and 101")
+        if bool(after_created_at) != bool(after_job_id):
+            raise ValueError("keyset position requires created_at and job_id")
+        predicates = ["jobs.owner_id = ?"]
+        parameters: list[object] = [owner_id]
+        index_name = "ix_jobs_owner_created"
+        if status:
+            predicates.append("jobs.status = ?")
+            parameters.append(status)
+            index_name = "ix_jobs_owner_status_created"
+        if workflow_id:
+            predicates.append("jobs.workflow_id = ?")
+            parameters.append(workflow_id)
+            if not status:
+                index_name = "ix_jobs_owner_workflow_created"
+        if server_id:
+            predicates.append("latest_attempt.server_id = ?")
+            parameters.append(server_id)
+        if created_after:
+            predicates.append("jobs.created_at > ?")
+            parameters.append(created_after)
+        if after_created_at:
+            predicates.append("(jobs.created_at < ? OR (jobs.created_at = ? AND jobs.job_id > ?))")
+            parameters.extend((after_created_at, after_created_at, after_job_id))
+        parameters.append(limit)
+        connection = self._connect()
+        try:
+            rows = connection.execute(
+                f"""
+                SELECT jobs.job_id, jobs.workflow_id,
+                       COALESCE(jobs.revision_id, ''),
+                       COALESCE(jobs.deployment_id, ''),
+                       COALESCE(latest_attempt.server_id, ''),
+                       jobs.status, jobs.created_at
+                FROM jobs INDEXED BY {index_name}
+                LEFT JOIN execution_attempts AS latest_attempt
+                  ON latest_attempt.job_id = jobs.job_id
+                 AND latest_attempt.attempt = (
+                     SELECT MAX(candidate.attempt)
+                     FROM execution_attempts AS candidate
+                     WHERE candidate.job_id = jobs.job_id
+                 )
+                WHERE {" AND ".join(predicates)}
+                ORDER BY jobs.created_at DESC, jobs.job_id ASC
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        finally:
+            connection.close()
+        return [
+            {
+                "job_id": str(row[0]),
+                "workflow_id": str(row[1]),
+                "revision_id": str(row[2]),
+                "deployment_id": str(row[3]),
+                "server_id": str(row[4]),
+                "status": str(row[5]),
+                "created_at": str(row[6]),
+            }
+            for row in rows
+        ]
+
     def _read_job(
         self,
         predicate: str,

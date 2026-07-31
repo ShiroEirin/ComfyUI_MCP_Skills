@@ -204,6 +204,20 @@ class FileRunRepository:
             self._assert_active()
             return self._read_job(self._idempotency_path(server_id, key, owner_id))
 
+    def list_jobs(
+        self,
+        owner_id: str,
+        *,
+        limit: int,
+        status: str = "",
+        workflow_id: str = "",
+        server_id: str = "",
+        created_after: str = "",
+        after_created_at: str = "",
+        after_job_id: str = "",
+    ) -> list[dict[str, str]]:
+        raise NotImplementedError("job listing is unsupported for file-backed run repositories")
+
     def _assert_active(self) -> None:
         assert_file_store_active(
             self._base_dir,

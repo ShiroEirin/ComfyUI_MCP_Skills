@@ -40,6 +40,7 @@ from comfyui_mcp_skills.domain.errors import (
     ServerNotFound,
     WorkflowNotFound,
 )
+from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 
@@ -88,6 +89,30 @@ def create_resource_handlers(
                 ResourceTemplate(
                     uri_template="comfyui://workflows/{server_id}/{workflow_id}",
                     name="Configured workflow",
+                    mime_type="application/json",
+                ),
+            ),
+            (
+                "workflow",
+                ResourceTemplate(
+                    uri_template="comfyui://workflows/{workflow_id}",
+                    name="Canonical workflow metadata",
+                    mime_type="application/json",
+                ),
+            ),
+            (
+                "revision",
+                ResourceTemplate(
+                    uri_template="comfyui://revisions/{revision_id}",
+                    name="Canonical workflow revision metadata",
+                    mime_type="application/json",
+                ),
+            ),
+            (
+                "deployment",
+                ResourceTemplate(
+                    uri_template="comfyui://deployments/{deployment_id}",
+                    name="Canonical workflow deployment metadata",
                     mime_type="application/json",
                 ),
             ),
@@ -320,6 +345,19 @@ async def _read_resolved_resource(
     gateway_factory: GatewayFactory,
     owner_id: str,
 ) -> ReadResourceResult:
+    if target.kind in {"workflow", "revision", "deployment"}:
+        document = dict(target.metadata)
+        return ReadResourceResult(
+            contents=[
+                TextResourceContents(
+                    uri=target.canonical_uri,
+                    mime_type="application/json",
+                    text=json.dumps(document, ensure_ascii=False),
+                )
+            ],
+            ttl_ms=5_000,
+            cache_scope="private",
+        )
     if target.kind == "asset":
         servers.connection(target.server_id)
         asset = assets.get(target.object_id, owner_id=owner_id)
@@ -370,6 +408,12 @@ async def _download_output(
     servers: ServerRegistry,
     gateway_factory: GatewayFactory,
 ) -> ReadResourceResult:
+    if storage_type != "output":
+        raise MCPError(code=INVALID_PARAMS, message="Unsupported output storage type")
+    try:
+        filename, subfolder = validate_media_locator(filename, subfolder)
+    except ValueError as exc:
+        raise MCPError(code=INVALID_PARAMS, message="Unsafe output media locator") from exc
     gateway = gateway_factory(servers.connection(server_id))
     try:
         payload = await anyio.to_thread.run_sync(
