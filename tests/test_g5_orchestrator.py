@@ -91,6 +91,80 @@ def test_plan_job_work_event_and_outbox_are_committed_atomically(tmp_path: Path)
         ).fetchone() == ("reserved",)
 
 
+def test_submit_finalizer_can_complete_reconciler_partial_upstream_identity(
+    tmp_path: Path,
+) -> None:
+    store = _project(tmp_path)
+    planning = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
+    identity = planning.materialize(
+        server_id="local",
+        workflow_id="portrait",
+        owner_id="principal",
+        arguments={},
+        client_id="client-merge",
+    )
+    planning.finalize_submission(identity, upstream_prompt_id="prompt-merge")
+
+    planning.finalize_submission(
+        identity,
+        upstream_prompt_id="prompt-merge",
+        upstream_job_id="upstream-job-merge",
+    )
+
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT upstream_prompt_id, upstream_job_id, submission_state "
+            "FROM execution_attempts WHERE job_id = ?",
+            (identity.job_id,),
+        ).fetchone() == ("prompt-merge", "upstream-job-merge", "submitted")
+
+
+def test_reconciler_can_complete_job_first_upstream_identity(tmp_path: Path) -> None:
+    store, job_id, _work_item_id = _scheduled_job(tmp_path)
+    planning = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
+    identity = planning.identity_for_client("local", "client-1")
+    assert identity is not None
+    planning.finalize_submission(
+        identity, upstream_job_id="upstream-job-first", upstream_prompt_id=""
+    )
+    repository = SQLiteOrchestrationRepository(store)
+    orchestrator = OperationOrchestrator(
+        repository,
+        {"job.reconcile": JobReconciler(repository, _RecoveryProbe())},
+    )
+
+    assert orchestrator.run_once("worker", now=datetime(2026, 8, 1, tzinfo=timezone.utc))
+
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT upstream_prompt_id, upstream_job_id FROM execution_attempts WHERE job_id = ?",
+            (job_id,),
+        ).fetchone() == ("prompt-recovered", "upstream-job-first")
+
+
+def test_upstream_identity_merge_rejects_non_null_conflicts(tmp_path: Path) -> None:
+    store = _project(tmp_path)
+    planning = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
+    identity = planning.materialize(
+        server_id="local",
+        workflow_id="portrait",
+        owner_id="principal",
+        arguments={},
+        client_id="client-conflict",
+    )
+    planning.finalize_submission(identity, upstream_prompt_id="prompt-a", upstream_job_id="job-a")
+    planning.finalize_submission(identity, upstream_prompt_id="prompt-a", upstream_job_id="job-a")
+
+    with pytest.raises(RuntimeError, match="conflicts"):
+        planning.finalize_submission(
+            identity, upstream_prompt_id="prompt-b", upstream_job_id="job-a"
+        )
+    with pytest.raises(RuntimeError, match="conflicts"):
+        planning.finalize_submission(
+            identity, upstream_prompt_id="prompt-a", upstream_job_id="job-b"
+        )
+
+
 def test_expired_lease_can_be_reclaimed_and_stale_worker_is_fenced(tmp_path: Path) -> None:
     store, _job_id, work_item_id = _scheduled_job(tmp_path)
     repository = SQLiteOrchestrationRepository(store)
@@ -98,16 +172,18 @@ def test_expired_lease_can_be_reclaimed_and_stale_worker_is_fenced(tmp_path: Pat
 
     first = repository.acquire_next("worker-1", now=now, lease_seconds=30)
     assert first is not None and first.work_item_id == work_item_id
-    repository = SQLiteOrchestrationRepository(store)
     assert repository.acquire_next("worker-2", now=now, lease_seconds=30) is None
+    repository.checkpoint(first, {"step": 1}, now=now + timedelta(seconds=1))
 
-    second = repository.acquire_next("worker-2", now=now + timedelta(seconds=31), lease_seconds=30)
+    repository = SQLiteOrchestrationRepository(store)
+    second = repository.acquire_next("worker-2", now=now + timedelta(seconds=2), lease_seconds=30)
     assert second is not None
     assert second.fencing_token == first.fencing_token + 1
-    repository.checkpoint(second, {"step": 1}, now=now + timedelta(seconds=31))
+    assert repository.get_work_item(work_item_id).checkpoint == {"step": 1}
+    repository.checkpoint(second, {"step": 2}, now=now + timedelta(seconds=2))
 
     try:
-        repository.checkpoint(first, {"step": 99}, now=now + timedelta(seconds=32))
+        repository.checkpoint(first, {"step": 99}, now=now + timedelta(seconds=3))
     except RuntimeError as exc:
         assert "fenced" in str(exc)
     else:
@@ -184,8 +260,44 @@ class _RecoveryProbe:
         )
 
 
+def test_reconciler_enforces_reserved_submission_grace_boundary(tmp_path: Path) -> None:
+    store, job_id, _work_item_id = _scheduled_job(tmp_path)
+    calls: list[tuple[str, str, str]] = []
+
+    def probe(server_id: str, prompt_id: str, client_id: str) -> ReconcileObservation:
+        calls.append((server_id, prompt_id, client_id))
+        return ReconcileObservation(True, "generation-a", "missing")
+
+    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    for offset in (0, 299):
+        repository = SQLiteOrchestrationRepository(store)
+        orchestrator = OperationOrchestrator(
+            repository,
+            {"job.reconcile": JobReconciler(repository, probe)},
+        )
+        assert orchestrator.run_once("worker", now=now + timedelta(seconds=offset))
+        assert calls == []
+
+    repository = SQLiteOrchestrationRepository(store)
+    orchestrator = OperationOrchestrator(
+        repository,
+        {"job.reconcile": JobReconciler(repository, probe)},
+    )
+    assert orchestrator.run_once("worker", now=now + timedelta(seconds=300))
+    assert calls == [("local", "", "client-1")]
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT status FROM jobs WHERE job_id = ?", (job_id,)
+        ).fetchone() == ("reserved",)
+
+
 def test_reconciler_recovers_unknown_submission_by_stable_client_id(tmp_path: Path) -> None:
     store, job_id, _work_item_id = _scheduled_job(tmp_path)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE jobs SET status = 'submission_unknown' WHERE job_id = ?", (job_id,)
+        )
+        connection.commit()
     repository = SQLiteOrchestrationRepository(store)
     orchestrator = OperationOrchestrator(
         repository,
@@ -318,6 +430,7 @@ def test_interrupted_history_completes_reconciliation_work(tmp_path: Path) -> No
             "submission_state = 'submitted' WHERE job_id = ?",
             (job_id,),
         )
+        connection.execute("UPDATE jobs SET status = 'submitted' WHERE job_id = ?", (job_id,))
         connection.commit()
     repository = SQLiteOrchestrationRepository(store)
     orchestrator = OperationOrchestrator(
@@ -341,7 +454,7 @@ def test_interrupted_history_completes_reconciliation_work(tmp_path: Path) -> No
 
 
 @pytest.mark.anyio
-async def test_outbox_publish_failure_is_isolated_and_retried(tmp_path: Path) -> None:
+async def test_outbox_publish_before_ack_failure_is_retried_at_least_once(tmp_path: Path) -> None:
     store, _job_id, _work_item_id = _scheduled_job(tmp_path)
     repository = SQLiteOrchestrationRepository(store)
 
@@ -351,10 +464,10 @@ async def test_outbox_publish_failure_is_isolated_and_retried(tmp_path: Path) ->
             self.events: list[object] = []
 
         async def publish(self, event: object) -> None:
+            self.events.append(event)
             if self.fail:
                 self.fail = False
-                raise RuntimeError("injected publish failure")
-            self.events.append(event)
+                raise RuntimeError("injected failure after publish")
 
     bus = FlakyBus()
     runtime = OrchestrationRuntime(
@@ -368,7 +481,8 @@ async def test_outbox_publish_failure_is_isolated_and_retried(tmp_path: Path) ->
     with sqlite3.connect(store.path) as connection:
         assert connection.execute("SELECT status FROM outbox").fetchone() == ("pending",)
     assert await runtime.dispatch_outbox_once() == 1
-    assert len(bus.events) == 1
+    assert len(bus.events) == 2
+    assert bus.events[0].uri == bus.events[1].uri  # type: ignore[attr-defined]
 
 
 def test_comfyui_probe_maps_interrupted_history_to_terminal_state(tmp_path: Path) -> None:

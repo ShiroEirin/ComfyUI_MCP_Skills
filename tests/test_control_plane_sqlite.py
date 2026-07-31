@@ -66,6 +66,7 @@ def test_initialize_creates_versioned_control_plane_schema(tmp_path: Path) -> No
         (1, "initial-control-plane", 64, 1, 1, 1),
         (2, "g1-job-asset-facts", 64, 1, 0, 1),
         (3, "g5-event-orchestrator", 64, 1, 0, 1),
+        (4, "g5-upstream-identity-merge", 64, 1, 0, 1),
     ]
     assert switched_count == 0
 
@@ -77,7 +78,7 @@ def test_initialize_is_idempotent_and_detects_checksum_drift(tmp_path: Path) -> 
     store.initialize()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone() == (3,)
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone() == (4,)
         connection.execute(
             "UPDATE schema_migrations SET checksum = ? WHERE version = 1", ("0" * 64,)
         )
@@ -733,8 +734,8 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
     database = tmp_path / "control-plane.sqlite3"
     store = SQLiteControlPlaneStore(database)
     store.initialize()
-    migration_v4 = SchemaMigration(
-        4,
+    migration_v5 = SchemaMigration(
+        5,
         "add-probe-table",
         ("CREATE TABLE migration_probe (value TEXT NOT NULL)",),
         ("DROP TABLE migration_probe",),
@@ -742,7 +743,7 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
     monkeypatch.setattr(
         control_plane_module,
         "_MIGRATIONS",
-        (*control_plane_module._MIGRATIONS, migration_v4),
+        (*control_plane_module._MIGRATIONS, migration_v5),
     )
 
     store.initialize()
@@ -751,7 +752,7 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
         rows = connection.execute(
             "SELECT version, schema_fingerprint FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in rows] == [1, 2, 3, 4]
+        assert [row[0] for row in rows] == [1, 2, 3, 4, 5]
         assert len({row[1] for row in rows}) == 1
         assert "migration_probe" in _table_names(database)
     with pytest.raises(SchemaMigrationError, match="cannot be rolled back"):
@@ -804,7 +805,7 @@ def test_g1_schema_preserves_runtime_and_migration_facts(tmp_path: Path) -> None
             row[1] for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()
         }
 
-    assert versions == [(1,), (2,), (3,)]
+    assert versions == [(1,), (2,), (3,), (4,)]
     assert job_columns["error"][3] == 1
     assert job_columns["execution_origin"][3] == 1
     assert "lease_token" in idempotency_columns

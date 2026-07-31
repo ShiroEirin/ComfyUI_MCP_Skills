@@ -258,9 +258,31 @@ class ExecutionPlanningService:
                     """,
                     (identity.job_id,),
                 ).fetchone()
-                expected = (upstream_prompt_id or None, upstream_job_id or None, "submitted")
-                if existing is None or tuple(existing) != expected:
+                if existing is None or str(existing[2]) != "submitted":
                     raise RuntimeError("submission identity conflicts with existing attempt")
+                requested_prompt = upstream_prompt_id or None
+                requested_job = upstream_job_id or None
+                if (
+                    existing[0] is not None
+                    and requested_prompt is not None
+                    and str(existing[0]) != requested_prompt
+                ) or (
+                    existing[1] is not None
+                    and requested_job is not None
+                    and str(existing[1]) != requested_job
+                ):
+                    raise RuntimeError("submission identity conflicts with existing attempt")
+                merged_prompt = existing[0] or requested_prompt
+                merged_job = existing[1] or requested_job
+                if merged_prompt != existing[0] or merged_job != existing[1]:
+                    connection.execute(
+                        """
+                        UPDATE execution_attempts
+                        SET upstream_prompt_id = ?, upstream_job_id = ?
+                        WHERE job_id = ? AND attempt = 1 AND server_id = ?
+                        """,
+                        (merged_prompt, merged_job, identity.job_id, identity.server_id),
+                    )
             connection.execute(
                 "UPDATE jobs SET status = 'submitted' "
                 "WHERE job_id = ? AND status IN ('reserved', 'submission_unknown')",

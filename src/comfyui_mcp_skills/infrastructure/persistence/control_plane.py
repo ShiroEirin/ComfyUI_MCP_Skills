@@ -938,6 +938,35 @@ _G5_ORCHESTRATION_UP = (
     """,
 )
 
+_G5_IDENTITY_MERGE_UP = (
+    "DROP TRIGGER IF EXISTS tr_execution_attempts_reconciliation_guard",
+    """
+    CREATE TRIGGER tr_execution_attempts_reconciliation_guard
+    BEFORE UPDATE OF upstream_prompt_id, upstream_job_id, submission_state
+    ON execution_attempts
+    WHEN NOT (
+        (
+            OLD.submission_state = 'submission_unknown' AND
+            OLD.upstream_prompt_id IS NULL AND OLD.upstream_job_id IS NULL AND
+            NEW.submission_state = 'submitted' AND
+            (NEW.upstream_prompt_id IS NOT NULL OR NEW.upstream_job_id IS NOT NULL)
+        ) OR (
+            OLD.submission_state = 'submitted' AND NEW.submission_state = 'submitted' AND
+            (OLD.upstream_prompt_id IS NEW.upstream_prompt_id OR
+             (OLD.upstream_prompt_id IS NULL AND NEW.upstream_prompt_id IS NOT NULL)) AND
+            (OLD.upstream_job_id IS NEW.upstream_job_id OR
+             (OLD.upstream_job_id IS NULL AND NEW.upstream_job_id IS NOT NULL)) AND
+            (OLD.upstream_prompt_id IS NOT NEW.upstream_prompt_id OR
+             OLD.upstream_job_id IS NOT NEW.upstream_job_id)
+        )
+    )
+    BEGIN
+        SELECT RAISE(ABORT, 'execution attempt reconciliation is append-once');
+    END
+    """,
+)
+
+
 _MIGRATIONS = (
     SchemaMigration(
         1,
@@ -959,6 +988,13 @@ _MIGRATIONS = (
         _G5_ORCHESTRATION_UP,
         (),
         feasibility_note="transactional forward-only migration for durable G5 orchestration",
+    ),
+    SchemaMigration(
+        4,
+        "g5-upstream-identity-merge",
+        _G5_IDENTITY_MERGE_UP,
+        (),
+        feasibility_note="forward-only append-safe upstream identity reconciliation",
     ),
 )
 

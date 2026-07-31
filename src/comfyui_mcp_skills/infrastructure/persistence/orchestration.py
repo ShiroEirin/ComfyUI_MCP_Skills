@@ -212,17 +212,28 @@ class SQLiteOrchestrationRepository:
                     (server_id, generation, now_text),
                 )
             if upstream_prompt_id:
-                updated_attempt = connection.execute(
+                attempt = connection.execute(
                     """
-                    UPDATE execution_attempts
-                    SET upstream_prompt_id = ?, submission_state = 'submitted'
-                    WHERE job_id = ? AND submission_state = 'submission_unknown'
-                      AND upstream_prompt_id IS NULL AND upstream_job_id IS NULL
+                    SELECT attempt, server_id, upstream_prompt_id, submission_state
+                    FROM execution_attempts
+                    WHERE job_id = ? ORDER BY attempt DESC LIMIT 1
                     """,
-                    (upstream_prompt_id, job_id),
-                ).rowcount
-                if updated_attempt not in {0, 1}:
-                    raise RuntimeError("submission reconciliation updated multiple attempts")
+                    (job_id,),
+                ).fetchone()
+                if attempt is None or str(attempt[1]) != server_id:
+                    raise RuntimeError("reconciled execution attempt is unavailable")
+                existing_prompt = attempt[2]
+                if existing_prompt is not None and str(existing_prompt) != upstream_prompt_id:
+                    raise RuntimeError("recovered prompt identity conflicts with attempt")
+                if existing_prompt is None:
+                    connection.execute(
+                        """
+                        UPDATE execution_attempts
+                        SET upstream_prompt_id = ?, submission_state = 'submitted'
+                        WHERE job_id = ? AND attempt = ? AND server_id = ?
+                        """,
+                        (upstream_prompt_id, job_id, int(attempt[0]), server_id),
+                    )
             if job_status is not None and str(current[0]) not in _TERMINAL_JOB_STATUSES:
                 connection.execute(
                     "UPDATE jobs SET status = ? WHERE job_id = ?", (job_status, job_id)

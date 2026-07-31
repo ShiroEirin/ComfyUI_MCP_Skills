@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -71,14 +72,21 @@ class JobReconciler:
         *,
         missing_threshold: int = 3,
         grace_seconds: int = 300,
+        submission_grace_seconds: int = 300,
         retry_delay_seconds: int = 30,
     ) -> None:
-        if missing_threshold < 2 or grace_seconds < 0 or retry_delay_seconds < 0:
+        if (
+            missing_threshold < 2
+            or grace_seconds < 0
+            or retry_delay_seconds < 0
+            or submission_grace_seconds < 0
+        ):
             raise ValueError("invalid reconciliation thresholds")
         self._repository = repository
         self._probe = probe
         self._missing_threshold = missing_threshold
         self._grace_seconds = grace_seconds
+        self._submission_grace_seconds = submission_grace_seconds
         self._retry_delay_seconds = retry_delay_seconds
 
     def __call__(self, work: WorkItem, lease: WorkLease, *, now: datetime) -> None:
@@ -89,6 +97,25 @@ class JobReconciler:
                 lease, checkpoint=work.checkpoint, now=now, completed=True
             )
             return
+        if context.status == "reserved":
+            reserved_since = str(work.checkpoint.get("reserved_since", "")) or _time(now)
+            grace_deadline = _parse_time(reserved_since) + timedelta(
+                seconds=self._submission_grace_seconds
+            )
+            if now < grace_deadline:
+                remaining_seconds = max(1, math.ceil((grace_deadline - now).total_seconds()))
+                self._repository.checkpoint(
+                    lease,
+                    {
+                        **work.checkpoint,
+                        "reserved_since": reserved_since,
+                        "consecutive_missing": 0,
+                        "first_missing_at": "",
+                    },
+                    now=now,
+                    delay_seconds=min(self._retry_delay_seconds, remaining_seconds),
+                )
+                return
         prompt_id = context.prompt_id
         client_id = context.client_id
         if not prompt_id and not client_id:
