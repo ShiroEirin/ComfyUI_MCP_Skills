@@ -22,6 +22,7 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
+from comfyui_mcp_skills.adapters.mcp.tooling import decorate_tool
 from comfyui_mcp_skills.application.admin import MAX_ADMIN_REQUEST_ID_LENGTH, WorkflowAdmin
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError
 from comfyui_mcp_skills.infrastructure.persistence.workflows import (
@@ -64,83 +65,90 @@ def create_admin_server(
         }
         return ListToolsResult(
             tools=[
-                Tool(
-                    name="comfyui.admin.workflow.set_enabled",
-                    description="Enable or disable one configured workflow.",
-                    input_schema={
-                        "type": "object",
-                        "properties": {**identity, **request_id, "enabled": {"type": "boolean"}},
-                        "required": ["server_id", "workflow_id", "enabled"],
-                        "additionalProperties": False,
-                    },
-                    output_schema={"type": "object"},
-                    annotations=ToolAnnotations(
-                        read_only_hint=False,
-                        destructive_hint=False,
-                        idempotent_hint=True,
-                        open_world_hint=False,
-                    ),
-                ),
-                Tool(
-                    name="comfyui.admin.workflow.delete",
-                    description=(
-                        "Permanently delete one workflow after an exact confirmation phrase. "
-                        "Supply request_id to make retries idempotent."
-                    ),
-                    input_schema={
-                        "type": "object",
-                        "properties": {
-                            **identity,
-                            **request_id,
-                            "confirmation": {"type": "string"},
+                decorate_tool(tool)
+                for tool in [
+                    Tool(
+                        name="comfyui.admin.workflow.set_enabled",
+                        description="Enable or disable one configured workflow.",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                **identity,
+                                **request_id,
+                                "enabled": {"type": "boolean"},
+                            },
+                            "required": ["server_id", "workflow_id", "enabled"],
+                            "additionalProperties": False,
                         },
-                        "required": ["server_id", "workflow_id", "confirmation", "request_id"],
-                        "additionalProperties": False,
-                    },
-                    output_schema={"type": "object"},
-                    annotations=ToolAnnotations(
-                        read_only_hint=False,
-                        destructive_hint=True,
-                        idempotent_hint=True,
-                        open_world_hint=False,
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
+                            destructive_hint=False,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
                     ),
-                ),
-                Tool(
-                    name="comfyui.admin.audit.get",
-                    description="Read the durable commit and audit status of an admin request.",
-                    input_schema={
-                        "type": "object",
-                        "properties": request_id,
-                        "required": ["request_id"],
-                        "additionalProperties": False,
-                    },
-                    output_schema={"type": "object"},
-                    annotations=ToolAnnotations(
-                        read_only_hint=True,
-                        destructive_hint=False,
-                        idempotent_hint=True,
-                        open_world_hint=False,
+                    Tool(
+                        name="comfyui.admin.workflow.delete",
+                        description=(
+                            "Permanently delete one workflow after an exact confirmation phrase. "
+                            "Supply request_id to make retries idempotent."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                **identity,
+                                **request_id,
+                                "confirmation": {"type": "string"},
+                            },
+                            "required": ["server_id", "workflow_id", "confirmation", "request_id"],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
+                            destructive_hint=True,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
                     ),
-                ),
-                Tool(
-                    name="comfyui.admin.audit.retry",
-                    description=(
-                        "Retry only a pending audit outcome without repeating its operation."
+                    Tool(
+                        name="comfyui.admin.audit.get",
+                        description="Read the durable commit and audit status of an admin request.",
+                        input_schema={
+                            "type": "object",
+                            "properties": request_id,
+                            "required": ["request_id"],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=True,
+                            destructive_hint=False,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
                     ),
-                    input_schema={
-                        "type": "object",
-                        "properties": request_id,
-                        "required": ["request_id"],
-                        "additionalProperties": False,
-                    },
-                    output_schema={"type": "object"},
-                    annotations=ToolAnnotations(
-                        read_only_hint=False,
-                        destructive_hint=False,
-                        idempotent_hint=True,
-                        open_world_hint=False,
+                    Tool(
+                        name="comfyui.admin.audit.retry",
+                        description=(
+                            "Retry only a pending audit outcome without repeating its operation."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": request_id,
+                            "required": ["request_id"],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
+                            destructive_hint=False,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
                     ),
-                ),
+                ]
             ],
             cache_scope="private",
         )

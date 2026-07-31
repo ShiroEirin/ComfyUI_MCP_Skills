@@ -33,6 +33,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     JOB_SCHEMA,
     current_owner,
     current_scopes,
+    decorate_tool,
     fixed_tools,
     job_dict,
     optional_string,
@@ -48,6 +49,7 @@ from comfyui_mcp_skills.application.authorization import (
     Toolset,
     tool_visible,
 )
+from comfyui_mcp_skills.application.capabilities import CapabilityCatalog, ToolInventory
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
@@ -123,6 +125,8 @@ def create_server(
     )
     jobs = JobService(servers, run_repository, gateway_factory)
     discovery = DiscoveryService(servers, gateway_factory)
+    capability_catalog = CapabilityCatalog.default()
+    tool_inventory = ToolInventory(fixed_tools())
 
     subscription_bus = InMemorySubscriptionBus()
     listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
@@ -206,28 +210,34 @@ def create_server(
         include_dynamic = (
             not enforce_authorization or authorization.toolset is Toolset.EXECUTION
         ) and (granted_scopes is None or Scope.EXECUTE in active_scopes)
-        workflow_map = workflow_tool_names(enabled_workflows()) if include_dynamic else {}
+        all_workflows = workflow_tool_names(enabled_workflows()) if include_dynamic else {}
+        selected_dynamic = tool_inventory.select_dynamic(all_workflows)
+        workflow_map = {name: all_workflows[name] for name in selected_dynamic}
         tools: list[Tool] = []
         for name in sorted(workflow_map):
             workflow = workflow_map[name]
             schema = build_input_schema(workflow.parameters)
             schema["properties"]["_execution"] = EXECUTION_PROPERTY
             tools.append(
-                Tool(
-                    name=name,
-                    title=f"Run {workflow.server_id}/{workflow.workflow_id}",
-                    description=(
-                        workflow.description
-                        or f"Run ComfyUI workflow {workflow.server_id}/{workflow.workflow_id}"
+                decorate_tool(
+                    Tool(
+                        name=name,
+                        title=f"Run {workflow.server_id}/{workflow.workflow_id}",
+                        description=(
+                            workflow.description
+                            or f"Run ComfyUI workflow {workflow.server_id}/{workflow.workflow_id}"
+                        ),
+                        input_schema=schema,
+                        output_schema=JOB_SCHEMA,
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
+                            destructive_hint=False,
+                            idempotent_hint=False,
+                            open_world_hint=True,
+                        ),
                     ),
-                    input_schema=schema,
-                    output_schema=JOB_SCHEMA,
-                    annotations=ToolAnnotations(
-                        read_only_hint=False,
-                        destructive_hint=False,
-                        idempotent_hint=False,
-                        open_world_hint=False,
-                    ),
+                    risk="medium",
+                    toolset="execution",
                 )
             )
         if enforce_authorization or granted_scopes is not None:
@@ -335,6 +345,32 @@ def create_server(
                         abandon_on_cancel=True,
                     )
                 return tool_result(job_dict(job))
+            request_authorization = AuthorizationContext(
+                owner_id,
+                granted_scopes or authorization.scopes,
+                authorization.toolset,
+            )
+            if params.name == "comfyui.capability.search":
+                validate_fixed_arguments(arguments, {"query", "limit"})
+                query = optional_string(arguments, "query", "")
+                limit = arguments.get("limit", 10)
+                result = capability_catalog.search(query, request_authorization, limit=limit)
+                return tool_result(result)
+            if params.name == "comfyui.capability.describe":
+                validate_fixed_arguments(arguments, {"name"})
+                capability_name = required_string(arguments, "name")
+                result = capability_catalog.describe(
+                    capability_name,
+                    request_authorization,
+                )
+                described_tool = next(
+                    (tool for tool in tools if tool.name == capability_name), None
+                )
+                if described_tool is None:
+                    raise PermissionError("capability is unavailable")
+                result["input_schema"] = described_tool.input_schema
+                result["output_schema"] = described_tool.output_schema
+                return tool_result(result)
             if params.name == "comfyui.revision.list":
                 validate_fixed_arguments(arguments, {"workflow_id"})
                 workflow_id = required_string(arguments, "workflow_id")
@@ -461,7 +497,7 @@ def create_server(
             )
         except MCPError:
             raise
-        except (ComfyUISkillsError, KeyError, TypeError, ValueError) as exc:
+        except (ComfyUISkillsError, KeyError, PermissionError, TypeError, ValueError) as exc:
             if isinstance(exc, ComfyUISkillsError):
                 error = exc.as_dict()
             else:

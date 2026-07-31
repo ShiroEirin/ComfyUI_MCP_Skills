@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import mimetypes
+import re
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +20,9 @@ logger = logging.getLogger(__name__)
 _TERMINAL_STATUSES = {"completed", "error", "interrupted", "cancelled", "lost"}
 _VIDEO_EXTENSIONS = {".avi", ".gif", ".mkv", ".mov", ".mp4", ".webm"}
 _AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+_SAFE_ERROR_FIELD = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+_MAX_ERROR_MESSAGES = 8
+_MAX_ERROR_LENGTH = 2048
 
 
 class JobService:
@@ -280,9 +284,30 @@ class JobService:
     @staticmethod
     def _format_errors(history: dict[str, Any]) -> str:
         messages = history.get("status", {}).get("messages", [])
-        parts = [
-            str(message[1])
-            for message in messages
-            if isinstance(message, list) and len(message) >= 2
-        ]
+        if not isinstance(messages, list):
+            return "Workflow execution failed"
+        parts: list[str] = []
+        length = 0
+        for message in messages[:_MAX_ERROR_MESSAGES]:
+            if not isinstance(message, list) or not message:
+                continue
+            event = str(message[0])
+            if _SAFE_ERROR_FIELD.fullmatch(event) is None:
+                event = "execution_error"
+            fields = [event]
+            payload = message[1] if len(message) >= 2 else None
+            if isinstance(payload, dict):
+                for key in ("node_id", "node_type", "exception_type"):
+                    value = payload.get(key)
+                    if value is not None and _SAFE_ERROR_FIELD.fullmatch(str(value)):
+                        fields.append(f"{key}={value}")
+                if payload.get("exception_message") is not None:
+                    fields.append("message=redacted_upstream_error")
+            part = " ".join(fields)
+            separator = 2 if parts else 0
+            remaining = _MAX_ERROR_LENGTH - length - separator
+            if remaining <= 0:
+                break
+            parts.append(part[:remaining])
+            length += separator + len(parts[-1])
         return "; ".join(parts) if parts else "Workflow execution failed"

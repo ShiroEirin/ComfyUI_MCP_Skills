@@ -39,6 +39,8 @@ _TOOLSET_SCOPES: dict[Toolset, frozenset[Scope]] = {
     Toolset.ADMIN: frozenset({Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}),
 }
 _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
+    "comfyui.capability.search": frozenset(Scope),
+    "comfyui.capability.describe": frozenset(Scope),
     "comfyui.asset.upload": frozenset({Scope.EXECUTE}),
     "comfyui.job.get": frozenset({Scope.EXECUTE}),
     "comfyui.job.cancel": frozenset({Scope.EXECUTE}),

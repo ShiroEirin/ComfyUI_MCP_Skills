@@ -9,10 +9,19 @@ from dataclasses import asdict
 from typing import Any
 
 from mcp.server.auth.middleware.auth_context import get_access_token
-from mcp.types import CallToolResult, ContentBlock, ResourceLink, TextContent, Tool, ToolAnnotations
+from mcp.types import (
+    CallToolResult,
+    ContentBlock,
+    Icon,
+    ResourceLink,
+    TextContent,
+    Tool,
+    ToolAnnotations,
+)
 
 from comfyui_mcp_skills.application.auth_context import current_authorization
 from comfyui_mcp_skills.application.authorization import Scope, parse_scopes
+from comfyui_mcp_skills.application.capabilities import CAPABILITY_BY_NAME, PROJECT_ICON_SRC
 from comfyui_mcp_skills.domain.models import Job, Workflow
 
 JOB_SCHEMA: dict[str, Any] = {
@@ -187,6 +196,24 @@ def validate_fixed_arguments(arguments: dict[str, Any], allowed: set[str]) -> No
         raise ValueError(f"Unexpected arguments: {', '.join(sorted(unexpected))}")
 
 
+def decorate_tool(tool: Tool, *, risk: str | None = None, toolset: str | None = None) -> Tool:
+    spec = CAPABILITY_BY_NAME.get(tool.name)
+    title = spec.title if spec is not None else tool.title
+    risk_value = spec.risk.value if spec is not None else risk
+    toolsets = (
+        sorted(item.value for item in spec.toolsets)
+        if spec is not None
+        else ([toolset] if toolset else [])
+    )
+    return tool.model_copy(
+        update={
+            "title": title,
+            "icons": [Icon(src=PROJECT_ICON_SRC, mime_type="image/svg+xml")],
+            "meta": {"comfyui/risk": risk_value, "comfyui/toolsets": toolsets},
+        }
+    )
+
+
 def fixed_tools() -> list[Tool]:
     job_properties = {
         "server_id": {"type": "string", "minLength": 1},
@@ -198,7 +225,35 @@ def fixed_tools() -> list[Tool]:
         "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
         "cursor": {"type": "string", "default": ""},
     }
-    return [
+    tools = [
+        Tool(
+            name="comfyui.capability.search",
+            description="Search authorized backend capabilities without changing tools/list.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "default": ""},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                },
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.capability.describe",
+            description=(
+                "Describe one authorized capability, schema, risk, and safe Host fallbacks."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"name": {"type": "string", "minLength": 1}},
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
         Tool(
             name="comfyui.asset.upload",
             description=(
@@ -225,7 +280,7 @@ def fixed_tools() -> list[Tool]:
                 read_only_hint=False,
                 destructive_hint=False,
                 idempotent_hint=False,
-                open_world_hint=False,
+                open_world_hint=True,
             ),
         ),
         Tool(
@@ -238,7 +293,7 @@ def fixed_tools() -> list[Tool]:
                 "additionalProperties": False,
             },
             output_schema=JOB_SCHEMA,
-            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
         Tool(
             name="comfyui.job.cancel",
@@ -257,7 +312,7 @@ def fixed_tools() -> list[Tool]:
                 read_only_hint=False,
                 destructive_hint=True,
                 idempotent_hint=True,
-                open_world_hint=False,
+                open_world_hint=True,
             ),
         ),
         Tool(
@@ -349,3 +404,4 @@ def fixed_tools() -> list[Tool]:
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
     ]
+    return [decorate_tool(tool) for tool in tools]

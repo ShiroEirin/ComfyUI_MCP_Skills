@@ -1,32 +1,35 @@
 {
   "qaMode": "deep",
-  "scope": "G5 durable Event/WorkItem/WorkLease/Outbox orchestration and JobReconciler recovery cutover",
+  "scope": "G6 Capability Catalog, bounded Tool Inventory, Agent Eval Harness, Host fallbacks, and Compatibility Matrix",
   "outcome": "pass",
-  "conclusion": "G5 passes transactional scheduling, lease fencing, checkpoint recovery, bidirectional append-safe upstream identity reconciliation, conservative lost detection, owner-isolated notifications, runtime fault isolation, and full P0-P3 review with no remaining findings.",
+  "conclusion": "G6 delivers authorized capability discovery without tools/list mutation, deterministic 16/20 fixed and 8 dynamic budgets, unified Tool metadata, conservative Host fallbacks, evidence-qualified compatibility cells, and an auditable DeepSeek V4 Flash tool-selection baseline with selection-only metrics separated from end-to-end metrics.",
   "findings": [],
   "fileReferences": [
-    "src/comfyui_mcp_skills/domain/orchestration.py",
-    "src/comfyui_mcp_skills/application/control_plane_ports.py",
-    "src/comfyui_mcp_skills/application/orchestration.py",
-    "src/comfyui_mcp_skills/application/planning.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/control_plane.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/orchestration.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/orchestration_schedule.py",
-    "src/comfyui_mcp_skills/adapters/mcp/orchestration.py",
+    "src/comfyui_mcp_skills/application/capabilities.py",
+    "src/comfyui_mcp_skills/application/compatibility.py",
+    "src/comfyui_mcp_skills/application/evaluation.py",
+    "src/comfyui_mcp_skills/adapters/mcp/tooling.py",
     "src/comfyui_mcp_skills/adapters/mcp/server.py",
-    "tests/test_g5_orchestrator.py"
+    "src/comfyui_mcp_skills/deepseek_eval_main.py",
+    "evals/g6-tool-selection.json",
+    "artifacts/g6-deepseek-v4-flash-baseline.json",
+    "tests/test_g6_catalog_eval.py",
+    "tests/test_mcp_server.py"
   ],
   "commands": [
-    {"command": "uv run ruff check --fix src/comfyui_mcp_skills tests/test_g5_orchestrator.py", "result": "passed"},
-    {"command": "uv run ruff format src/comfyui_mcp_skills tests/test_g5_orchestrator.py", "result": "passed"},
+    {"command": "uv run ruff check --fix src/comfyui_mcp_skills tests/test_g6_catalog_eval.py tests/test_mcp_server.py", "result": "passed"},
     {"command": "uv run mypy src/comfyui_mcp_skills", "result": "passed"},
-    {"command": "uv run python -m pytest -q tests/test_g5_orchestrator.py", "result": "17 passed"},
-    {"command": "uv run python -m pytest -q", "result": "429 passed, 1 skipped"}
+    {"command": "uv run python -m pytest -q tests/test_g6_catalog_eval.py tests/test_execution_state.py tests/test_application_services.py", "result": "34 passed"},
+    {"command": "uv run python -m pytest -q", "result": "440 passed, 1 skipped"},
+    {"command": "uv run python -m pytest --cov --cov-report=term-missing -q", "result": "440 passed, 1 skipped; coverage 84.02%"},
+    {"command": "uv run python -m comfyui_mcp_skills.deepseek_eval_main evals/g6-tool-selection.json --output artifacts/g6-deepseek-v4-flash-baseline.json", "result": "6/6 exact first-tool selections; dangerous mistrigger 0/5"},
+    {"command": "uv run pip-audit", "result": "no known vulnerabilities"},
+    {"command": "uv build", "result": "sdist and wheel built"}
   ],
   "independentReview": {
     "code": "PASS; P0=0, P1=0, P2=0, P3=0",
     "security": "PASS; P0=0, P1=0, P2=0, P3=0",
-    "database": "PASS; P0=0, P1=0, P2=0, P3=0",
-    "python": "PASS; P0=0, P1=0, P2=0, P3=0"
+    "python": "PASS; P0=0, P1=0, P2=0, P3=0",
+    "database": "N/A; G6 contains no database schema or migration change"
   }
 }

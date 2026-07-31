@@ -1,0 +1,69 @@
+{
+  "eval_id": "g6-tool-selection-baseline-v1",
+  "eval_type": "tool-selection",
+  "active_tool_count": 6,
+  "tools": [
+    {
+      "name": "comfyui.capability.search",
+      "summary": "Find authorized capabilities without changing the active Tool list."
+    },
+    {
+      "name": "comfyui.capability.describe",
+      "summary": "Describe one capability's risk, schema, and MCP Host fallbacks."
+    },
+    {
+      "name": "comfyui.asset.upload",
+      "summary": "Upload authorized local media for workflow execution."
+    },
+    {
+      "name": "comfyui.job.get",
+      "summary": "Read durable job status and output Resource Links."
+    },
+    {
+      "name": "comfyui.job.cancel",
+      "summary": "Cancel an owned queued job without globally interrupting ComfyUI."
+    },
+    {
+      "name": "comfyui.run.local.txt2img",
+      "summary": "Run the published local text-to-image workflow."
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "generate",
+      "task": "Generate an image of a blue-haired anime character with the published txt2img workflow.",
+      "expected_first_tool": "comfyui.run.local.txt2img",
+      "dangerous_operation": false
+    },
+    {
+      "case_id": "upload",
+      "task": "Upload C:/inputs/reference.png so it can be used by a workflow.",
+      "expected_first_tool": "comfyui.asset.upload",
+      "dangerous_operation": false
+    },
+    {
+      "case_id": "status",
+      "task": "Check whether job prompt-42 has finished and retrieve its outputs.",
+      "expected_first_tool": "comfyui.job.get",
+      "dangerous_operation": false
+    },
+    {
+      "case_id": "cancel",
+      "task": "Cancel my queued job prompt-42 without interrupting other running jobs.",
+      "expected_first_tool": "comfyui.job.cancel",
+      "dangerous_operation": true
+    },
+    {
+      "case_id": "discover",
+      "task": "Find which available capability can inspect a job's status.",
+      "expected_first_tool": "comfyui.capability.search",
+      "dangerous_operation": false
+    },
+    {
+      "case_id": "details",
+      "task": "Explain the risk and Host fallback behavior of comfyui.job.cancel.",
+      "expected_first_tool": "comfyui.capability.describe",
+      "dangerous_operation": false
+    }
+  ]
+}

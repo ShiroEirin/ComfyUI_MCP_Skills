@@ -37,6 +37,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+
 dev = [
     "pytest>=8",
     "pytest-cov>=5",
@@ -53,6 +54,8 @@ comfyui-mcp-http = "comfyui_mcp_skills.http_main:main"
 comfyui-mcp-admin = "comfyui_mcp_skills.admin_main:main"
 comfyui-mcp-maintain = "comfyui_mcp_skills.maintenance_main:main"
 comfyui-mcp-migration-dry-run = "comfyui_mcp_skills.migration_main:main"
+comfyui-mcp-eval = "comfyui_mcp_skills.eval_main:main"
+comfyui-mcp-eval-deepseek = "comfyui_mcp_skills.deepseek_eval_main:main"
 
 [project.urls]
 Repository = "https://github.com/ShiroEirin/ComfyUI_MCP_Skills"

@@ -287,6 +287,35 @@ async def test_resource_templates_describe_addressable_entities(tmp_path: Path) 
 
 
 @pytest.mark.anyio
+async def test_capability_search_does_not_mutate_active_tool_list(tmp_path: Path) -> None:
+    _project(tmp_path)
+    server = create_server(tmp_path, gateway_factory=lambda _config: FakeGateway())
+
+    async with Client(server) as client:
+        before = await client.list_tools()
+        search = await client.call_tool(
+            "comfyui.capability.search", {"query": "job status", "limit": 5}
+        )
+        described = await client.call_tool(
+            "comfyui.capability.describe",
+            {"name": "comfyui.job.get"},
+        )
+        after = await client.list_tools()
+
+    assert search.structured_content["items"][0]["name"] == "comfyui.job.get"
+    assert described.structured_content["fallbacks"] == {
+        "elicitation": "approval_resource",
+        "subscriptions": "resource_refetch",
+        "tasks": "submitted_job_resource",
+        "apps": "resource_link",
+    }
+    job_tool = next(tool for tool in before.tools if tool.name == "comfyui.job.get")
+    assert described.structured_content["input_schema"] == job_tool.input_schema
+    assert described.structured_content["output_schema"] == job_tool.output_schema
+    assert [tool.name for tool in before.tools] == [tool.name for tool in after.tools]
+
+
+@pytest.mark.anyio
 async def test_read_only_discovery_tools_are_paginated(tmp_path: Path) -> None:
     _project(tmp_path)
     gateway = FakeGateway()
@@ -426,6 +455,9 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
             "comfyui.admin.audit.get",
             "comfyui.admin.audit.retry",
         }
+        assert all(tool.title for tool in listed.tools)
+        assert all(tool.icons for tool in listed.tools)
+        assert all(tool.meta and tool.meta.get("comfyui/risk") for tool in listed.tools)
         disabled = await client.call_tool(
             "comfyui.admin.workflow.set_enabled",
             {"server_id": "local", "workflow_id": "txt2img", "enabled": False},

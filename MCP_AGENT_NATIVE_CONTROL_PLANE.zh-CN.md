@@ -1513,7 +1513,7 @@ Published Revision + arguments + Asset URI
 验收：
 
 - 每个固定 Toolset 符合活动面预算；Capability search 不改变当前 `tools/list`。
-- 至少一个中型模型和一个小型本地模型完成工具选择基线 Eval。
+- 使用 OMP 已配置的 `deepseek-v4-flash` 完成工具选择基线 Eval；后续多模型分层对比不阻塞 G6 纵向交付。
 - Matrix 覆盖第 11.14 节的最低、最新、无 Manager、传统 `/prompt` 和新版 Jobs API 组合。
 - G6 不阻塞 G1–G5 的首个用户可见纵向交付。
 

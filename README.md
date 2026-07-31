@@ -64,15 +64,15 @@ stdio 默认只允许 `COMFYUI_MCP_DIR/uploads` 下的本地文件通过 `comfyu
 $env:COMFYUI_MCP_UPLOAD_ROOTS = "D:/media;E:/shared-assets"
 ```
 
-固定执行工具：
+固定工具按独立逻辑端点与 scope 暴露：
 
-- `comfyui.asset.upload`：上传授权目录中的本地媒体。
-- `comfyui.job.get`：恢复查询持久化作业。
-- `comfyui.job.cancel`：移除指定排队作业。
-- `comfyui.server.list` / `comfyui.server.health`：服务器发现与健康检查。
-- `comfyui.node.list` / `comfyui.node.describe`：分页搜索节点并读取完整定义。
-- `comfyui.model.list`：列出模型目录或分页搜索指定类型模型。
-- `comfyui.run.<server>.<workflow>`：按工作流动态生成的执行工具。
+- 主 MCP 的 Execution / Operations / Authoring Toolset：`comfyui.capability.search` / `comfyui.capability.describe`，只搜索当前授权能力，不改变 `tools/list`。
+- Execution：5 个固定工具，包括 Catalog、`asset.upload`、`job.get`、`job.cancel`；另有最多 8 个 `comfyui.run.<server>.<workflow>` 动态工具。
+- Operations：7 个固定工具，包括 Catalog、Server、Node 和 Model 发现工具。
+- Authoring：9 个固定工具，包括 Catalog、只读发现、`revision.list` 和 `workflow.describe`。
+- 独立 Admin：4 个工作流启停/删除及审计恢复工具，不暴露 Catalog，且仅由独立管理进程提供。
+
+单端点固定工具默认不超过 16 个，硬上限 20 个；排序保持确定以稳定 Host 缓存。
 
 运行中作业不会调用 ComfyUI 的全局 `/interrupt`。`comfyui.server.health` 的 `cancel_running_supported=false` 明确暴露该上游限制。
 
@@ -178,6 +178,12 @@ uv run mypy src/comfyui_mcp_skills
 uv run python -m pytest --cov --cov-report=term-missing -q
 uv run pip-audit
 uv build
+```
+
+G6 工具选择基线使用 OMP NewAPI 回环端点中配置的 DeepSeek V4 Flash：
+
+```bash
+uv run comfyui-mcp-eval-deepseek evals/g6-tool-selection.json --output artifacts/g6-deepseek-v4-flash-baseline.json
 ```
 
 CI 在 Ubuntu 与 Windows 上覆盖 Python 3.10–3.13，并验证构建后的 wheel 可独立导入及版本一致。
