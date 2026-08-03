@@ -26,7 +26,13 @@ from mcp.types import (
 )
 from mcp_types import INVALID_PARAMS
 
-from comfyui_mcp_skills.adapters.mcp.tooling import current_owner, current_scopes, job_dict
+from comfyui_mcp_skills.adapters.mcp.tooling import (
+    current_owner,
+    current_scopes,
+    experiment_dict,
+    job_dict,
+    variant_dict,
+)
 from comfyui_mcp_skills.application.asset_library import AssetLibraryService
 from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.authorization import is_authorized, scopes_for_resource
@@ -57,6 +63,8 @@ from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 EnabledWorkflows = Callable[[], list[Workflow]]
+ExperimentVariantReader = Callable[[str, str, str], dict[str, Any]]
+ExperimentPresetReader = Callable[[str, str], dict[str, Any] | None]
 _MAX_OUTPUT_BYTES = 25 * 1024 * 1024
 _MAX_JSON_RESOURCE_BYTES = 1024 * 1024
 
@@ -93,6 +101,9 @@ def create_resource_handlers(
     workflow_inspection: WorkflowInspectionService | None = None,
     asset_library: AssetLibraryService | None = None,
     asset_library_repository: SQLiteAssetLibraryRepository | None = None,
+    experiment_service: Any | None = None,
+    experiment_variant_reader: ExperimentVariantReader | None = None,
+    experiment_preset_reader: ExperimentPresetReader | None = None,
 ) -> ResourceHandlers:
     async def list_templates(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -194,6 +205,44 @@ def create_resource_handlers(
                     name="Canonical execution job",
                     mime_type="application/json",
                 ),
+            ),
+            *(
+                [
+                    (
+                        "experiment",
+                        ResourceTemplate(
+                            uri_template="comfyui://experiments/{experiment_id}",
+                            name="Canonical Experiment summary",
+                            mime_type="application/json",
+                        ),
+                    ),
+                    (
+                        "variant",
+                        ResourceTemplate(
+                            uri_template=(
+                                "comfyui://experiments/{experiment_id}/variants/{variant_id}"
+                            ),
+                            name="Canonical Experiment Variant summary",
+                            mime_type="application/json",
+                        ),
+                    ),
+                ]
+                if experiment_service is not None
+                else []
+            ),
+            *(
+                [
+                    (
+                        "variant",
+                        ResourceTemplate(
+                            uri_template="comfyui://presets/{preset_id}",
+                            name="Owned Experiment argument preset",
+                            mime_type="application/json",
+                        ),
+                    )
+                ]
+                if experiment_preset_reader is not None
+                else []
             ),
             (
                 "artifact",
@@ -299,6 +348,9 @@ def create_resource_handlers(
                 workflow_inspection=workflow_inspection,
                 asset_library=asset_library,
                 asset_library_repository=asset_library_repository,
+                experiment_service=experiment_service,
+                experiment_variant_reader=experiment_variant_reader,
+                experiment_preset_reader=experiment_preset_reader,
             )
         except MCPError:
             raise
@@ -333,9 +385,44 @@ async def _read_resource(
     resource_aliases: ResourceAliasReader | None = None,
     require_authorization: bool = False,
     workflow_inspection: WorkflowInspectionService | None = None,
+    experiment_service: Any | None = None,
+    experiment_variant_reader: ExperimentVariantReader | None = None,
+    experiment_preset_reader: ExperimentPresetReader | None = None,
 ) -> ReadResourceResult:
     uri = str(params.uri)
     parsed = urlsplit(uri)
+    preset_id = _preset_ref(uri)
+    if preset_id is not None:
+        _require_resource_scope("variant", required=require_authorization)
+        if experiment_preset_reader is None:
+            raise ValueError("Experiment Preset Resources are unavailable")
+        document = await anyio.to_thread.run_sync(
+            experiment_preset_reader, preset_id, current_owner()
+        )
+        if document is None:
+            raise LookupError("Experiment Preset was not found")
+        return _json_resource(uri, document)
+    experiment_ref = _experiment_ref(uri)
+    if experiment_ref is not None:
+        _require_resource_scope(
+            "variant" if experiment_ref[1] else "experiment",
+            required=require_authorization,
+        )
+        if experiment_service is None:
+            raise ValueError("Experiment Resources are unavailable")
+        experiment_id, variant_id = experiment_ref
+        owner_id = current_owner()
+        if variant_id:
+            if experiment_variant_reader is None:
+                raise ValueError("Variant Resources are unavailable")
+            document = await anyio.to_thread.run_sync(
+                experiment_variant_reader, experiment_id, variant_id, owner_id
+            )
+            return _json_resource(uri, variant_dict(document))
+        document = await anyio.to_thread.run_sync(experiment_service.get, experiment_id, owner_id)
+        if document is None:
+            raise ValueError("Experiment Resource is unavailable")
+        return _json_resource(uri, experiment_dict(document))
     if parsed.scheme == "comfyui" and parsed.netloc == "lineage":
         _require_resource_scope("lineage", required=require_authorization)
         parts = [part for part in parsed.path.split("/") if part]
@@ -443,6 +530,40 @@ async def _read_resource(
         ttl_ms=5_000,
         cache_scope="private",
     )
+
+
+def _preset_ref(uri: str) -> str | None:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "comfyui" or parsed.netloc != "presets":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 1 or parsed.query or parsed.fragment:
+        raise ValueError("Invalid Experiment Preset URI")
+    preset_id = validate_identifier(parts[0], field="preset_id")
+    if not preset_id.startswith("preset_"):
+        raise ValueError("Invalid Experiment Preset URI")
+    return preset_id
+
+
+def _experiment_ref(uri: str) -> tuple[str, str] | None:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "comfyui" or parsed.netloc != "experiments":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.query or parsed.fragment:
+        raise ValueError("Invalid Experiment URI")
+    if len(parts) == 1:
+        experiment_id = validate_identifier(parts[0], field="experiment_id")
+        if not experiment_id.startswith("experiment_"):
+            raise ValueError("Invalid Experiment URI")
+        return experiment_id, ""
+    if len(parts) == 3 and parts[1] == "variants":
+        experiment_id = validate_identifier(parts[0], field="experiment_id")
+        variant_id = validate_identifier(parts[2], field="variant_id")
+        if not experiment_id.startswith("experiment_") or not variant_id.startswith("variant_"):
+            raise ValueError("Invalid Variant URI")
+        return experiment_id, variant_id
+    raise ValueError("Invalid Experiment URI")
 
 
 def _semantic_workflow_ref(uri: str) -> tuple[str, str] | None:

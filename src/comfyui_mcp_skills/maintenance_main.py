@@ -16,7 +16,7 @@ def run_maintenance(
     asset_days: int,
     max_history_records: int,
 ) -> dict[str, int]:
-    """Prune only legacy stores that remain authoritative."""
+    """Prune authoritative legacy stores and due SQLite lifecycle records."""
     return FileRetentionService(base_dir).prune_switch_aware(
         run_days=run_days,
         asset_days=asset_days,

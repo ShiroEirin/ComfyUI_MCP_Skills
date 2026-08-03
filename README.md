@@ -8,6 +8,7 @@
 - 固定工具覆盖资产上传、作业查询/取消/分页、队列、脱敏日志、可选 API 能力矩阵、模板、子图摘要和显存释放。
 - MCP Resources 同时提供旧服务器绑定 URI 与 Workflow、Revision、Deployment、Asset、Job、Artifact canonical URI；MCP Prompts 提供有界的作业操作、失败诊断和依赖观察流程。
 - Phase I 提供 API/Editor 工作流的损失感知导入预览、不可变 Revision 提交、语义 graph/nodes/edges/parameters/outputs Resources，以及确定性参数角色与依赖覆盖报告。
+- Phase M 提供持久化 Experiment plan/commit/get/cancel、matrix/zip/sample/explicit 参数扫描、预算与全局执行槽控制、Variant 评分，以及 preset/Revision 固化。
 - 支持 stdio 和带静态 Bearer Token 的 Streamable HTTP。
 - 上传、路径、下载大小、Host、Origin、请求体、并发和速率均受边界校验。
 - 危险的工作流修改与删除位于独立、默认关闭的管理进程。
@@ -143,6 +144,8 @@ comfyui-mcp-admin
 
 该进程提供工作流启用/停用和带精确确认短语的永久删除。删除必须携带调用方生成的稳定 `request_id`；返回 `committed` 与 `audit_status`。`comfyui.admin.audit.get` 可查询提交状态，`comfyui.admin.audit.retry` 只补写待完成的审计结果，不重复危险操作。不要将管理进程与普通执行端共享客户端配置或远程端口。
 
+工作流导入会把输出数量和服务端可信运行时估计固化到 Revision。每个 `config.json` 服务器可设置 `experiment_trusted_seconds_per_run`；未设置时采用服务端策略默认值 300 秒。该值不接受 MCP 请求覆盖。
+
 ## 保留策略与可观测性
 
 服务写入 JSON 结构化日志到 stderr。通过 `COMFYUI_MCP_LOG_LEVEL` 设置级别；日志只记录白名单上下文字段，不记录 Token 或请求正文。HTTP 进程维护请求总数、错误数、429 数和累计耗时的进程内指标快照。
@@ -163,6 +166,8 @@ comfyui-mcp-maintain
 ```
 
 清理器保留运行中作业和幂等记录引用的作业；只要存在活动作业，就不会清理任何资产。清理过程与在线作业、资产元数据读写共享协调锁，删除前会重新检查活动状态和引用。
+
+Experiment 未提交计划按 TTL 清理；终态计划和 Variant 载荷只在完成满 7 天后压缩，确保维护任务运行后仍保留有界的 preset/Revision 固化窗口。压缩保留计划摘要、Revision/Deployment pin、评分、Promotion 和审计事实。
 
 ## CLI 兼容入口
 

@@ -119,3 +119,15 @@ class ExecutionInProgress(ComfyUISkillsError):
 class ExecutionFailed(ComfyUISkillsError):
     code = "EXECUTION_FAILED"
     retryable = True
+
+
+class ExperimentInvalidRequest(ComfyUISkillsError):
+    code = "EXPERIMENT_INVALID_REQUEST"
+
+
+class ExperimentNotFound(ComfyUISkillsError):
+    code = "EXPERIMENT_NOT_FOUND"
+
+
+class ExperimentPlanConflict(ComfyUISkillsError):
+    code = "EXPERIMENT_PLAN_CONFLICT"

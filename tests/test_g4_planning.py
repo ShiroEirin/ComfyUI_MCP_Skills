@@ -15,6 +15,7 @@ from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.control_plane import derive_legacy_job_id
+from comfyui_mcp_skills.domain.errors import ExecutionInProgress
 from comfyui_mcp_skills.domain.models import Asset, Job
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.g3_migration import (
@@ -26,7 +27,10 @@ from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
 )
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_assets import SQLiteAssetRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
-from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import (
+    SQLiteWorkflowRepository,
+    _revision_digest,
+)
 
 
 def _project(root: Path) -> SQLiteControlPlaneStore:
@@ -477,3 +481,104 @@ def test_planning_resolves_owned_artifact_references_to_graph_target(
             "SELECT plan_id FROM execution_plan_inputs WHERE owner_id=? AND artifact_id=?",
             ("owner-a", artifact.artifact_id),
         ).fetchall() == [(identity.plan_id,)]
+
+
+class _RecordingGateway:
+    def __init__(self) -> None:
+        self.queued: list[dict[str, object]] = []
+
+    def queue_prompt(self, workflow: dict[str, object], **kwargs: object) -> dict[str, str]:
+        del kwargs
+        self.queued.append(json.loads(json.dumps(workflow)))
+        return {"prompt_id": "pinned-prompt"}
+
+
+def test_experiment_submission_executes_committed_pins_after_publication_drift(
+    tmp_path: Path,
+) -> None:
+    store = _project(tmp_path)
+    workflows = SQLiteWorkflowRepository(store)
+    original = workflows.describe("portrait", "local")
+    original_revision = workflows.get_revision(original["revision_id"])
+    changed_graph = {"changed": {"class_type": "Changed", "inputs": {}}}
+    changed_schema = {"description": "Changed", "enabled": True, "parameters": {}}
+    changed_digest = _revision_digest(changed_graph, changed_schema, {})
+    changed = workflows.create_revision(
+        workflow_id="portrait",
+        server_id="local",
+        graph=changed_graph,
+        parameter_schema=changed_schema,
+        dependency_contract={},
+        content_digest=changed_digest,
+    )
+    workflows.publish(changed["deployment_id"])
+    gateway = _RecordingGateway()
+    runs = SQLiteRunRepository(store)
+    service = ExecutionService(
+        WorkflowCatalog(workflows),
+        ServerRegistry(tmp_path),
+        runs,
+        SQLiteAssetRepository(store),
+        lambda _config: gateway,  # type: ignore[arg-type,return-value]
+        planning=ExecutionPlanningService(store, workflows),
+    )
+
+    job = service.submit(
+        "local",
+        "portrait",
+        {},
+        idempotency_key="experiment-pinned-1",
+        owner_id="principal",
+        revision_id=str(original["revision_id"]),
+        deployment_id=str(original["deployment_id"]),
+        content_digest=str(original["content_digest"]),
+    )
+
+    assert gateway.queued == [original_revision["graph"]]
+    assert job.revision_id == original["revision_id"]
+    assert job.deployment_id == original["deployment_id"]
+
+
+class _FinalizationFailurePlanning(ExecutionPlanningService):
+    def finalize_submission(self, identity: object, **kwargs: object) -> None:
+        del identity, kwargs
+        raise RuntimeError("canonical finalization failed after queue acceptance")
+
+
+def test_finalization_failure_after_queue_acceptance_stays_submission_unknown(
+    tmp_path: Path,
+) -> None:
+    store = _project(tmp_path)
+    workflows = SQLiteWorkflowRepository(store)
+    original = workflows.describe("portrait", "local")
+    gateway = _RecordingGateway()
+    runs = SQLiteRunRepository(store)
+    service = ExecutionService(
+        WorkflowCatalog(workflows),
+        ServerRegistry(tmp_path),
+        runs,
+        SQLiteAssetRepository(store),
+        lambda _config: gateway,  # type: ignore[arg-type,return-value]
+        planning=_FinalizationFailurePlanning(store, workflows),
+    )
+
+    with pytest.raises(ExecutionInProgress):
+        service.submit(
+            "local",
+            "portrait",
+            {},
+            idempotency_key="experiment-finalize-unknown",
+            owner_id="principal",
+            revision_id=str(original["revision_id"]),
+            deployment_id=str(original["deployment_id"]),
+            content_digest=str(original["content_digest"]),
+        )
+
+    assert len(gateway.queued) == 1
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute("SELECT status FROM jobs").fetchone() == ("submission_unknown",)
+        assert connection.execute("SELECT submission_state FROM execution_attempts").fetchone() == (
+            "submission_unknown",
+        )
+    claim = runs.get_claim("local", "experiment-finalize-unknown", "principal")
+    assert claim is not None and claim["status"] == "submission_unknown"

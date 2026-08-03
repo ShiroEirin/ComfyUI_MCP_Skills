@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -16,6 +18,12 @@ from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowValidationService,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
+
+_DEFAULT_TRUSTED_SECONDS_PER_RUN = 300.0
+
+
+def _default_runtime_estimator(_server_id: str, _graph: dict[str, Any]) -> float:
+    return _DEFAULT_TRUSTED_SECONDS_PER_RUN
 
 
 class WorkflowRevisionWriter(Protocol):
@@ -70,10 +78,13 @@ class WorkflowImportService:
         graphs: WorkflowGraphService,
         validation: WorkflowValidationService,
         revisions: WorkflowRevisionWriter,
+        *,
+        runtime_estimator: Callable[[str, dict[str, Any]], float] = _default_runtime_estimator,
     ) -> None:
         self._graphs = graphs
         self._validation = validation
         self._revisions = revisions
+        self._runtime_estimator = runtime_estimator
 
     def preview(
         self,
@@ -98,7 +109,20 @@ class WorkflowImportService:
         unsupported = tuple(sorted(set(unsupported) | set(validation["unsupported_nodes"])))
         semantic = self._graphs.describe(graph, object_info=object_info, media_type=media_type)
         parameters = semantic["parameters"]
-        dependencies = semantic["dependencies"]
+        dependencies = dict(semantic["dependencies"])
+        output_cardinality = len(semantic["outputs"])
+        trusted_seconds = self._runtime_estimator(server_id, graph)
+        if output_cardinality > 100_000:
+            raise ValueError("Workflow output cardinality must not exceed 100000")
+        if (
+            isinstance(trusted_seconds, bool)
+            or not isinstance(trusted_seconds, (int, float))
+            or not math.isfinite(float(trusted_seconds))
+            or not 0 < float(trusted_seconds) <= 31_536_000
+        ):
+            raise ValueError("trusted Workflow runtime estimate must be finite and positive")
+        dependencies["output_cardinality"] = output_cardinality
+        dependencies["trusted_seconds_per_run"] = float(trusted_seconds)
         digest = _content_digest(graph, parameters, dependencies, semantic["outputs"])
         deprecated = _deprecated_nodes(graph, node_replacements or {})
         issues = tuple(dict(issue) for issue in validation["issues"])
@@ -170,6 +194,8 @@ class WorkflowImportService:
     def commit(self, preview: ImportPreview) -> dict[str, Any]:
         if preview.requires_manual_review:
             raise ValueError("Workflow import requires manual review")
+        if int(preview.dependency_contract.get("output_cardinality", 0)) <= 0:
+            raise ValueError("Workflow import has no executable output contract")
         return self._revisions.create_revision(
             workflow_id=preview.workflow_id,
             server_id=preview.server_id,

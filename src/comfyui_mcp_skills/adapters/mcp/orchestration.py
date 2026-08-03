@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from functools import partial
 
@@ -27,6 +28,7 @@ class OrchestrationRuntime:
         *,
         worker_id: str,
         idle_seconds: float = 1.0,
+        owner_for_uri: Callable[[str], str | None] | None = None,
     ) -> None:
         if not worker_id or idle_seconds <= 0:
             raise ValueError("worker_id and positive idle_seconds are required")
@@ -35,6 +37,7 @@ class OrchestrationRuntime:
         self._bus = bus
         self._worker_id = worker_id
         self._idle_seconds = idle_seconds
+        self._owner_for_uri = owner_for_uri or repository.job_owner_for_uri
 
     async def run_worker(self) -> None:
         while True:
@@ -67,9 +70,7 @@ class OrchestrationRuntime:
                     logger.error("Discarding invalid resource outbox message")
                     await self._mark_delivered(message.outbox_id)
                     continue
-                actual_owner = await anyio.to_thread.run_sync(
-                    self._repository.job_owner_for_uri, uri
-                )
+                actual_owner = await anyio.to_thread.run_sync(self._owner_for_uri, uri)
                 if actual_owner is None or expected_owner != actual_owner:
                     logger.error("Discarding invalid resource outbox message")
                     await self._mark_delivered(message.outbox_id)

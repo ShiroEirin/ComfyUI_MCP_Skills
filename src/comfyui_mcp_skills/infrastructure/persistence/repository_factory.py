@@ -15,6 +15,9 @@ from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
 )
 from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_assets import SQLiteAssetRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_experiments import (
+    SQLiteExperimentRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
 from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
@@ -42,6 +45,7 @@ class RepositoryBundle:
     run_store: StoreBackend
     asset_store: StoreBackend
     store: SQLiteControlPlaneStore | None
+    experiments: SQLiteExperimentRepository | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +75,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
             run_store="file",
             asset_store="file",
             store=None,
+            experiments=None,
         )
 
     store = SQLiteControlPlaneStore(database_path)
@@ -100,6 +105,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
         assets = SQLiteAssetRepository(store)
     else:
         assets = FileAssetRepository(project_root)
+    experiments = SQLiteExperimentRepository(store)
     return RepositoryBundle(
         workflows=workflows,
         runs=runs,
@@ -108,6 +114,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
         run_store=run_store,
         asset_store=asset_store,
         store=store,
+        experiments=experiments,
     )
 
 

@@ -13,6 +13,7 @@ from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
 from comfyui_mcp_skills.adapters.mcp.server import create_server
 from comfyui_mcp_skills.adapters.mcp.tooling import fixed_tools
 from comfyui_mcp_skills.application.authorization import AuthorizationContext, Scope, Toolset
+from comfyui_mcp_skills.application.experiments import ExperimentService
 from comfyui_mcp_skills.application.workflow_conversion import convert_editor_workflow
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -29,6 +30,9 @@ from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetReposi
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import RepositoryBundle
 from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_experiments import (
+    SQLiteExperimentRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import (
     SQLiteWorkflowRepository,
 )
@@ -756,6 +760,58 @@ def test_batch_preview_isolates_each_invalid_workflow() -> None:
     }
     assert result["previewed"] == 1
     assert result["failed"] == 1
+
+
+def test_imported_published_workflow_is_experiment_ready(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    workflows = SQLiteWorkflowRepository(store)
+    graphs, validation = _services()
+    experiment_workflow = json.loads(json.dumps(API_WORKFLOW))
+    experiment_workflow["3"]["inputs"] = {"width": 64, "height": 64}
+    experiment_info = json.loads(json.dumps(OBJECT_INFO))
+    experiment_info["ImageSource"]["input"] = {
+        "required": {
+            "width": ["INT", {"default": 64}],
+            "height": ["INT", {"default": 64}],
+        }
+    }
+    experiment_info["ImageSource"]["input_order"] = {"required": ["width", "height"]}
+    importer = WorkflowImportService(
+        graphs,
+        validation,
+        workflows,
+        runtime_estimator=lambda _server_id, _graph: 12.0,
+    )
+    imported = importer.commit(
+        importer.preview(
+            experiment_workflow,
+            workflow_id="bird",
+            server_id="local",
+            object_info=experiment_info,
+        )
+    )
+    workflows.publish(imported["deployment_id"])
+    experiments = ExperimentService(SQLiteExperimentRepository(store))
+    plan = experiments.plan(
+        "owner-a",
+        "bird",
+        "local",
+        {"mode": "explicit", "variants": [{}]},
+        {"prompt": "a blue bird", "width": 64, "height": 64},
+        {
+            "max_variants": 1,
+            "max_concurrency": 1,
+            "max_pixels": 4096,
+            "max_outputs": 1,
+            "max_seconds": 12,
+        },
+        "continue",
+        1,
+        0,
+    )
+    committed = experiments.commit(plan["plan_id"], plan["plan_digest"], "owner-a")
+    assert committed["pinned_revision_id"] == imported["revision_id"]
 
 
 @pytest.mark.anyio

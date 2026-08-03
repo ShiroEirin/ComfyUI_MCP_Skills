@@ -182,7 +182,13 @@ def test_maintenance_preserves_legacy_files_after_corresponding_switches(
         max_history_records=0,
     )
 
-    assert result == {"runs_deleted": 0, "assets_deleted": 0}
+    assert result == {
+        "runs_deleted": 0,
+        "assets_deleted": 0,
+        "experiment_plans_deleted": 0,
+        "experiment_terminal_plans_pruned": 0,
+        "experiment_terminal_payloads_compacted": 0,
+    }
     assert run_path.exists()
     assert asset_path.exists()
 

@@ -72,6 +72,7 @@ class FileRetentionService:
         """Read cutover state and prune legacy files under the same migration lock."""
         with self._migration_lock:
             repositories = create_repository_bundle(self._base_dir)
+            maintenance_now = datetime.now(timezone.utc)
             file_result = self._prune_locked(
                 run_days=run_days,
                 asset_days=asset_days,
@@ -79,13 +80,25 @@ class FileRetentionService:
                 preserve_runs=repositories.run_store == "sqlite",
                 preserve_assets=repositories.asset_store == "sqlite",
             )
+            file_result["experiment_plans_deleted"] = 0
+            file_result["experiment_terminal_plans_pruned"] = 0
+            file_result["experiment_terminal_payloads_compacted"] = 0
             if repositories.store is not None and (
                 repositories.run_store == "sqlite" or repositories.asset_store == "sqlite"
             ):
                 sqlite_result = SQLiteRetentionService(
                     SQLiteAssetLibraryRepository(repositories.store)
-                ).prune()
+                ).prune(now=maintenance_now)
                 file_result["assets_deleted"] += sqlite_result["assets_tombstoned"]
+            if repositories.experiments is not None:
+                experiment_result = repositories.experiments.apply_retention(now=maintenance_now)
+                file_result["experiment_plans_deleted"] = experiment_result["plans_deleted"]
+                file_result["experiment_terminal_plans_pruned"] = experiment_result[
+                    "terminal_plans_pruned"
+                ]
+                file_result["experiment_terminal_payloads_compacted"] = experiment_result[
+                    "terminal_payloads_compacted"
+                ]
             return file_result
 
     def _prune_locked(

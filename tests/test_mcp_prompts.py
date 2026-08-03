@@ -34,6 +34,7 @@ async def test_prompt_handlers_list_and_render_bounded_safe_guidance() -> None:
         "diagnose-failure",
         "inspect-dependencies",
         "select-or-import-workflow",
+        "compare-experiment-results",
     ]
     assert listed.cache_scope == "private"
     assert all(prompt.arguments for prompt in listed.prompts)
@@ -128,7 +129,7 @@ async def test_server_registers_low_level_prompt_handlers(tmp_path: Path) -> Non
     [
         (
             AuthorizationContext("exec", frozenset({Scope.EXECUTE}), Toolset.EXECUTION),
-            {"operate-job", "diagnose-failure"},
+            {"operate-job", "diagnose-failure", "compare-experiment-results"},
         ),
         (
             AuthorizationContext(

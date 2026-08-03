@@ -216,10 +216,147 @@ def job_dict(job: Job) -> dict[str, Any]:
     }
 
 
+_EXPERIMENT_PUBLIC_FIELDS = frozenset(
+    {
+        "plan_id",
+        "plan_digest",
+        "experiment_id",
+        "workflow_id",
+        "server_id",
+        "status",
+        "expansion",
+        "budgets",
+        "budget_totals",
+        "variant_count",
+        "failure_policy",
+        "concurrency",
+        "submission_window",
+        "pinned_revision_id",
+        "pinned_deployment_id",
+        "pinned_content_digest",
+        "execution_slots",
+        "subject_submission_quota",
+        "retained_plan_bytes",
+        "expires_at",
+        "pending_count",
+        "submitted_count",
+        "running_count",
+        "completed_count",
+        "failed_count",
+        "cancelled_count",
+        "lost_count",
+        "cancel_mode",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "completed_at",
+        "cancelled_at",
+        "resource_uri",
+    }
+)
+_VARIANT_PUBLIC_FIELDS = frozenset(
+    {
+        "experiment_id",
+        "variant_id",
+        "ordinal",
+        "parameter_digest",
+        "status",
+        "job_id",
+        "job_uri",
+        "artifact_uris",
+        "measured_pixels",
+        "measured_outputs",
+        "measured_seconds",
+        "error_code",
+        "created_at",
+        "updated_at",
+        "started_at",
+        "completed_at",
+        "resource_uri",
+        "ratings",
+        "promotions",
+    }
+)
+
+
+def experiment_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist a public Experiment summary without expanded parameter payloads."""
+    result = {name: value[name] for name in _EXPERIMENT_PUBLIC_FIELDS if name in value}
+    expansion = result.get("expansion")
+    if isinstance(expansion, dict):
+        mode = expansion.get("mode")
+        result["expansion"] = {"mode": mode} if isinstance(mode, str) else {}
+    return result
+
+
+def variant_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist one public Variant summary without its resolved arguments."""
+    return {name: value[name] for name in _VARIANT_PUBLIC_FIELDS if name in value}
+
+
+def variant_page_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Bound and allowlist one keyset-paginated Variant page."""
+    raw_items = value.get("items", [])
+    if not isinstance(raw_items, list) or len(raw_items) > 100:
+        raise ValueError("Variant page exceeds 100 items")
+    cursor = value.get("next_cursor", "")
+    if not isinstance(cursor, str) or len(cursor) > 2048:
+        raise ValueError("Invalid Variant cursor")
+    return {
+        "items": [variant_dict(item) for item in raw_items if isinstance(item, dict)],
+        "next_cursor": cursor,
+    }
+
+
+def rating_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist one immutable-rubric Variant rating."""
+    fields = (
+        "rating_id",
+        "experiment_id",
+        "variant_id",
+        "rubric_version",
+        "rubric_definition",
+        "scores",
+        "created_at",
+        "updated_at",
+    )
+    return {name: value[name] for name in fields if name in value}
+
+
+def promotion_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Allowlist one preset or immutable unpublished Revision promotion."""
+    fields = (
+        "promotion_id",
+        "experiment_id",
+        "variant_id",
+        "target",
+        "preset_id",
+        "revision_id",
+        "published",
+        "created_at",
+    )
+    return {name: value[name] for name in fields if name in value}
+
+
 def tool_result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
     content: list[ContentBlock] = [
         TextContent(type="text", text=json.dumps(data, ensure_ascii=False))
     ]
+    if not error:
+        resource_uri = data.get("resource_uri")
+        if isinstance(resource_uri, str) and re.fullmatch(
+            r"comfyui://experiments/experiment_[A-Za-z0-9_-]{1,117}"
+            r"(?:/variants/variant_[A-Za-z0-9_-]{1,120})?",
+            resource_uri,
+        ):
+            content.append(
+                ResourceLink(
+                    type="resource_link",
+                    uri=resource_uri,
+                    name=resource_uri.rsplit("/", 1)[-1],
+                    mime_type="application/json",
+                )
+            )
     if not error:
         outputs = data.get("outputs", [])
         if isinstance(outputs, list):
@@ -308,6 +445,32 @@ def bounded_integer(
         raise TypeError(f"{name} must be an integer")
     if not minimum <= value <= maximum:
         raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return value
+
+
+def required_object(
+    arguments: dict[str, Any],
+    name: str,
+    *,
+    max_properties: int,
+    max_bytes: int,
+) -> dict[str, Any]:
+    value = arguments.get(name)
+    if not isinstance(value, dict):
+        raise TypeError(f"{name} must be an object")
+    if len(value) > max_properties:
+        raise ValueError(f"{name} exceeds {max_properties} properties")
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must contain finite JSON values") from exc
+    if len(encoded) > max_bytes:
+        raise ValueError(f"{name} exceeds {max_bytes} bytes")
     return value
 
 
@@ -1176,6 +1339,299 @@ def phase_l_tools() -> list[Tool]:
             },
             output_schema=object_result,
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+    ]
+    return [decorate_tool(tool) for tool in tools]
+
+
+def phase_m_tools() -> list[Tool]:
+    """Return the stable Phase M experiment and Variant Tool surface."""
+    identifier = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    }
+    experiment_id = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])experiment_[A-Za-z0-9_-]{1,117}$",
+    }
+    variant_id = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])variant_[A-Za-z0-9_-]{1,120}$",
+    }
+    parameter_name = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    }
+    parameter_sets = {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 64,
+        "propertyNames": parameter_name,
+        "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 10_000,
+        },
+    }
+    explicit_variant = {
+        "type": "object",
+        "maxProperties": 64,
+        "propertyNames": parameter_name,
+    }
+    expansion = {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {"mode": {"const": "matrix"}, "parameters": parameter_sets},
+                "required": ["mode", "parameters"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {"mode": {"const": "zip"}, "parameters": parameter_sets},
+                "required": ["mode", "parameters"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"const": "sample"},
+                    "parameters": parameter_sets,
+                    "seed": {"type": "integer", "minimum": -(2**63), "maximum": 2**63 - 1},
+                    "count": {"type": "integer", "minimum": 1, "maximum": 10_000},
+                },
+                "required": ["mode", "parameters", "seed", "count"],
+                "additionalProperties": False,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "mode": {"const": "explicit"},
+                    "variants": {
+                        "type": "array",
+                        "items": explicit_variant,
+                        "minItems": 1,
+                        "maxItems": 10_000,
+                    },
+                },
+                "required": ["mode", "variants"],
+                "additionalProperties": False,
+            },
+        ]
+    }
+    budgets = {
+        "type": "object",
+        "properties": {
+            "max_variants": {"type": "integer", "minimum": 1, "maximum": 10_000},
+            "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 64},
+            "max_pixels": {"type": "integer", "minimum": 1, "maximum": 10**15},
+            "max_outputs": {"type": "integer", "minimum": 1, "maximum": 100_000},
+            "max_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 31_536_000},
+        },
+        "required": [
+            "max_variants",
+            "max_concurrency",
+            "max_pixels",
+            "max_outputs",
+            "max_seconds",
+        ],
+        "additionalProperties": False,
+    }
+    object_result = {"type": "object"}
+    tools = [
+        Tool(
+            name="comfyui.experiment.plan",
+            description=(
+                "Plan against one pinned published workflow context, validate every Variant, "
+                "and calculate trusted bounded costs without inlining expanded Variants."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": identifier,
+                    "server_id": identifier,
+                    "expansion": expansion,
+                    "preset_id": {
+                        "type": "string",
+                        "pattern": r"^(?!.*[\r\n])preset_[A-Za-z0-9_-]{1,120}$",
+                    },
+                    "base_arguments": {"type": "object", "maxProperties": 64},
+                    "budgets": budgets,
+                    "failure_policy": {
+                        "type": "string",
+                        "enum": ["continue", "stop_new", "cancel_queued"],
+                    },
+                    "concurrency": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 64,
+                        "default": 1,
+                    },
+                    "submission_window": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10_000,
+                        "default": 0,
+                    },
+                },
+                "required": [
+                    "workflow_id",
+                    "server_id",
+                    "expansion",
+                    "base_arguments",
+                    "budgets",
+                    "failure_policy",
+                ],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
+            name="comfyui.experiment.commit",
+            description="Commit one owned digest-bound experiment plan and return its Resource.",
+            input_schema={
+                "type": "object",
+                "properties": {"plan_id": identifier, "plan_digest": identifier},
+                "required": ["plan_id", "plan_digest"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.experiment.get",
+            description="Read one owner-bound experiment summary without inlining Variants.",
+            input_schema={
+                "type": "object",
+                "properties": {"experiment_id": experiment_id},
+                "required": ["experiment_id"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.experiment.cancel",
+            description=(
+                "Stop new work for one owned experiment using an explicit cancellation mode."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "experiment_id": experiment_id,
+                    "mode": {"type": "string", "enum": ["stop_new", "cancel_queued"]},
+                },
+                "required": ["experiment_id", "mode"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=True,
+                idempotent_hint=True,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.experiment.variant.list",
+            description="List owner-visible experiment Variants with bounded keyset pagination.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "experiment_id": experiment_id,
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                        "default": 50,
+                    },
+                    "cursor": {"type": "string", "maxLength": 2048, "default": ""},
+                },
+                "required": ["experiment_id"],
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "items": {"type": "array", "items": {"type": "object"}, "maxItems": 100},
+                    "next_cursor": {"type": "string"},
+                },
+                "required": ["items", "next_cursor"],
+                "additionalProperties": False,
+            },
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.experiment.variant.rate",
+            description="Record immutable-rubric bounded numeric scores for one owned Variant.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "experiment_id": experiment_id,
+                    "variant_id": variant_id,
+                    "rubric_version": identifier,
+                    "scores": {
+                        "type": "object",
+                        "minProperties": 1,
+                        "maxProperties": 32,
+                        "propertyNames": parameter_name,
+                        "additionalProperties": {
+                            "type": "number",
+                            "minimum": -1_000_000,
+                            "maximum": 1_000_000,
+                        },
+                    },
+                },
+                "required": ["experiment_id", "variant_id", "rubric_version", "scores"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
+            name="comfyui.experiment.variant.promote",
+            description="Promote one owned Variant to a preset or immutable unpublished Revision.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "experiment_id": experiment_id,
+                    "variant_id": variant_id,
+                    "target": {"type": "string", "enum": ["preset", "revision"]},
+                },
+                "required": ["experiment_id", "variant_id", "target"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
         ),
     ]
     return [decorate_tool(tool) for tool in tools]

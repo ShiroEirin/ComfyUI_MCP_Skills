@@ -17,6 +17,7 @@ from comfyui_mcp_skills.application.planning_lineage import (
 from comfyui_mcp_skills.application.ports import WorkflowRepository
 from comfyui_mcp_skills.domain.control_plane import derived_control_plane_id
 from comfyui_mcp_skills.domain.errors import PayloadTooLarge
+from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import normalize_parameters
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.orchestration_schedule import (
@@ -45,6 +46,48 @@ class ExecutionPlanningService:
         self._store = store
         self._workflows = workflows
 
+    def pinned_workflow(
+        self,
+        *,
+        server_id: str,
+        workflow_id: str,
+        revision_id: str,
+        deployment_id: str,
+        content_digest: str,
+    ) -> Workflow:
+        connection = _connect(self._store)
+        try:
+            row = connection.execute(
+                """
+                SELECT d.server_id, d.workflow_id, d.enabled,
+                       r.graph_json, r.parameter_schema_json
+                FROM workflow_deployments AS d
+                JOIN workflow_revisions AS r
+                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
+                WHERE d.server_id = ? AND d.workflow_id = ?
+                  AND d.revision_id = ? AND d.deployment_id = ?
+                  AND d.enabled = 1 AND d.validation_status = 'valid'
+                  AND r.content_digest = ?
+                """,
+                (server_id, workflow_id, revision_id, deployment_id, content_digest),
+            ).fetchone()
+        finally:
+            connection.close()
+        if row is None:
+            raise LookupError("pinned Workflow deployment is unavailable")
+        raw_schema = json.loads(str(row[4]))
+        graph = json.loads(str(row[3]))
+        if not isinstance(raw_schema, dict) or not isinstance(graph, dict):
+            raise LookupError("pinned Workflow content is unavailable")
+        return Workflow(
+            server_id=str(row[0]),
+            workflow_id=str(row[1]),
+            description=str(raw_schema.get("description", "")),
+            parameters=normalize_parameters(raw_schema),
+            graph=graph,
+            enabled=bool(row[2]),
+        )
+
     def materialize(
         self,
         *,
@@ -57,6 +100,9 @@ class ExecutionPlanningService:
         resolved_inputs: dict[str, Any] | None = None,
         workflow_graph: dict[str, Any] | None = None,
         parameter_schema: dict[str, Any] | None = None,
+        revision_id: str = "",
+        deployment_id: str = "",
+        content_digest: str = "",
     ) -> ExecutionIdentity:
         input_snapshot = {
             "arguments": arguments,
@@ -67,22 +113,44 @@ class ExecutionPlanningService:
         if len(encoded_inputs) > _MAX_INPUT_SNAPSHOT_BYTES:
             raise PayloadTooLarge("Execution Plan input snapshot exceeds 1 MiB")
         input_digest = hashlib.sha256(encoded_inputs).hexdigest()
+        raw_arguments_digest = hashlib.sha256(
+            _canonical_json({"arguments": arguments, "resolved_inputs": arguments}).encode("utf-8")
+        ).hexdigest()
         created_at = datetime.now(timezone.utc).isoformat()
         connection = _connect(self._store)
         try:
             connection.execute("BEGIN IMMEDIATE")
-            published = connection.execute(
-                """
-                SELECT d.revision_id, d.deployment_id, r.graph_json,
-                       r.parameter_schema_json
-                FROM workflow_deployments AS d
-                JOIN workflow_revisions AS r
-                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
-                WHERE d.server_id = ? AND d.workflow_id = ? AND d.published = 1
-                  AND d.enabled = 1 AND d.validation_status = 'valid'
-                """,
-                (server_id, workflow_id),
-            ).fetchone()
+            pin = (revision_id, deployment_id, content_digest)
+            if any(pin) and not all(pin):
+                raise ValueError("execution pin is incomplete")
+            if all(pin):
+                published = connection.execute(
+                    """
+                    SELECT d.revision_id, d.deployment_id, r.graph_json,
+                           r.parameter_schema_json
+                    FROM workflow_deployments AS d
+                    JOIN workflow_revisions AS r
+                      ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
+                    WHERE d.server_id = ? AND d.workflow_id = ?
+                      AND d.revision_id = ? AND d.deployment_id = ?
+                      AND d.enabled = 1 AND d.validation_status = 'valid'
+                      AND r.content_digest = ?
+                    """,
+                    (server_id, workflow_id, revision_id, deployment_id, content_digest),
+                ).fetchone()
+            else:
+                published = connection.execute(
+                    """
+                    SELECT d.revision_id, d.deployment_id, r.graph_json,
+                           r.parameter_schema_json
+                    FROM workflow_deployments AS d
+                    JOIN workflow_revisions AS r
+                      ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
+                    WHERE d.server_id = ? AND d.workflow_id = ? AND d.published = 1
+                      AND d.enabled = 1 AND d.validation_status = 'valid'
+                    """,
+                    (server_id, workflow_id),
+                ).fetchone()
             if published is None:
                 raise LookupError(f"published Workflow not found: {workflow_id}")
             revision_id, deployment_id = str(published[0]), str(published[1])
@@ -127,8 +195,9 @@ class ExecutionPlanningService:
                 """
                 INSERT OR IGNORE INTO execution_plans(
                     plan_id, workflow_id, revision_id, deployment_id, server_id,
-                    resolved_inputs_json, input_digest, plan_digest, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    resolved_inputs_json, input_digest, raw_arguments_digest,
+                    plan_digest, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_id,
@@ -138,6 +207,7 @@ class ExecutionPlanningService:
                     server_id,
                     inputs_json,
                     input_digest,
+                    raw_arguments_digest,
                     plan_digest,
                     created_at,
                 ),
@@ -147,9 +217,10 @@ class ExecutionPlanningService:
                 """
                 INSERT OR IGNORE INTO jobs(
                     job_id, workflow_id, plan_id, revision_id, deployment_id,
-                    owner_id, status, retry_of, created_at, created_at_source,
-                    legacy_migrated, execution_origin, error, outputs_json
-                ) VALUES (?, ?, ?, ?, ?, ?, 'reserved', NULL, ?, 'runtime', 0,
+                    owner_id, server_id, status, retry_of, created_at,
+                    created_at_source, legacy_migrated, execution_origin, error,
+                    outputs_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', NULL, ?, 'runtime', 0,
                           'planned', '', '[]')
                 """,
                 (
@@ -159,6 +230,7 @@ class ExecutionPlanningService:
                     revision_id,
                     deployment_id,
                     owner_id,
+                    server_id,
                     created_at,
                 ),
             )
@@ -193,6 +265,7 @@ class ExecutionPlanningService:
                 revision_id=revision_id,
                 deployment_id=deployment_id,
                 owner_id=owner_id,
+                server_id=server_id,
                 client_id=client_id,
             )
             connection.commit()
@@ -348,18 +421,19 @@ def _verify_identity(
     revision_id: str,
     deployment_id: str,
     owner_id: str,
+    server_id: str,
     client_id: str,
 ) -> None:
     row = connection.execute(
         """
         SELECT jobs.plan_id, jobs.revision_id, jobs.deployment_id, jobs.owner_id,
-               execution_attempts.client_id
+               jobs.server_id, execution_attempts.client_id
         FROM jobs JOIN execution_attempts ON execution_attempts.job_id = jobs.job_id
         WHERE jobs.job_id = ? AND execution_attempts.attempt = 1
         """,
         (job_id,),
     ).fetchone()
-    expected = (plan_id, revision_id, deployment_id, owner_id, client_id)
+    expected = (plan_id, revision_id, deployment_id, owner_id, server_id, client_id)
     if row is None or tuple(row) != expected:
         raise RuntimeError("canonical execution identity conflicts with existing facts")
 

@@ -133,7 +133,7 @@ def test_reconciler_can_complete_job_first_upstream_identity(tmp_path: Path) -> 
         {"job.reconcile": JobReconciler(repository, _RecoveryProbe())},
     )
 
-    assert orchestrator.run_once("worker", now=datetime(2026, 8, 1, tzinfo=timezone.utc))
+    assert orchestrator.run_once("worker", now=datetime.now(timezone.utc))
 
     with sqlite3.connect(store.path) as connection:
         assert connection.execute(
@@ -168,7 +168,7 @@ def test_upstream_identity_merge_rejects_non_null_conflicts(tmp_path: Path) -> N
 def test_expired_lease_can_be_reclaimed_and_stale_worker_is_fenced(tmp_path: Path) -> None:
     store, _job_id, work_item_id = _scheduled_job(tmp_path)
     repository = SQLiteOrchestrationRepository(store)
-    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
 
     first = repository.acquire_next("worker-1", now=now, lease_seconds=30)
     assert first is not None and first.work_item_id == work_item_id
@@ -225,7 +225,7 @@ def test_reconciler_requires_repeated_missing_and_generation_evidence_for_lost(
         repository,
         {"job.reconcile": JobReconciler(repository, probe, missing_threshold=2)},
     )
-    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
 
     assert orchestrator.run_once("worker", now=now)
     assert orchestrator.run_once("worker", now=now + timedelta(seconds=31))
@@ -268,7 +268,7 @@ def test_reconciler_enforces_reserved_submission_grace_boundary(tmp_path: Path) 
         calls.append((server_id, prompt_id, client_id))
         return ReconcileObservation(True, "generation-a", "missing")
 
-    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
     for offset in (0, 299):
         repository = SQLiteOrchestrationRepository(store)
         orchestrator = OperationOrchestrator(
@@ -304,7 +304,7 @@ def test_reconciler_recovers_unknown_submission_by_stable_client_id(tmp_path: Pa
         {"job.reconcile": JobReconciler(repository, _RecoveryProbe())},
     )
 
-    assert orchestrator.run_once("worker", now=datetime(2026, 8, 1, tzinfo=timezone.utc))
+    assert orchestrator.run_once("worker", now=datetime.now(timezone.utc))
 
     with sqlite3.connect(store.path) as connection:
         assert connection.execute(
@@ -407,7 +407,7 @@ def test_offline_observation_breaks_consecutive_missing_sequence(tmp_path: Path)
             )
         },
     )
-    now = datetime(2026, 8, 1, tzinfo=timezone.utc)
+    now = datetime.now(timezone.utc)
 
     for offset in (0, 31, 62):
         assert orchestrator.run_once("worker", now=now + timedelta(seconds=offset))
@@ -443,7 +443,7 @@ def test_interrupted_history_completes_reconciliation_work(tmp_path: Path) -> No
         },
     )
 
-    assert orchestrator.run_once("worker", now=datetime(2026, 8, 1, tzinfo=timezone.utc))
+    assert orchestrator.run_once("worker", now=datetime.now(timezone.utc))
     with sqlite3.connect(store.path) as connection:
         assert connection.execute(
             "SELECT status FROM jobs WHERE job_id = ?", (job_id,)

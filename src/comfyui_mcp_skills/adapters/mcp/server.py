@@ -37,15 +37,21 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     current_owner,
     current_scopes,
     decorate_tool,
+    experiment_dict,
     fixed_tools,
     job_dict,
     optional_boolean,
     optional_string,
     phase_h_tools,
     phase_l_tools,
+    phase_m_tools,
+    promotion_dict,
+    rating_dict,
+    required_object,
     required_string,
     tool_result,
     validate_fixed_arguments,
+    variant_page_dict,
     workflow_tool_names,
 )
 from comfyui_mcp_skills.application.asset_library import AssetLibraryService
@@ -66,12 +72,15 @@ from comfyui_mcp_skills.application.capabilities import (
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
+from comfyui_mcp_skills.application.experiment_orchestration import ExperimentAdvanceHandler
+from comfyui_mcp_skills.application.experiments import ExperimentService, get_experiment_variant
 from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.observability import ObservationService
 from comfyui_mcp_skills.application.orchestration import (
     ComfyUIReconcileProbe,
     JobReconciler,
     OperationOrchestrator,
+    WorkHandler,
 )
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
@@ -128,6 +137,17 @@ PHASE_L_TOOL_NAMES = frozenset(
         "comfyui.asset.transfer.plan",
         "comfyui.asset.transfer.commit",
         "comfyui.asset.transfer.get",
+    }
+)
+PHASE_M_TOOL_NAMES = frozenset(
+    {
+        "comfyui.experiment.plan",
+        "comfyui.experiment.commit",
+        "comfyui.experiment.get",
+        "comfyui.experiment.cancel",
+        "comfyui.experiment.variant.list",
+        "comfyui.experiment.variant.rate",
+        "comfyui.experiment.variant.promote",
     }
 )
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
@@ -217,16 +237,28 @@ def create_server(
         if repositories.store is not None and repositories.workflow_store == "sqlite"
         else None
     )
+    experiment_repository = repositories.experiments
+    experiments_available = (
+        experiment_repository is not None
+        and repositories.store is not None
+        and repositories.workflow_store == "sqlite"
+        and repositories.run_store == "sqlite"
+    )
+    experiment_service: ExperimentService | None = None
+    if experiments_available and experiment_repository is not None:
+        experiment_service = ExperimentService(experiment_repository)
     fixed_surface = [
         *fixed_tools(),
         *phase_h_tools(),
         *(phase_l_tools() if asset_library is not None else []),
+        *(phase_m_tools() if experiment_service is not None else []),
     ]
     capability_catalog = CapabilityCatalog(
         spec
         for spec in CAPABILITY_SPECS
         if (repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS)
         and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
+        and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
     )
     tool_inventory = ToolInventory(
         (
@@ -248,11 +280,26 @@ def create_server(
             orchestration_repository,
             ComfyUIReconcileProbe(servers, gateway_factory),
         )
+        handlers: dict[str, WorkHandler] = {"job.reconcile": reconciler}
+        if experiment_repository is not None:
+            handlers["experiment.advance"] = ExperimentAdvanceHandler(
+                experiment_repository,
+                run_repository,
+                execution,
+                jobs,
+            )
+
+        def resource_owner_for_uri(uri: str) -> str | None:
+            if urlsplit(uri).netloc == "experiments" and experiment_repository is not None:
+                return experiment_repository.resource_owner_for_uri(uri)
+            return orchestration_repository.job_owner_for_uri(uri)
+
         orchestration_runtime = OrchestrationRuntime(
-            OperationOrchestrator(orchestration_repository, {"job.reconcile": reconciler}),
+            OperationOrchestrator(orchestration_repository, handlers),
             orchestration_repository,
             subscription_bus,
             worker_id=f"mcp-{uuid.uuid4().hex}",
+            owner_for_uri=resource_owner_for_uri,
         )
 
     async def authorized_listen(ctx: Any, params: Any) -> Any:
@@ -275,17 +322,23 @@ def create_server(
                         "assets": "asset",
                         "jobs": "job",
                         "artifacts": "artifact",
+                        "experiments": (
+                            "variant" if "/variants/" in urlsplit(uri).path else "experiment"
+                        ),
                     }.get(collection, "")
                 required = scopes_for_resource(kind)
                 if not required or not is_authorized(active_scopes, required):
                     raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
                 if kind in {"asset", "artifact"}:
                     raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
-                if kind != "job":
+                if kind not in {"job", "experiment", "variant"}:
                     continue
-                resource_owner = await anyio.to_thread.run_sync(
-                    orchestration_repository.job_owner_for_uri, uri
+                owner_lookup = (
+                    experiment_repository.resource_owner_for_uri
+                    if kind in {"experiment", "variant"} and experiment_repository is not None
+                    else orchestration_repository.job_owner_for_uri
                 )
+                resource_owner = await anyio.to_thread.run_sync(owner_lookup, uri)
                 if resource_owner is None or resource_owner != owner_id:
                     raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
         return await listen_handler(ctx, params)
@@ -324,6 +377,19 @@ def create_server(
         else None
     )
 
+    experiment_variant_reader = None
+    if experiment_service is not None:
+
+        def experiment_variant_reader(
+            experiment_id: str, variant_id: str, owner_id: str
+        ) -> dict[str, Any]:
+            return get_experiment_variant(experiment_service, experiment_id, variant_id, owner_id)
+
+    experiment_preset_reader = (
+        getattr(experiment_repository, "get_preset", None)
+        if experiment_repository is not None
+        else None
+    )
     resource_handlers = create_resource_handlers(
         catalog,
         servers,
@@ -336,8 +402,15 @@ def create_server(
         workflow_inspection=workflow_inspection,
         asset_library=asset_library,
         asset_library_repository=asset_library_repository,
+        experiment_service=experiment_service,
+        experiment_variant_reader=experiment_variant_reader,
+        experiment_preset_reader=experiment_preset_reader,
     )
-    prompt_handlers = create_prompt_handlers(authorization, require_authorization=True)
+    prompt_handlers = create_prompt_handlers(
+        authorization,
+        require_authorization=True,
+        experiments_available=experiment_service is not None,
+    )
 
     def current_tools() -> tuple[list[Tool], dict[str, Workflow]]:
         granted_scopes = current_scopes() if enforce_authorization else None
@@ -508,6 +581,125 @@ def create_server(
                 result["input_schema"] = described_tool.input_schema
                 result["output_schema"] = described_tool.output_schema
                 return tool_result(result)
+            if params.name in PHASE_M_TOOL_NAMES:
+                if experiment_service is None:
+                    raise ValueError("Experiment service is unavailable")
+                if params.name == "comfyui.experiment.plan":
+                    validate_fixed_arguments(
+                        arguments,
+                        {
+                            "workflow_id",
+                            "server_id",
+                            "preset_id",
+                            "expansion",
+                            "base_arguments",
+                            "budgets",
+                            "failure_policy",
+                            "concurrency",
+                            "submission_window",
+                        },
+                    )
+                    workflow_id = required_string(arguments, "workflow_id", max_length=128)
+                    server_id = required_string(arguments, "server_id", max_length=128)
+                    base_arguments = required_object(
+                        arguments, "base_arguments", max_properties=64, max_bytes=256 * 1024
+                    )
+                    preset_id = optional_string(arguments, "preset_id", "", max_length=128)
+                    if preset_id:
+                        if experiment_repository is None:
+                            raise ValueError("Experiment Preset seeding is unavailable")
+                        preset_arguments = experiment_repository.consume_preset(
+                            preset_id, owner_id, workflow_id, server_id
+                        )
+                        base_arguments = {**preset_arguments, **base_arguments}
+                    result = await anyio.to_thread.run_sync(
+                        lambda: experiment_service.plan(
+                            owner_id,
+                            workflow_id,
+                            server_id,
+                            required_object(
+                                arguments, "expansion", max_properties=4, max_bytes=1024 * 1024
+                            ),
+                            base_arguments,
+                            required_object(arguments, "budgets", max_properties=5, max_bytes=4096),
+                            required_string(arguments, "failure_policy", max_length=32),
+                            bounded_integer(arguments, "concurrency", 1, minimum=1, maximum=64),
+                            bounded_integer(
+                                arguments, "submission_window", 0, minimum=0, maximum=10_000
+                            ),
+                        )
+                    )
+                    return tool_result(experiment_dict(result))
+                if params.name == "comfyui.experiment.commit":
+                    validate_fixed_arguments(arguments, {"plan_id", "plan_digest"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: experiment_service.commit(
+                            required_string(arguments, "plan_id", max_length=128),
+                            required_string(arguments, "plan_digest", max_length=128),
+                            owner_id,
+                        )
+                    )
+                    return tool_result(experiment_dict(result))
+                if params.name == "comfyui.experiment.get":
+                    validate_fixed_arguments(arguments, {"experiment_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: experiment_service.get(
+                            required_string(arguments, "experiment_id", max_length=128),
+                            owner_id,
+                        )
+                    )
+                    return tool_result(experiment_dict(result))
+                if params.name == "comfyui.experiment.cancel":
+                    validate_fixed_arguments(arguments, {"experiment_id", "mode"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: experiment_service.cancel(
+                            required_string(arguments, "experiment_id", max_length=128),
+                            required_string(arguments, "mode", max_length=32),
+                            owner_id,
+                        )
+                    )
+                    return tool_result(experiment_dict(result))
+                if params.name == "comfyui.experiment.variant.list":
+                    validate_fixed_arguments(arguments, {"experiment_id", "limit", "cursor"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: experiment_service.list_variants(
+                            required_string(arguments, "experiment_id", max_length=128),
+                            owner_id,
+                            bounded_integer(arguments, "limit", 50, minimum=1, maximum=100),
+                            optional_string(arguments, "cursor", "", max_length=2048),
+                        )
+                    )
+                    return tool_result(variant_page_dict(result))
+                if params.name == "comfyui.experiment.variant.rate":
+                    validate_fixed_arguments(
+                        arguments,
+                        {"experiment_id", "variant_id", "rubric_version", "scores"},
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: experiment_service.rate(
+                            required_string(arguments, "experiment_id", max_length=128),
+                            required_string(arguments, "variant_id", max_length=128),
+                            required_string(arguments, "rubric_version", max_length=128),
+                            required_object(
+                                arguments,
+                                "scores",
+                                max_properties=32,
+                                max_bytes=16 * 1024,
+                            ),
+                            owner_id,
+                        )
+                    )
+                    return tool_result(rating_dict(result))
+                validate_fixed_arguments(arguments, {"experiment_id", "variant_id", "target"})
+                result = await anyio.to_thread.run_sync(
+                    lambda: experiment_service.promote(
+                        required_string(arguments, "experiment_id", max_length=128),
+                        required_string(arguments, "variant_id", max_length=128),
+                        required_string(arguments, "target", max_length=16),
+                        owner_id,
+                    )
+                )
+                return tool_result(promotion_dict(result))
             if params.name in PHASE_L_TOOL_NAMES:
                 if asset_library is None:
                     raise ValueError("Asset library is unavailable")

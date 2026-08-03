@@ -264,11 +264,13 @@ class SQLiteRunRepository:
                     connection.commit()
                     return
             existing = connection.execute(
-                "SELECT status, owner_id, workflow_id FROM jobs WHERE job_id = ?",
+                "SELECT status, owner_id, workflow_id, server_id FROM jobs WHERE job_id = ?",
                 (job_id,),
             ).fetchone()
             if existing is not None and (
-                str(existing[1]) != job.owner_id or str(existing[2]) != job.workflow_id
+                str(existing[1]) != job.owner_id
+                or str(existing[2]) != job.workflow_id
+                or str(existing[3]) != job.server_id
             ):
                 raise RuntimeError("job identity is already owned by a different request")
             existing_status = str(existing[0]) if existing is not None else ""
@@ -284,10 +286,10 @@ class SQLiteRunRepository:
                 connection.execute(
                     """
                     INSERT INTO jobs(
-                        job_id, workflow_id, owner_id, status, created_at,
+                        job_id, workflow_id, owner_id, server_id, status, created_at,
                         created_at_source, legacy_migrated, error, outputs_json,
                         execution_origin
-                    ) VALUES (?, ?, ?, ?, ?, 'runtime', 0, ?, ?, 'pre_g4_runtime')
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'runtime', 0, ?, ?, 'pre_g4_runtime')
                     ON CONFLICT(job_id) DO UPDATE SET
                         status = excluded.status, error = excluded.error,
                         outputs_json = excluded.outputs_json
@@ -296,6 +298,7 @@ class SQLiteRunRepository:
                         job_id,
                         job.workflow_id,
                         job.owner_id,
+                        job.server_id,
                         job.status,
                         datetime.now(timezone.utc).isoformat(),
                         job.error,

@@ -83,6 +83,10 @@ class ExecutionService:
         *,
         idempotency_key: str = "",
         owner_id: str = "",
+        client_id: str = "",
+        revision_id: str = "",
+        deployment_id: str = "",
+        content_digest: str = "",
     ) -> Job:
         if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
             raise ValueError("idempotency_key must be a string up to 256 characters")
@@ -91,13 +95,34 @@ class ExecutionService:
             or any(ord(char) < 33 or ord(char) == 127 for char in idempotency_key)
         ):
             raise ValueError("idempotency_key must contain printable non-whitespace characters")
-        workflow = self._catalog.get(server_id, workflow_id)
+        if not isinstance(client_id, str) or len(client_id) > 128:
+            raise ValueError("client_id must be a string up to 128 characters")
+        if client_id and (
+            client_id.strip() != client_id
+            or any(ord(char) < 33 or ord(char) == 127 for char in client_id)
+        ):
+            raise ValueError("client_id must contain printable non-whitespace characters")
+        pin = (revision_id, deployment_id, content_digest)
+        if any(pin) and not all(pin):
+            raise ValueError("execution pin is incomplete")
+        if all(pin):
+            if self._planning is None:
+                raise RuntimeError("pinned execution planning is unavailable")
+            workflow = self._planning.pinned_workflow(
+                server_id=server_id,
+                workflow_id=workflow_id,
+                revision_id=revision_id,
+                deployment_id=deployment_id,
+                content_digest=content_digest,
+            )
+        else:
+            workflow = self._catalog.get(server_id, workflow_id)
         validate_arguments(workflow.parameters, arguments)
         resolved = self._resolve_assets(
             server_id, workflow.parameters, workflow.graph, arguments, owner_id
         )
         request_digest = self._runs.request_digest(workflow_id, arguments)
-        client_id = uuid.uuid4().hex
+        client_id = client_id or uuid.uuid4().hex
         gateway = self._gateway_factory(self._servers.connection(server_id))
         lease_token = ""
         if idempotency_key:
@@ -110,6 +135,7 @@ class ExecutionService:
                 client_id=client_id,
             )
             if claimed is None:
+                existing = self._runs.get_by_idempotency(server_id, idempotency_key, owner_id)
                 claim = self._runs.get_claim(server_id, idempotency_key, owner_id)
                 if (
                     claim is None
@@ -119,12 +145,26 @@ class ExecutionService:
                     raise IdempotencyConflict(
                         "Idempotency key was already used for a different request"
                     )
-                existing = self._runs.get_by_idempotency(server_id, idempotency_key, owner_id)
                 if existing is not None:
+                    self._verify_pins(
+                        existing,
+                        revision_id=revision_id,
+                        deployment_id=deployment_id,
+                    )
                     return existing
-                recovered_prompt = self._find_prompt_by_client_id(
-                    gateway, str(claim.get("client_id", ""))
-                )
+                try:
+                    recovered_prompt = self._find_prompt_by_client_id(
+                        gateway, str(claim.get("client_id", ""))
+                    )
+                except Exception as exc:
+                    raise self._submission_unknown(
+                        server_id,
+                        idempotency_key,
+                        str(claim.get("lease_token", "")),
+                        owner_id,
+                        None,
+                        exc,
+                    ) from exc
                 if recovered_prompt:
                     if self._planning is not None:
                         recovered_identity = self._planning.identity_for_client(
@@ -134,13 +174,30 @@ class ExecutionService:
                             raise ExecutionInProgress(
                                 "Recovered upstream submission has no canonical G4 identity"
                             )
-                        self._planning.finalize_submission(
-                            recovered_identity,
-                            upstream_prompt_id=recovered_prompt,
-                            idempotency_key=idempotency_key,
-                            request_digest=request_digest,
-                            lease_token=str(claim.get("lease_token", "")),
-                        )
+                        if revision_id and (
+                            recovered_identity.revision_id != revision_id
+                            or recovered_identity.deployment_id != deployment_id
+                        ):
+                            raise IdempotencyConflict(
+                                "Recovered upstream submission has different execution pins"
+                            )
+                        try:
+                            self._planning.finalize_submission(
+                                recovered_identity,
+                                upstream_prompt_id=recovered_prompt,
+                                idempotency_key=idempotency_key,
+                                request_digest=request_digest,
+                                lease_token=str(claim.get("lease_token", "")),
+                            )
+                        except Exception as exc:
+                            raise self._submission_unknown(
+                                server_id,
+                                idempotency_key,
+                                str(claim.get("lease_token", "")),
+                                owner_id,
+                                recovered_identity,
+                                exc,
+                            ) from exc
                         return Job(
                             prompt_id=recovered_prompt,
                             server_id=server_id,
@@ -166,13 +223,23 @@ class ExecutionService:
                         request_digest=request_digest,
                         owner_id=owner_id,
                     )
-                    self._runs.save(
-                        recovered,
-                        lease_token=str(claim.get("lease_token", "")),
-                    )
+                    try:
+                        self._runs.save(
+                            recovered,
+                            lease_token=str(claim.get("lease_token", "")),
+                        )
+                    except Exception as exc:
+                        raise self._submission_unknown(
+                            server_id,
+                            idempotency_key,
+                            str(claim.get("lease_token", "")),
+                            owner_id,
+                            None,
+                            exc,
+                        ) from exc
                     return recovered
                 raise ExecutionInProgress(
-                    "Submission outcome is unknown; retry status reconciliation"
+                    "submission outcome is unknown; retry status reconciliation"
                 )
             lease_token = claimed
         execution_identity: ExecutionIdentity | None = None
@@ -187,6 +254,9 @@ class ExecutionService:
                     resolved_inputs=resolved,
                     workflow_graph=workflow.graph,
                     parameter_schema=workflow.parameters,
+                    revision_id=revision_id,
+                    deployment_id=deployment_id,
+                    content_digest=content_digest,
                 )
             except BaseException:
                 self._runs.release_claim(
@@ -200,48 +270,64 @@ class ExecutionService:
         graph = self._inject(workflow.graph, workflow.parameters, resolved)
         try:
             queued = gateway.queue_prompt(graph, client_id=client_id)
-        except ServerOffline as exc:
-            self._runs.mark_submission_unknown(server_id, idempotency_key, lease_token, owner_id)
-            if execution_identity is not None:
-                assert self._planning is not None
-                self._planning.mark_submission_unknown(execution_identity, str(exc))
-            raise
         except Exception as exc:
             if execution_identity is not None:
-                assert self._planning is not None
+                raise self._submission_unknown(
+                    server_id,
+                    idempotency_key,
+                    lease_token,
+                    owner_id,
+                    execution_identity,
+                    exc,
+                ) from exc
+            if isinstance(exc, ServerOffline):
                 self._runs.mark_submission_unknown(
                     server_id, idempotency_key, lease_token, owner_id
                 )
-                self._planning.mark_submission_unknown(execution_identity, str(exc))
-            else:
-                self._runs.release_claim(
-                    server_id,
-                    idempotency_key,
-                    request_digest,
-                    lease_token,
-                    owner_id,
-                )
+                raise
+            self._runs.release_claim(
+                server_id,
+                idempotency_key,
+                request_digest,
+                lease_token,
+                owner_id,
+            )
             raise
         prompt_id = str(queued.get("prompt_id", ""))
         upstream_job_id = str(queued.get("job_id", ""))
         if not prompt_id and not upstream_job_id:
-            self._runs.mark_submission_unknown(server_id, idempotency_key, lease_token, owner_id)
             if execution_identity is not None:
-                assert self._planning is not None
-                self._planning.mark_submission_unknown(
-                    execution_identity, "ComfyUI submission outcome is unknown"
-                )
+                unknown = ServerOffline("ComfyUI submission outcome is unknown")
+                raise self._submission_unknown(
+                    server_id,
+                    idempotency_key,
+                    lease_token,
+                    owner_id,
+                    execution_identity,
+                    unknown,
+                ) from unknown
+            self._runs.mark_submission_unknown(server_id, idempotency_key, lease_token, owner_id)
             raise ServerOffline("ComfyUI submission outcome is unknown")
         if execution_identity is not None:
             assert self._planning is not None
-            self._planning.finalize_submission(
-                execution_identity,
-                upstream_prompt_id=prompt_id,
-                upstream_job_id=upstream_job_id,
-                idempotency_key=idempotency_key,
-                request_digest=request_digest,
-                lease_token=lease_token,
-            )
+            try:
+                self._planning.finalize_submission(
+                    execution_identity,
+                    upstream_prompt_id=prompt_id,
+                    upstream_job_id=upstream_job_id,
+                    idempotency_key=idempotency_key,
+                    request_digest=request_digest,
+                    lease_token=lease_token,
+                )
+            except Exception as exc:
+                raise self._submission_unknown(
+                    server_id,
+                    idempotency_key,
+                    lease_token,
+                    owner_id,
+                    execution_identity,
+                    exc,
+                ) from exc
         job = Job(
             prompt_id=prompt_id,
             server_id=server_id,
@@ -260,6 +346,31 @@ class ExecutionService:
         if execution_identity is None:
             self._runs.save(job, lease_token=lease_token)
         return job
+
+    @staticmethod
+    def _verify_pins(job: Job, *, revision_id: str, deployment_id: str) -> None:
+        if revision_id and (job.revision_id != revision_id or job.deployment_id != deployment_id):
+            raise IdempotencyConflict("Idempotency key resolved to different execution pins")
+
+    def _submission_unknown(
+        self,
+        server_id: str,
+        idempotency_key: str,
+        lease_token: str,
+        owner_id: str,
+        identity: ExecutionIdentity | None,
+        error: Exception,
+    ) -> ExecutionInProgress:
+        try:
+            self._runs.mark_submission_unknown(server_id, idempotency_key, lease_token, owner_id)
+        except Exception:
+            pass
+        if identity is not None and self._planning is not None:
+            try:
+                self._planning.mark_submission_unknown(identity, str(error))
+            except Exception:
+                pass
+        return ExecutionInProgress("submission outcome is unknown; retry status reconciliation")
 
     @classmethod
     def _find_prompt_by_client_id(cls, gateway: ComfyUIGateway, client_id: str) -> str:

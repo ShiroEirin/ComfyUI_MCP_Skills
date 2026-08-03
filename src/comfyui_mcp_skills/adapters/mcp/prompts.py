@@ -36,6 +36,7 @@ def create_prompt_handlers(
     authorization: AuthorizationContext | None = None,
     *,
     require_authorization: bool = False,
+    experiments_available: bool = True,
 ) -> PromptHandlers:
     prompts = (
         Prompt(
@@ -92,21 +93,38 @@ def create_prompt_handlers(
                 ),
             ],
         ),
+        Prompt(
+            name="compare-experiment-results",
+            description="Compare one bounded page of owned experiment results.",
+            arguments=[
+                PromptArgument(
+                    name="experiment_id",
+                    description="Canonical Experiment ID.",
+                    required=True,
+                )
+            ],
+        ),
     )
     prompt_scopes = {
         "operate-job": frozenset({Scope.EXECUTE}),
         "diagnose-failure": frozenset({Scope.EXECUTE}),
         "inspect-dependencies": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
         "select-or-import-workflow": frozenset({Scope.AUTHOR}),
+        "compare-experiment-results": frozenset({Scope.EXECUTE}),
     }
 
     def visible_prompts() -> tuple[Prompt, ...]:
+        available = tuple(
+            prompt
+            for prompt in prompts
+            if experiments_available or prompt.name != "compare-experiment-results"
+        )
         if not require_authorization:
-            return prompts
+            return available
         scopes = current_scopes() or (
             authorization.scopes if authorization is not None else frozenset()
         )
-        return tuple(prompt for prompt in prompts if scopes & prompt_scopes[prompt.name])
+        return tuple(prompt for prompt in available if scopes & prompt_scopes[prompt.name])
 
     async def list_prompts(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -147,6 +165,11 @@ def create_prompt_handlers(
             _reject_unknown_arguments(arguments, {"goal", "server_id"})
             text = _select_or_import_prompt(goal, server_id)
             description = "Select an existing workflow or preview a safe immutable import."
+        elif params.name == "compare-experiment-results":
+            experiment_id = _required_experiment_id(arguments, "experiment_id")
+            _reject_unknown_arguments(arguments, {"experiment_id"})
+            text = _compare_experiment_results_prompt(experiment_id)
+            description = "Compare one bounded page of owner-visible experiment results."
         else:
             raise MCPError(
                 code=INVALID_PARAMS,
@@ -168,6 +191,19 @@ def _required_id(arguments: dict[str, str], name: str, kind: ControlPlaneKind) -
         return validate_control_plane_id(kind, value)
     except ValueError as exc:
         raise MCPError(code=INVALID_PARAMS, message=f"Invalid prompt argument: {name}") from exc
+
+
+def _required_experiment_id(arguments: dict[str, str], name: str) -> str:
+    value = arguments.get(name)
+    if value is None:
+        raise MCPError(code=INVALID_PARAMS, message=f"Missing prompt argument: {name}")
+    try:
+        identifier = validate_identifier(value, field=name)
+    except ValueError as exc:
+        raise MCPError(code=INVALID_PARAMS, message=f"Invalid prompt argument: {name}") from exc
+    if not identifier.startswith("experiment_"):
+        raise MCPError(code=INVALID_PARAMS, message=f"Invalid prompt argument: {name}")
+    return identifier
 
 
 def _optional_id(arguments: dict[str, str], name: str, kind: ControlPlaneKind) -> str:
@@ -283,4 +319,24 @@ def _select_or_import_prompt(goal: str, server_id: str) -> str:
    loop, or start a hosted/background worker.
 6. Never request, reproduce, or expose credentials, tokens, authorization headers,
    filesystem paths, raw workflow graph payloads, or resolved inputs.
+"""
+
+
+def _compare_experiment_results_prompt(experiment_id: str) -> str:
+    return f"""Compare bounded results for owned Experiment {experiment_id}.
+
+1. Call `comfyui.experiment.get` once with
+   `experiment_id={experiment_id}` to read the summary.
+2. Call `comfyui.experiment.variant.list` once with that Experiment ID,
+   `limit=100`, and an empty cursor.
+3. Compare only that one page using `status`, `measured_pixels`,
+   `measured_outputs`, `measured_seconds`, `error_code`, `ratings`, `promotions`,
+   `job_uri`, `artifact_uris`, and `resource_uri`. Do not infer hidden parameters
+   or read raw workflow graphs.
+4. Do not loop, follow `next_cursor`, poll, or fetch more pages. If the response
+   has a non-empty `next_cursor`, explicitly state that the comparison covers
+   only the first bounded page.
+5. Report comparison criteria, ties, missing `ratings`, failed/lost Variants,
+   and stable `resource_uri` values. Never select or promote a Variant unless
+   the user separately asks for that write.
 """

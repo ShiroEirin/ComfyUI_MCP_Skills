@@ -152,7 +152,17 @@ class WorkflowChangeService:
         validate_parameter_targets(parameter_schema["parameters"], graph)
         build_input_schema(parameter_schema["parameters"])
         parameter_schema["_output_contract"] = _complete_output_contract(after_semantic["outputs"])
-        dependencies = after_semantic["dependencies"]
+        base_dependencies = _json_copy(base.get("dependency_contract"), "base dependencies")
+        trusted_seconds = base_dependencies.get("trusted_seconds_per_run")
+        if (
+            isinstance(trusted_seconds, bool)
+            or not isinstance(trusted_seconds, (int, float))
+            or float(trusted_seconds) <= 0
+        ):
+            raise ValueError("Published Workflow has no trusted runtime estimate")
+        dependencies = dict(after_semantic["dependencies"])
+        dependencies["output_cardinality"] = len(after_semantic["outputs"])
+        dependencies["trusted_seconds_per_run"] = float(trusted_seconds)
         content_digest = _revision_digest(graph, parameter_schema, dependencies)
         if content_digest == str(base.get("content_digest", "")):
             raise ValueError("Workflow change has no observable effect")

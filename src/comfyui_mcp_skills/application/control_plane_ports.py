@@ -6,6 +6,7 @@ from datetime import datetime
 from types import TracebackType
 from typing import Any, Protocol, TypeVar
 
+from comfyui_mcp_skills.domain.models import Job
 from comfyui_mcp_skills.domain.orchestration import (
     JobReconciliationContext,
     OutboxMessage,
@@ -81,6 +82,80 @@ class OrchestrationRepository(Protocol):
     def job_owner_for_uri(self, uri: str) -> str | None: ...
     def pending_outbox(self, *, limit: int = 100) -> list[OutboxMessage]: ...
     def mark_outbox_delivered(self, outbox_id: str, *, now: datetime) -> None: ...
+
+
+class ExperimentAdvanceRepository(Protocol):
+    """Fenced persistence operations used by one Experiment advance lease."""
+
+    def get_experiment(self, experiment_id: str, owner_id: str) -> dict[str, Any] | None: ...
+
+    def list_for_advance(
+        self, experiment_id: str, owner_id: str, *, limit: int
+    ) -> list[dict[str, Any]]: ...
+
+    def claim_variant_for_submission(
+        self,
+        lease: WorkLease,
+        *,
+        experiment_id: str,
+        owner_id: str,
+        variant_id: str,
+        now: datetime,
+    ) -> dict[str, Any] | None: ...
+
+    def apply_transition(
+        self,
+        lease: WorkLease,
+        *,
+        experiment_id: str,
+        owner_id: str,
+        variant_id: str,
+        status: str,
+        job_id: str,
+        checkpoint: dict[str, Any],
+        now: datetime,
+        event_type: str,
+        event_data: dict[str, Any],
+    ) -> None: ...
+
+    def finish_advance(
+        self,
+        lease: WorkLease,
+        *,
+        experiment_id: str,
+        owner_id: str,
+        checkpoint: dict[str, Any],
+        now: datetime,
+        completed: bool,
+        delay_seconds: int,
+        status: str,
+    ) -> None: ...
+
+
+class RunLookup(Protocol):
+    def get_by_idempotency(self, server_id: str, key: str, owner_id: str = "") -> Job | None: ...
+
+    def get_claim(self, server_id: str, key: str, owner_id: str = "") -> dict[str, Any] | None: ...
+
+
+class ExecutionSubmitter(Protocol):
+    def submit(
+        self,
+        server_id: str,
+        workflow_id: str,
+        arguments: dict[str, Any],
+        *,
+        idempotency_key: str = "",
+        owner_id: str = "",
+        client_id: str = "",
+        revision_id: str = "",
+        deployment_id: str = "",
+        content_digest: str = "",
+    ) -> Job: ...
+
+
+class JobCanceller(Protocol):
+    def cancel(self, server_id: str, prompt_id: str, *, owner_id: str = "") -> Job: ...
 
 
 _ControlPlaneUnitOfWorkT = TypeVar("_ControlPlaneUnitOfWorkT", bound="ControlPlaneUnitOfWork")

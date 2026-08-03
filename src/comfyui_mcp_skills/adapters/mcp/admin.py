@@ -82,6 +82,9 @@ def create_admin_server(
             ),
             WorkflowValidationService(),
             repositories.workflows,
+            runtime_estimator=lambda server_id, _graph: float(
+                servers.connection(server_id).get("experiment_trusted_seconds_per_run", 300.0)
+            ),
         )
     workflow_changes = None
     if repositories.store is not None and repositories.workflow_store == "sqlite":

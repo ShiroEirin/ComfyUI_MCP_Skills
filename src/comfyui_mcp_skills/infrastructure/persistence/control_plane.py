@@ -1378,6 +1378,484 @@ _PHASE_L_ASSET_LIBRARY_UP = (
     "CREATE TRIGGER tr_media_retention_bindings_immutable_delete BEFORE DELETE ON media_retention_bindings BEGIN SELECT RAISE(ABORT, 'media retention binding identity is immutable'); END",
 )
 
+_PHASE_M_EXPERIMENT_AGGREGATES_UP = (
+    f"ALTER TABLE execution_plans ADD COLUMN raw_arguments_digest TEXT CHECK(raw_arguments_digest IS NULL OR {_sha256_check('raw_arguments_digest')})",
+    "ALTER TABLE jobs ADD COLUMN server_id TEXT NOT NULL DEFAULT 'local' CHECK(typeof(server_id)='text' AND length(server_id) BETWEEN 1 AND 128)",
+    "CREATE TRIGGER tr_jobs_server_backfill_guard BEFORE UPDATE OF server_id ON jobs WHEN (SELECT count(DISTINCT server_id) FROM execution_attempts WHERE job_id=OLD.job_id)>1 OR (OLD.plan_id IS NOT NULL AND EXISTS (SELECT 1 FROM execution_attempts JOIN execution_plans ON execution_plans.plan_id=OLD.plan_id WHERE execution_attempts.job_id=OLD.job_id AND execution_attempts.server_id!=execution_plans.server_id)) BEGIN SELECT RAISE(ABORT,'job server backfill is ambiguous'); END",
+    "UPDATE jobs SET server_id=COALESCE((SELECT execution_plans.server_id FROM execution_plans WHERE execution_plans.plan_id=jobs.plan_id),(SELECT MIN(execution_attempts.server_id) FROM execution_attempts WHERE execution_attempts.job_id=jobs.job_id),'local')",
+    "DROP TRIGGER tr_jobs_server_backfill_guard",
+    "CREATE UNIQUE INDEX uq_jobs_owner_workflow_server ON jobs(job_id,owner_id,workflow_id,server_id)",
+    "CREATE TRIGGER tr_jobs_server_identity_immutable BEFORE UPDATE OF server_id ON jobs BEGIN SELECT RAISE(ABORT,'job server identity is immutable'); END",
+    "CREATE TABLE experiment_server_capacities (server_id TEXT NOT NULL PRIMARY KEY CHECK(typeof(server_id)='text' AND length(server_id) BETWEEN 1 AND 128), execution_slots INTEGER NOT NULL DEFAULT 1 CHECK(typeof(execution_slots)='integer' AND execution_slots BETWEEN 1 AND 64), subject_submission_quota INTEGER NOT NULL DEFAULT 0 CHECK(typeof(subject_submission_quota)='integer' AND subject_submission_quota BETWEEN 0 AND 10000), updated_at TEXT NOT NULL)",
+    "CREATE TABLE experiment_capacity_reservations (experiment_id TEXT NOT NULL PRIMARY KEY, owner_id TEXT NOT NULL CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256), server_id TEXT NOT NULL CHECK(typeof(server_id)='text' AND length(server_id) BETWEEN 1 AND 128), execution_slots INTEGER NOT NULL CHECK(typeof(execution_slots)='integer' AND execution_slots BETWEEN 1 AND 64), reserved_at TEXT NOT NULL, released_at TEXT, FOREIGN KEY(experiment_id,owner_id) REFERENCES experiments(experiment_id,owner_id) ON DELETE RESTRICT, UNIQUE(owner_id,server_id,experiment_id), CHECK((released_at IS NULL) OR length(released_at)>0))",
+    "CREATE INDEX ix_experiment_capacity_server ON experiment_capacity_reservations(server_id,released_at,experiment_id)",
+    "CREATE TRIGGER tr_experiment_capacity_reservation_guard BEFORE INSERT ON experiment_capacity_reservations WHEN NEW.released_at IS NULL AND (SELECT COALESCE(SUM(execution_slots),0) FROM experiment_capacity_reservations WHERE server_id=NEW.server_id AND released_at IS NULL)+NEW.execution_slots > COALESCE((SELECT execution_slots FROM experiment_server_capacities WHERE server_id=NEW.server_id),1) BEGIN SELECT RAISE(ABORT,'experiment server capacity exceeded'); END",
+    "CREATE TRIGGER tr_experiment_capacity_reservation_update_guard BEFORE UPDATE OF owner_id,server_id,execution_slots,released_at ON experiment_capacity_reservations WHEN NEW.released_at IS NULL AND (SELECT COALESCE(SUM(execution_slots),0) FROM experiment_capacity_reservations WHERE server_id=NEW.server_id AND released_at IS NULL AND experiment_id!=NEW.experiment_id)+NEW.execution_slots > COALESCE((SELECT execution_slots FROM experiment_server_capacities WHERE server_id=NEW.server_id),1) BEGIN SELECT RAISE(ABORT,'experiment server capacity exceeded'); END",
+    "CREATE TRIGGER tr_experiment_capacity_reservation_identity BEFORE UPDATE OF experiment_id,owner_id,server_id,reserved_at ON experiment_capacity_reservations BEGIN SELECT RAISE(ABORT,'experiment capacity reservation identity is immutable'); END",
+    "CREATE TRIGGER tr_experiment_capacity_reservation_no_delete BEFORE DELETE ON experiment_capacity_reservations BEGIN SELECT RAISE(ABORT,'experiment capacity reservation is immutable'); END",
+    f"""
+    CREATE TABLE experiment_plans (
+        plan_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("plan_id", "experiment_plan_")}),
+        experiment_id TEXT NOT NULL CHECK({_typed_id_check("experiment_id", "experiment_")}),
+        owner_id TEXT NOT NULL CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256),
+        workflow_id TEXT NOT NULL CHECK({_workflow_id_check("workflow_id")}),
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        plan_digest TEXT NOT NULL CHECK({_sha256_check("plan_digest")}),
+        pinned_revision_id TEXT CHECK(pinned_revision_id IS NULL OR {_typed_id_check("pinned_revision_id", "revision_")}),
+        pinned_deployment_id TEXT CHECK(pinned_deployment_id IS NULL OR {_typed_id_check("pinned_deployment_id", "deployment_")}),
+        pinned_content_digest TEXT CHECK(pinned_content_digest IS NULL OR {_sha256_check("pinned_content_digest")}),
+        expansion_json TEXT NOT NULL CHECK(typeof(expansion_json)='text'),
+        base_arguments_json TEXT NOT NULL CHECK(typeof(base_arguments_json)='text'),
+        budgets_json TEXT NOT NULL CHECK(typeof(budgets_json)='text'),
+        budget_totals_json TEXT NOT NULL CHECK(typeof(budget_totals_json)='text'),
+        failure_policy TEXT NOT NULL CHECK(failure_policy IN ('continue','stop_new','cancel_queued')),
+        concurrency INTEGER NOT NULL CHECK(typeof(concurrency)='integer' AND concurrency BETWEEN 1 AND 64),
+        submission_window INTEGER NOT NULL CHECK(typeof(submission_window)='integer' AND submission_window BETWEEN 0 AND 10000),
+        execution_slots INTEGER NOT NULL DEFAULT 1 CHECK(typeof(execution_slots)='integer' AND execution_slots BETWEEN 1 AND 64),
+        output_cardinality INTEGER NOT NULL CHECK(typeof(output_cardinality)='integer' AND output_cardinality BETWEEN 1 AND 100000),
+        trusted_seconds_per_run REAL NOT NULL CHECK(typeof(trusted_seconds_per_run) IN ('integer','real') AND trusted_seconds_per_run>0 AND trusted_seconds_per_run<=31536000),
+        variant_count INTEGER NOT NULL CHECK(typeof(variant_count)='integer' AND variant_count BETWEEN 1 AND 10000),
+        variants_json TEXT NOT NULL CHECK(typeof(variants_json)='text'),
+        variant_overrides_json TEXT NOT NULL CHECK(typeof(variant_overrides_json)='text' AND length(CAST(variant_overrides_json AS BLOB))<=8388608),
+        retained_bytes INTEGER NOT NULL CHECK(typeof(retained_bytes)='integer' AND retained_bytes BETWEEN 1 AND 8388608),
+        created_at TEXT NOT NULL CHECK(typeof(created_at)='text' AND length(created_at)>0),
+        expires_at TEXT NOT NULL CHECK(typeof(expires_at)='text' AND length(expires_at)>0),
+        payload_pruned_at TEXT,
+        committed_at TEXT,
+        committed_experiment_id TEXT,
+        FOREIGN KEY(workflow_id) REFERENCES workflows(workflow_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id,pinned_revision_id,pinned_content_digest)
+            REFERENCES workflow_revisions(workflow_id,revision_id,content_digest) ON DELETE RESTRICT,
+        FOREIGN KEY(pinned_deployment_id,workflow_id,pinned_revision_id,server_id)
+            REFERENCES workflow_deployments(deployment_id,workflow_id,revision_id,server_id) ON DELETE RESTRICT,
+        UNIQUE(owner_id,plan_digest),
+        UNIQUE(plan_id,owner_id),
+        UNIQUE(plan_id,owner_id,experiment_id),
+        UNIQUE(plan_id,owner_id,experiment_id,workflow_id,server_id),
+        UNIQUE(plan_id,owner_id,experiment_id,workflow_id,server_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest),
+        CHECK((committed_at IS NULL) = (committed_experiment_id IS NULL)),
+        CHECK(committed_experiment_id IS NULL OR committed_experiment_id=experiment_id)
+        ,CHECK((pinned_revision_id IS NULL AND pinned_deployment_id IS NULL AND pinned_content_digest IS NULL) OR (pinned_revision_id IS NOT NULL AND pinned_deployment_id IS NOT NULL AND pinned_content_digest IS NOT NULL))
+        ,CHECK(payload_pruned_at IS NULL OR committed_at IS NOT NULL)
+    )
+    """,
+    "CREATE INDEX ix_experiment_plans_owner_created ON experiment_plans(owner_id,created_at DESC,plan_id DESC)",
+    "CREATE UNIQUE INDEX uq_workflow_revision_pin ON workflow_revisions(workflow_id,revision_id,content_digest)",
+    "CREATE INDEX ix_experiment_plans_expiry ON experiment_plans(expires_at,plan_id) WHERE committed_at IS NULL",
+    "CREATE INDEX ix_experiment_plans_owner_unpruned ON experiment_plans(owner_id,created_at,plan_id) WHERE payload_pruned_at IS NULL",
+    """
+    CREATE TRIGGER tr_experiment_plans_identity_update BEFORE UPDATE OF
+        plan_id,experiment_id,owner_id,workflow_id,server_id,plan_digest,
+        pinned_revision_id,pinned_deployment_id,pinned_content_digest,
+        failure_policy,concurrency,execution_slots,submission_window,variant_count,
+        output_cardinality,trusted_seconds_per_run,created_at,expires_at
+    ON experiment_plans
+    BEGIN SELECT RAISE(ABORT,'experiment plan identity is immutable'); END
+    """,
+    "CREATE TRIGGER tr_experiment_plans_payload_compaction BEFORE UPDATE OF expansion_json,base_arguments_json,budgets_json,budget_totals_json,variants_json,variant_overrides_json,retained_bytes,payload_pruned_at ON experiment_plans WHEN OLD.payload_pruned_at IS NOT NULL OR NEW.payload_pruned_at IS NULL OR OLD.committed_at IS NULL OR NEW.expansion_json!='{}' OR NEW.base_arguments_json!='{}' OR NEW.budgets_json!='{}' OR NEW.budget_totals_json!='{}' OR NEW.variants_json!='[]' OR NEW.variant_overrides_json!='{}' OR NEW.retained_bytes!=12 OR NOT EXISTS (SELECT 1 FROM experiments WHERE experiments.experiment_id=OLD.experiment_id AND experiments.owner_id=OLD.owner_id AND experiments.plan_id=OLD.plan_id AND experiments.status IN ('completed','completed_with_errors','cancelled')) BEGIN SELECT RAISE(ABORT,'experiment plan payload compaction is one-way and terminal-only'); END",
+    "CREATE TRIGGER tr_experiment_plans_commit_evidence BEFORE UPDATE OF committed_at,committed_experiment_id ON experiment_plans WHEN OLD.committed_at IS NOT NULL OR NEW.committed_at IS NULL OR NEW.committed_experiment_id!=OLD.experiment_id OR NOT EXISTS (SELECT 1 FROM experiments WHERE experiment_id=NEW.committed_experiment_id AND owner_id=NEW.owner_id AND plan_id=NEW.plan_id AND pinned_revision_id IS NEW.pinned_revision_id AND pinned_deployment_id IS NEW.pinned_deployment_id AND pinned_content_digest IS NEW.pinned_content_digest) OR (SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id)!=NEW.variant_count OR EXISTS (SELECT 1 FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND (ordinal<0 OR ordinal>=NEW.variant_count)) BEGIN SELECT RAISE(ABORT,'experiment plan commit evidence is append-once and aggregate-bound'); END",
+    "CREATE TRIGGER tr_experiment_plans_commit_variant_facts BEFORE UPDATE OF committed_at,committed_experiment_id ON experiment_plans WHEN NEW.committed_at IS NOT NULL AND EXISTS (SELECT 1 FROM experiments AS aggregate WHERE aggregate.experiment_id=NEW.experiment_id AND aggregate.owner_id=NEW.owner_id AND (aggregate.pending_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='pending') OR aggregate.submitted_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='submitted') OR aggregate.running_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='running') OR aggregate.completed_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='completed') OR aggregate.failed_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='failed') OR aggregate.cancelled_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='cancelled') OR aggregate.lost_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='lost') OR (aggregate.status IN ('completed','completed_with_errors','cancelled') AND EXISTS (SELECT 1 FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status IN ('pending','submitted','running'))))) BEGIN SELECT RAISE(ABORT,'experiment plan commit evidence conflicts with physical Variant facts'); END",
+    "CREATE TRIGGER tr_experiment_plans_no_delete BEFORE DELETE ON experiment_plans WHEN OLD.committed_at IS NOT NULL OR julianday(OLD.expires_at)>julianday('now') BEGIN SELECT RAISE(ABORT,'experiment plan retention is not eligible'); END",
+    f"""
+    CREATE TABLE experiment_plan_variants (
+        plan_id TEXT NOT NULL CHECK({_typed_id_check("plan_id", "experiment_plan_")}),
+        owner_id TEXT NOT NULL,
+        experiment_id TEXT NOT NULL CHECK({_typed_id_check("experiment_id", "experiment_")}),
+        variant_id TEXT NOT NULL CHECK({_typed_id_check("variant_id", "variant_")}),
+        ordinal INTEGER NOT NULL CHECK(typeof(ordinal)='integer' AND ordinal>=0),
+        overrides_json TEXT NOT NULL CHECK(typeof(overrides_json)='text'),
+        parameter_digest TEXT NOT NULL CHECK({_sha256_check("parameter_digest")}),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(plan_id,variant_id),
+        FOREIGN KEY(plan_id,owner_id,experiment_id) REFERENCES experiment_plans(plan_id,owner_id,experiment_id) ON DELETE CASCADE,
+        UNIQUE(plan_id,owner_id,experiment_id,variant_id),
+        UNIQUE(plan_id,ordinal)
+    )
+    """,
+    "CREATE INDEX ix_experiment_plan_variants_enrollment ON experiment_plan_variants(plan_id,ordinal,variant_id)",
+    "CREATE TRIGGER tr_experiment_plan_variants_identity_update BEFORE UPDATE OF plan_id,owner_id,experiment_id,variant_id,ordinal,parameter_digest,created_at ON experiment_plan_variants BEGIN SELECT RAISE(ABORT,'experiment plan Variant enrollment identity is immutable'); END",
+    "CREATE TRIGGER tr_experiment_plan_variants_payload_compaction BEFORE UPDATE OF overrides_json ON experiment_plan_variants WHEN OLD.overrides_json='{}' OR NEW.overrides_json!='{}' OR NOT EXISTS (SELECT 1 FROM experiment_plans JOIN experiments ON experiments.plan_id=experiment_plans.plan_id AND experiments.owner_id=experiment_plans.owner_id AND experiments.experiment_id=experiment_plans.experiment_id WHERE experiment_plans.plan_id=OLD.plan_id AND experiment_plans.owner_id=OLD.owner_id AND experiment_plans.payload_pruned_at IS NOT NULL AND experiments.status IN ('completed','completed_with_errors','cancelled')) BEGIN SELECT RAISE(ABORT,'experiment plan Variant payload compaction is one-way and terminal-only'); END",
+    "CREATE TRIGGER tr_experiment_plan_variants_no_delete BEFORE DELETE ON experiment_plan_variants WHEN EXISTS (SELECT 1 FROM experiment_plans WHERE plan_id=OLD.plan_id) AND NOT EXISTS (SELECT 1 FROM experiment_plans WHERE plan_id=OLD.plan_id AND committed_at IS NULL AND julianday(expires_at)<=julianday('now')) BEGIN SELECT RAISE(ABORT,'experiment plan Variant enrollment is immutable'); END",
+    """
+    CREATE TRIGGER tr_experiment_plan_variants_retained_bytes
+    BEFORE INSERT ON experiment_plan_variants
+    WHEN (
+        SELECT
+            length(CAST(plans.plan_id AS BLOB))+
+            length(CAST(plans.experiment_id AS BLOB))+
+            length(CAST(plans.owner_id AS BLOB))+
+            length(CAST(plans.workflow_id AS BLOB))+
+            length(CAST(plans.server_id AS BLOB))+
+            length(CAST(plans.plan_digest AS BLOB))+
+            length(CAST(plans.pinned_revision_id AS BLOB))+
+            length(CAST(plans.pinned_deployment_id AS BLOB))+
+            length(CAST(plans.pinned_content_digest AS BLOB))+
+            length(CAST(plans.expansion_json AS BLOB))+
+            length(CAST(plans.base_arguments_json AS BLOB))+
+            length(CAST(plans.budgets_json AS BLOB))+
+            length(CAST(plans.budget_totals_json AS BLOB))+
+            length(CAST(plans.failure_policy AS BLOB))+
+            length(CAST(plans.concurrency AS BLOB))+
+            length(CAST(plans.execution_slots AS BLOB))+
+            length(CAST(plans.submission_window AS BLOB))+
+            length(CAST(plans.variant_count AS BLOB))+
+            length(CAST(plans.output_cardinality AS BLOB))+
+            length(CAST(plans.trusted_seconds_per_run AS BLOB))+
+            length(CAST(plans.variants_json AS BLOB))+
+            length(CAST(plans.variant_overrides_json AS BLOB))+
+            length(CAST(plans.created_at AS BLOB))+
+            length(CAST(plans.expires_at AS BLOB))+
+            COALESCE((
+                SELECT SUM(
+                    length(CAST(enrollment.plan_id AS BLOB))+
+                    length(CAST(enrollment.owner_id AS BLOB))+
+                    length(CAST(enrollment.experiment_id AS BLOB))+
+                    length(CAST(enrollment.variant_id AS BLOB))+
+                    length(CAST(enrollment.ordinal AS BLOB))+
+                    length(CAST(enrollment.overrides_json AS BLOB))+
+                    length(CAST(enrollment.parameter_digest AS BLOB))+
+                    length(CAST(enrollment.created_at AS BLOB))
+                )
+                FROM experiment_plan_variants AS enrollment
+                WHERE enrollment.plan_id=NEW.plan_id
+            ),0)
+        FROM experiment_plans AS plans WHERE plans.plan_id=NEW.plan_id
+    )+
+        length(CAST(NEW.plan_id AS BLOB))+
+        length(CAST(NEW.owner_id AS BLOB))+
+        length(CAST(NEW.experiment_id AS BLOB))+
+        length(CAST(NEW.variant_id AS BLOB))+
+        length(CAST(NEW.ordinal AS BLOB))+
+        length(CAST(NEW.overrides_json AS BLOB))+
+        length(CAST(NEW.parameter_digest AS BLOB))+
+        length(CAST(NEW.created_at AS BLOB))
+        > (SELECT retained_bytes FROM experiment_plans WHERE plan_id=NEW.plan_id)
+    BEGIN SELECT RAISE(ABORT,'experiment plan retained byte accounting conflict'); END
+    """,
+    f"""
+    CREATE TABLE experiments (
+        experiment_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("experiment_id", "experiment_")}),
+        owner_id TEXT NOT NULL CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256),
+        plan_id TEXT NOT NULL CHECK({_typed_id_check("plan_id", "experiment_plan_")}),
+        workflow_id TEXT NOT NULL CHECK({_workflow_id_check("workflow_id")}),
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        pinned_revision_id TEXT,
+        pinned_deployment_id TEXT,
+        pinned_content_digest TEXT,
+        status TEXT NOT NULL CHECK(status IN ('queued','running','completed','completed_with_errors','cancelled')),
+        failure_policy TEXT NOT NULL CHECK(failure_policy IN ('continue','stop_new','cancel_queued')),
+        concurrency INTEGER NOT NULL CHECK(typeof(concurrency)='integer' AND concurrency BETWEEN 1 AND 64),
+        execution_slots INTEGER NOT NULL DEFAULT 1 CHECK(typeof(execution_slots)='integer' AND execution_slots BETWEEN 1 AND 64),
+        submission_window INTEGER NOT NULL CHECK(typeof(submission_window)='integer' AND submission_window BETWEEN 0 AND 10000),
+        variant_count INTEGER NOT NULL CHECK(typeof(variant_count)='integer' AND variant_count BETWEEN 1 AND 10000),
+        pending_count INTEGER NOT NULL CHECK(typeof(pending_count)='integer' AND pending_count>=0),
+        submitted_count INTEGER NOT NULL CHECK(typeof(submitted_count)='integer' AND submitted_count>=0),
+        running_count INTEGER NOT NULL CHECK(typeof(running_count)='integer' AND running_count>=0),
+        completed_count INTEGER NOT NULL CHECK(typeof(completed_count)='integer' AND completed_count>=0),
+        failed_count INTEGER NOT NULL CHECK(typeof(failed_count)='integer' AND failed_count>=0),
+        cancelled_count INTEGER NOT NULL CHECK(typeof(cancelled_count)='integer' AND cancelled_count>=0),
+        lost_count INTEGER NOT NULL CHECK(typeof(lost_count)='integer' AND lost_count>=0),
+        cancel_mode TEXT CHECK(cancel_mode IS NULL OR cancel_mode IN ('stop_new','cancel_queued')),
+        created_at TEXT NOT NULL CHECK(typeof(created_at)='text' AND length(created_at)>0),
+        updated_at TEXT NOT NULL CHECK(typeof(updated_at)='text' AND length(updated_at)>0),
+        completed_at TEXT,
+        FOREIGN KEY(plan_id,owner_id,experiment_id,workflow_id,server_id)
+            REFERENCES experiment_plans(plan_id,owner_id,experiment_id,workflow_id,server_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id,pinned_revision_id,pinned_content_digest)
+            REFERENCES workflow_revisions(workflow_id,revision_id,content_digest) ON DELETE RESTRICT,
+        FOREIGN KEY(pinned_deployment_id,workflow_id,pinned_revision_id,server_id)
+            REFERENCES workflow_deployments(deployment_id,workflow_id,revision_id,server_id) ON DELETE RESTRICT,
+        UNIQUE(experiment_id,owner_id),
+        UNIQUE(experiment_id,owner_id,workflow_id,server_id),
+        CHECK(pending_count+submitted_count+running_count+completed_count+failed_count+cancelled_count+lost_count=variant_count),
+        CHECK((status IN ('completed','completed_with_errors','cancelled'))=(completed_at IS NOT NULL))
+        ,CHECK(status NOT IN ('completed','completed_with_errors','cancelled') OR pending_count+submitted_count+running_count=0)
+    )
+    """,
+    "CREATE INDEX ix_experiments_owner_updated ON experiments(owner_id,updated_at DESC,experiment_id DESC)",
+    "CREATE INDEX ix_experiments_terminal_retention ON experiments(completed_at,plan_id) WHERE status IN ('completed','completed_with_errors','cancelled')",
+    "CREATE TRIGGER tr_experiments_pin_insert BEFORE INSERT ON experiments WHEN NOT EXISTS (SELECT 1 FROM experiment_plans WHERE plan_id=NEW.plan_id AND owner_id=NEW.owner_id AND experiment_id=NEW.experiment_id AND pinned_revision_id IS NEW.pinned_revision_id AND pinned_deployment_id IS NEW.pinned_deployment_id AND pinned_content_digest IS NEW.pinned_content_digest) BEGIN SELECT RAISE(ABORT,'experiment publication pin conflict'); END",
+    "CREATE TRIGGER tr_experiments_count_guard BEFORE UPDATE OF pending_count,submitted_count,running_count,completed_count,failed_count,cancelled_count,lost_count ON experiments WHEN NEW.pending_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='pending') OR NEW.submitted_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='submitted') OR NEW.running_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='running') OR NEW.completed_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='completed') OR NEW.failed_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='failed') OR NEW.cancelled_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='cancelled') OR NEW.lost_count!=(SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status='lost') BEGIN SELECT RAISE(ABORT,'experiment aggregate counts conflict with Variants'); END",
+    "CREATE TRIGGER tr_experiments_terminal_predicate BEFORE UPDATE OF status ON experiments WHEN NEW.status IN ('completed','completed_with_errors','cancelled') AND EXISTS (SELECT 1 FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id AND status IN ('pending','submitted','running')) BEGIN SELECT RAISE(ABORT,'terminal experiment has unfinished Variants'); END",
+    "CREATE TRIGGER tr_experiments_release_capacity AFTER UPDATE OF status ON experiments WHEN NEW.status IN ('completed','completed_with_errors','cancelled') AND OLD.status NOT IN ('completed','completed_with_errors','cancelled') BEGIN UPDATE experiment_capacity_reservations SET released_at=NEW.completed_at WHERE experiment_id=NEW.experiment_id AND released_at IS NULL; END",
+    "CREATE TRIGGER tr_experiments_no_delete BEFORE DELETE ON experiments BEGIN SELECT RAISE(ABORT,'experiment is immutable'); END",
+    """
+    CREATE TRIGGER tr_experiments_terminal_regression BEFORE UPDATE OF status ON experiments
+    WHEN OLD.status IN ('completed','completed_with_errors','cancelled') AND NEW.status!=OLD.status
+    BEGIN SELECT RAISE(ABORT,'terminal experiment state cannot regress'); END
+    """,
+    """
+    CREATE TRIGGER tr_experiments_identity_update BEFORE UPDATE OF
+        experiment_id,owner_id,plan_id,workflow_id,server_id,
+        pinned_revision_id,pinned_deployment_id,pinned_content_digest,
+        failure_policy,concurrency,execution_slots,submission_window,variant_count,created_at
+    ON experiments
+    BEGIN SELECT RAISE(ABORT,'experiment identity is immutable'); END
+    """,
+)
+
+_PHASE_M_EXPERIMENT_VARIANTS_UP = (
+    f"""
+    CREATE TABLE experiment_variants (
+        variant_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("variant_id", "variant_")}),
+        experiment_id TEXT NOT NULL CHECK({_typed_id_check("experiment_id", "experiment_")}),
+        owner_id TEXT NOT NULL CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256),
+        ordinal INTEGER NOT NULL CHECK(typeof(ordinal)='integer' AND ordinal>=0),
+        overrides_json TEXT NOT NULL CHECK(typeof(overrides_json)='text'),
+        parameter_digest TEXT NOT NULL CHECK({_sha256_check("parameter_digest")}),
+        execution_input_digest TEXT CHECK(execution_input_digest IS NULL OR {_sha256_check("execution_input_digest")}),
+        client_id TEXT NOT NULL CHECK(typeof(client_id)='text' AND length(client_id) BETWEEN 1 AND 256),
+        idempotency_key TEXT NOT NULL CHECK(typeof(idempotency_key)='text' AND length(idempotency_key) BETWEEN 1 AND 256),
+        status TEXT NOT NULL CHECK(status IN ('pending','submitted','running','completed','failed','cancelled','lost')),
+        lease_work_item_id TEXT,
+        lease_worker_id TEXT,
+        lease_token INTEGER NOT NULL DEFAULT 0 CHECK(typeof(lease_token)='integer' AND lease_token>=0),
+        lease_expires_at TEXT,
+        checkpoint_json TEXT NOT NULL DEFAULT '{{}}' CHECK(typeof(checkpoint_json)='text'),
+        payload_compacted_at TEXT,
+        measured_pixels INTEGER CHECK(measured_pixels IS NULL OR (typeof(measured_pixels)='integer' AND measured_pixels>=0)),
+        measured_outputs INTEGER CHECK(measured_outputs IS NULL OR (typeof(measured_outputs)='integer' AND measured_outputs>=0)),
+        measured_seconds REAL CHECK(measured_seconds IS NULL OR (typeof(measured_seconds) IN ('integer','real') AND measured_seconds>=0)),
+        error_code TEXT,
+        created_at TEXT NOT NULL CHECK(typeof(created_at)='text' AND length(created_at)>0),
+        updated_at TEXT NOT NULL CHECK(typeof(updated_at)='text' AND length(updated_at)>0),
+        completed_at TEXT,
+        FOREIGN KEY(experiment_id,owner_id) REFERENCES experiments(experiment_id,owner_id) ON DELETE RESTRICT,
+        FOREIGN KEY(lease_work_item_id) REFERENCES operation_work_items(work_item_id) ON DELETE RESTRICT,
+        UNIQUE(experiment_id,owner_id,variant_id),
+        UNIQUE(experiment_id,owner_id,ordinal),
+        UNIQUE(owner_id,client_id),
+        UNIQUE(owner_id,idempotency_key),
+        CHECK((lease_worker_id IS NULL)=(lease_expires_at IS NULL)),
+        CHECK((lease_worker_id IS NULL)=(lease_work_item_id IS NULL)),
+        CHECK((lease_worker_id IS NULL)=(lease_token=0)),
+        CHECK(lease_worker_id IS NULL OR length(lease_worker_id)>0),
+        CHECK((status IN ('completed','failed','cancelled','lost'))=(completed_at IS NOT NULL))
+    )
+    """,
+    "CREATE INDEX ix_experiment_variants_page ON experiment_variants(experiment_id,owner_id,created_at,variant_id)",
+    "CREATE INDEX ix_experiment_variants_claimable ON experiment_variants(status,lease_expires_at,experiment_id,ordinal,variant_id) WHERE status='pending'",
+    "CREATE INDEX ix_experiment_variants_worker ON experiment_variants(experiment_id,owner_id,ordinal,variant_id) WHERE status IN ('pending','submitted','running')",
+    "CREATE INDEX ix_experiment_variants_terminal_retention ON experiment_variants(completed_at,variant_id) WHERE status IN ('completed','failed','cancelled','lost') AND checkpoint_json!='{}'",
+    "CREATE TRIGGER tr_experiment_variants_enrollment_insert BEFORE INSERT ON experiment_variants WHEN NEW.status!='pending' OR NEW.completed_at IS NOT NULL OR NEW.execution_input_digest IS NOT NULL OR NOT EXISTS (SELECT 1 FROM experiments JOIN experiment_plan_variants AS enrollment ON enrollment.plan_id=experiments.plan_id AND enrollment.owner_id=experiments.owner_id AND enrollment.experiment_id=experiments.experiment_id WHERE experiments.experiment_id=NEW.experiment_id AND experiments.owner_id=NEW.owner_id AND enrollment.variant_id=NEW.variant_id AND enrollment.ordinal=NEW.ordinal AND enrollment.overrides_json=NEW.overrides_json AND enrollment.parameter_digest=NEW.parameter_digest) OR (SELECT count(*) FROM experiment_variants WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id)>=(SELECT variant_count FROM experiments WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id) BEGIN SELECT RAISE(ABORT,'experiment Variant enrollment conflict'); END",
+    "CREATE TRIGGER tr_experiment_variants_lease_mutation BEFORE UPDATE OF status,checkpoint_json,measured_pixels,measured_outputs,measured_seconds,error_code ON experiment_variants WHEN OLD.lease_token>0 AND NOT (OLD.status IN ('completed','failed','cancelled','lost') AND NEW.status=OLD.status AND NEW.checkpoint_json='{}' AND NEW.payload_compacted_at IS NOT NULL) AND (julianday(NEW.updated_at)<julianday(OLD.updated_at) OR NOT EXISTS (SELECT 1 FROM work_leases JOIN operation_work_items USING(work_item_id) WHERE work_leases.work_item_id=OLD.lease_work_item_id AND work_leases.worker_id=OLD.lease_worker_id AND work_leases.fencing_token=OLD.lease_token AND julianday(work_leases.expires_at)>julianday('now') AND operation_work_items.status='running')) BEGIN SELECT RAISE(ABORT,'experiment Variant lease is expired or fenced'); END",
+    """
+    CREATE TRIGGER tr_experiment_variants_identity_update BEFORE UPDATE OF
+        variant_id,experiment_id,owner_id,ordinal,parameter_digest,
+        client_id,idempotency_key,created_at
+    ON experiment_variants
+    BEGIN SELECT RAISE(ABORT,'experiment variant identity is immutable'); END
+    """,
+    "CREATE TRIGGER tr_experiment_variants_payload_compaction BEFORE UPDATE OF overrides_json ON experiment_variants WHEN OLD.overrides_json='{}' OR NEW.overrides_json!='{}' OR NEW.payload_compacted_at IS NULL OR OLD.status NOT IN ('completed','failed','cancelled','lost') OR NEW.status!=OLD.status OR NOT EXISTS (SELECT 1 FROM experiments JOIN experiment_plans ON experiment_plans.plan_id=experiments.plan_id AND experiment_plans.owner_id=experiments.owner_id WHERE experiments.experiment_id=OLD.experiment_id AND experiments.owner_id=OLD.owner_id AND experiments.status IN ('completed','completed_with_errors','cancelled') AND experiment_plans.payload_pruned_at IS NOT NULL) BEGIN SELECT RAISE(ABORT,'experiment Variant payload compaction is one-way and terminal-only'); END",
+    "CREATE TRIGGER tr_experiment_variants_execution_digest_append BEFORE UPDATE OF execution_input_digest ON experiment_variants WHEN OLD.execution_input_digest IS NOT NULL OR NEW.execution_input_digest IS NULL OR OLD.status!='pending' OR NEW.status!='submitted' OR julianday(NEW.updated_at)<julianday(OLD.updated_at) OR NOT EXISTS (SELECT 1 FROM work_leases JOIN operation_work_items USING(work_item_id) WHERE work_leases.work_item_id=NEW.lease_work_item_id AND work_leases.worker_id=NEW.lease_worker_id AND work_leases.fencing_token=NEW.lease_token AND julianday(work_leases.expires_at)>julianday('now') AND operation_work_items.status='running') BEGIN SELECT RAISE(ABORT,'experiment Variant execution digest is append-once and lease-bound'); END",
+    """
+    CREATE TRIGGER tr_experiment_variants_transition BEFORE UPDATE OF status ON experiment_variants
+    WHEN NOT (
+        NEW.status=OLD.status OR
+        (OLD.status='pending' AND NEW.status IN ('submitted','running','completed','failed','cancelled','lost')) OR
+        (OLD.status='submitted' AND NEW.status IN ('running','completed','failed','cancelled','lost')) OR
+        (OLD.status='running' AND NEW.status IN ('completed','failed','cancelled','lost'))
+    )
+    BEGIN SELECT RAISE(ABORT,'invalid experiment variant state transition'); END
+    """,
+    """
+    CREATE TRIGGER tr_experiment_variants_count_state AFTER UPDATE OF status ON experiment_variants
+    WHEN NEW.status!=OLD.status
+    BEGIN
+        UPDATE experiments SET
+            pending_count=pending_count-(OLD.status='pending')+(NEW.status='pending'),
+            submitted_count=submitted_count-(OLD.status='submitted')+(NEW.status='submitted'),
+            running_count=running_count-(OLD.status='running')+(NEW.status='running'),
+            completed_count=completed_count-(OLD.status='completed')+(NEW.status='completed'),
+            failed_count=failed_count-(OLD.status='failed')+(NEW.status='failed'),
+            cancelled_count=cancelled_count-(OLD.status='cancelled')+(NEW.status='cancelled'),
+            lost_count=lost_count-(OLD.status='lost')+(NEW.status='lost'),
+            updated_at=NEW.updated_at
+        WHERE experiment_id=NEW.experiment_id AND owner_id=NEW.owner_id;
+    END
+    """,
+    "CREATE TRIGGER tr_experiment_variants_no_delete BEFORE DELETE ON experiment_variants BEGIN SELECT RAISE(ABORT,'experiment variant is immutable'); END",
+    f"""
+    CREATE TABLE experiment_variant_jobs (
+        experiment_id TEXT NOT NULL CHECK({_typed_id_check("experiment_id", "experiment_")}),
+        variant_id TEXT NOT NULL CHECK({_typed_id_check("variant_id", "variant_")}),
+        owner_id TEXT NOT NULL,
+        job_id TEXT NOT NULL CHECK({_typed_id_check("job_id", "job_")}),
+        workflow_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        plan_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL,
+        deployment_id TEXT NOT NULL,
+        attempt_id TEXT NOT NULL,
+        linked_at TEXT NOT NULL,
+        PRIMARY KEY(experiment_id,variant_id),
+        FOREIGN KEY(experiment_id,owner_id,variant_id)
+            REFERENCES experiment_variants(experiment_id,owner_id,variant_id) ON DELETE RESTRICT,
+        FOREIGN KEY(job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        FOREIGN KEY(attempt_id) REFERENCES execution_attempts(attempt_id) ON DELETE RESTRICT,
+        UNIQUE(owner_id,job_id)
+    )
+    """,
+    "CREATE INDEX ix_experiment_variant_jobs_job ON experiment_variant_jobs(owner_id,job_id)",
+    "CREATE INDEX ix_experiment_variant_jobs_attempt ON experiment_variant_jobs(attempt_id,job_id) WHERE attempt_id IS NOT NULL",
+    """
+    CREATE TRIGGER tr_experiment_variant_jobs_binding_insert
+    BEFORE INSERT ON experiment_variant_jobs
+    WHEN NOT EXISTS (
+        SELECT 1
+        FROM experiment_variants AS variants
+        JOIN experiments
+          ON experiments.experiment_id=variants.experiment_id
+         AND experiments.owner_id=variants.owner_id
+        JOIN jobs
+          ON jobs.job_id=NEW.job_id AND jobs.owner_id=NEW.owner_id
+        WHERE variants.experiment_id=NEW.experiment_id
+          AND variants.variant_id=NEW.variant_id
+          AND variants.owner_id=NEW.owner_id
+          AND jobs.workflow_id=experiments.workflow_id
+          AND EXISTS (
+              SELECT 1 FROM execution_plans
+              WHERE execution_plans.plan_id=jobs.plan_id
+                AND execution_plans.workflow_id=experiments.workflow_id
+                AND execution_plans.revision_id=experiments.pinned_revision_id
+                AND execution_plans.deployment_id=experiments.pinned_deployment_id
+                AND execution_plans.server_id=experiments.server_id
+                AND execution_plans.raw_arguments_digest=variants.execution_input_digest
+          )
+          AND NEW.workflow_id=experiments.workflow_id
+          AND NEW.server_id=experiments.server_id
+          AND NEW.plan_id=jobs.plan_id
+          AND NEW.revision_id=experiments.pinned_revision_id
+          AND NEW.deployment_id=experiments.pinned_deployment_id
+          AND (
+              NEW.attempt_id IS NULL OR EXISTS (
+                  SELECT 1 FROM execution_attempts
+                  WHERE attempt_id=NEW.attempt_id AND job_id=NEW.job_id
+                    AND server_id=experiments.server_id
+              )
+          )
+    )
+    BEGIN SELECT RAISE(ABORT,'experiment Variant Job execution binding conflict'); END
+    """,
+    "CREATE TRIGGER tr_experiment_variant_jobs_immutable_update BEFORE UPDATE ON experiment_variant_jobs BEGIN SELECT RAISE(ABORT,'experiment variant job binding is immutable'); END",
+    "CREATE TRIGGER tr_experiment_variant_jobs_immutable_delete BEFORE DELETE ON experiment_variant_jobs BEGIN SELECT RAISE(ABORT,'experiment variant job binding is immutable'); END",
+)
+
+_PHASE_M_EXPERIMENT_RATINGS_UP = (
+    f"""
+    CREATE TABLE experiment_rubric_versions (
+        owner_id TEXT NOT NULL,
+        rubric_version TEXT NOT NULL CHECK({_safe_identifier_check("rubric_version")}),
+        created_at TEXT NOT NULL,
+        definition_json TEXT NOT NULL DEFAULT '{{}}' CHECK(typeof(definition_json)='text'),
+        definition_digest TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' CHECK({_sha256_check("definition_digest")}),
+        PRIMARY KEY(owner_id,rubric_version),
+        CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256),
+        UNIQUE(owner_id,rubric_version,definition_digest)
+    )
+    """,
+    "CREATE TRIGGER tr_experiment_rubric_versions_immutable_update BEFORE UPDATE ON experiment_rubric_versions BEGIN SELECT RAISE(ABORT,'experiment rubric version is immutable'); END",
+    "CREATE TRIGGER tr_experiment_rubric_versions_immutable_delete BEFORE DELETE ON experiment_rubric_versions BEGIN SELECT RAISE(ABORT,'experiment rubric version is immutable'); END",
+    f"""
+    CREATE TABLE experiment_rubric_dimensions (
+        owner_id TEXT NOT NULL,
+        rubric_version TEXT NOT NULL,
+        dimension TEXT NOT NULL CHECK({_safe_identifier_check("dimension")}),
+        minimum REAL NOT NULL CHECK(typeof(minimum) IN ('integer','real')),
+        maximum REAL NOT NULL CHECK(typeof(maximum) IN ('integer','real') AND maximum>=minimum),
+        ordinal INTEGER NOT NULL CHECK(typeof(ordinal)='integer' AND ordinal>=0),
+        PRIMARY KEY(owner_id,rubric_version,dimension),
+        FOREIGN KEY(owner_id,rubric_version)
+            REFERENCES experiment_rubric_versions(owner_id,rubric_version) ON DELETE RESTRICT,
+        UNIQUE(owner_id,rubric_version,ordinal)
+    )
+    """,
+    "CREATE TRIGGER tr_experiment_rubric_dimensions_immutable_update BEFORE UPDATE ON experiment_rubric_dimensions BEGIN SELECT RAISE(ABORT,'experiment rubric dimensions are immutable'); END",
+    "CREATE TRIGGER tr_experiment_rubric_dimensions_immutable_delete BEFORE DELETE ON experiment_rubric_dimensions BEGIN SELECT RAISE(ABORT,'experiment rubric dimensions are immutable'); END",
+    "CREATE TRIGGER tr_experiment_rubric_dimensions_sealed_insert BEFORE INSERT ON experiment_rubric_dimensions WHEN EXISTS (SELECT 1 FROM experiment_ratings WHERE owner_id=NEW.owner_id AND rubric_version=NEW.rubric_version) BEGIN SELECT RAISE(ABORT,'experiment rubric definition is sealed'); END",
+    f"""
+    CREATE TABLE experiment_ratings (
+        rating_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("rating_id", "rating_")}),
+        owner_id TEXT NOT NULL,
+        experiment_id TEXT NOT NULL,
+        variant_id TEXT NOT NULL,
+        rubric_version TEXT NOT NULL,
+        scores_json TEXT NOT NULL CHECK(typeof(scores_json)='text'),
+        rubric_definition_digest TEXT NOT NULL DEFAULT '0000000000000000000000000000000000000000000000000000000000000000' CHECK({_sha256_check("rubric_definition_digest")}),
+        rating_digest TEXT NOT NULL CHECK({_sha256_check("rating_digest")}),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(experiment_id,owner_id,variant_id)
+            REFERENCES experiment_variants(experiment_id,owner_id,variant_id) ON DELETE RESTRICT,
+        FOREIGN KEY(owner_id,rubric_version)
+            REFERENCES experiment_rubric_versions(owner_id,rubric_version) ON DELETE RESTRICT,
+        UNIQUE(owner_id,experiment_id,variant_id,rubric_version),
+        FOREIGN KEY(owner_id,rubric_version,rubric_definition_digest)
+            REFERENCES experiment_rubric_versions(owner_id,rubric_version,definition_digest) ON DELETE RESTRICT
+    )
+    """,
+    "CREATE INDEX ix_experiment_ratings_variant ON experiment_ratings(owner_id,experiment_id,variant_id,created_at,rating_id)",
+    """
+    CREATE TRIGGER tr_experiment_ratings_identity_update BEFORE UPDATE OF
+        rating_id,owner_id,experiment_id,variant_id,rubric_version,created_at
+    ON experiment_ratings
+    BEGIN SELECT RAISE(ABORT,'experiment rating identity is immutable'); END
+    """,
+    "CREATE TRIGGER tr_experiment_ratings_audit_update BEFORE UPDATE OF scores_json,rating_digest ON experiment_ratings WHEN NEW.updated_at=OLD.updated_at BEGIN SELECT RAISE(ABORT,'experiment rating mutation timestamp must advance'); END",
+    "CREATE TRIGGER tr_experiment_ratings_no_delete BEFORE DELETE ON experiment_ratings BEGIN SELECT RAISE(ABORT,'experiment rating is immutable'); END",
+    f"""
+    CREATE TABLE experiment_presets (
+        preset_id TEXT NOT NULL CHECK({_typed_id_check("preset_id", "preset_")}),
+        owner_id TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        experiment_id TEXT NOT NULL,
+        variant_id TEXT NOT NULL,
+        arguments_json TEXT NOT NULL,
+        content_digest TEXT NOT NULL CHECK({_sha256_check("content_digest")}),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(owner_id,preset_id),
+        FOREIGN KEY(experiment_id,owner_id,variant_id)
+            REFERENCES experiment_variants(experiment_id,owner_id,variant_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id) REFERENCES workflows(workflow_id) ON DELETE RESTRICT,
+        UNIQUE(owner_id,workflow_id,server_id,content_digest)
+    )
+    """,
+    "CREATE INDEX ix_experiment_presets_owner_workflow ON experiment_presets(owner_id,workflow_id,created_at DESC,preset_id DESC)",
+    "CREATE TRIGGER tr_experiment_presets_immutable_update BEFORE UPDATE ON experiment_presets BEGIN SELECT RAISE(ABORT,'experiment preset is immutable'); END",
+    "CREATE TRIGGER tr_experiment_presets_immutable_delete BEFORE DELETE ON experiment_presets BEGIN SELECT RAISE(ABORT,'experiment preset is immutable'); END",
+    f"""
+    CREATE TABLE experiment_promotions (
+        promotion_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("promotion_id", "promotion_")}),
+        owner_id TEXT NOT NULL,
+        experiment_id TEXT NOT NULL,
+        variant_id TEXT NOT NULL,
+        workflow_id TEXT NOT NULL,
+        target TEXT NOT NULL CHECK(target IN ('preset','revision')),
+        preset_id TEXT,
+        revision_id TEXT,
+        promotion_digest TEXT NOT NULL CHECK({_sha256_check("promotion_digest")}),
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(experiment_id,owner_id,variant_id)
+            REFERENCES experiment_variants(experiment_id,owner_id,variant_id) ON DELETE RESTRICT,
+        FOREIGN KEY(owner_id,preset_id) REFERENCES experiment_presets(owner_id,preset_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id,revision_id) REFERENCES workflow_revisions(workflow_id,revision_id) ON DELETE RESTRICT,
+        UNIQUE(owner_id,experiment_id,variant_id,target),
+        CHECK((target='preset' AND preset_id IS NOT NULL AND revision_id IS NULL) OR
+              (target='revision' AND preset_id IS NULL AND revision_id IS NOT NULL))
+    )
+    """,
+    "CREATE INDEX ix_experiment_promotions_variant ON experiment_promotions(owner_id,experiment_id,variant_id,target)",
+    "CREATE TRIGGER tr_experiment_promotions_immutable_update BEFORE UPDATE ON experiment_promotions BEGIN SELECT RAISE(ABORT,'experiment promotion is immutable'); END",
+    "CREATE TRIGGER tr_experiment_promotions_immutable_delete BEFORE DELETE ON experiment_promotions BEGIN SELECT RAISE(ABORT,'experiment promotion is immutable'); END",
+)
+
+_PHASE_M_EXPERIMENTS_UP = (
+    _PHASE_M_EXPERIMENT_AGGREGATES_UP
+    + _PHASE_M_EXPERIMENT_VARIANTS_UP
+    + _PHASE_M_EXPERIMENT_RATINGS_UP
+)
+
 
 _MIGRATIONS = (
     SchemaMigration(
@@ -1421,6 +1899,13 @@ _MIGRATIONS = (
         _PHASE_L_ASSET_LIBRARY_UP,
         (),
         feasibility_note="forward-only owner-bound asset and artifact lifecycle storage",
+    ),
+    SchemaMigration(
+        7,
+        "phase-m-experiments",
+        _PHASE_M_EXPERIMENTS_UP,
+        (),
+        feasibility_note="forward-only owner-bound durable Experiment and Variant storage",
     ),
 )
 

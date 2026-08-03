@@ -339,6 +339,69 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("dependency", "model", "node", "readiness"),
     ),
     CapabilitySpec(
+        "comfyui.experiment.plan",
+        "Plan an experiment",
+        "Expand bounded workflow variants and calculate conservative budgets before persistence.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("experiment", "matrix", "zip", "sample", "variant", "budget"),
+    ),
+    CapabilitySpec(
+        "comfyui.experiment.commit",
+        "Commit an experiment",
+        "Commit an owned digest-bound experiment plan and return its Resource link.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("experiment", "commit", "execute", "batch"),
+    ),
+    CapabilitySpec(
+        "comfyui.experiment.get",
+        "Get an experiment",
+        "Read one owner-bound experiment summary without inlining its variants.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("experiment", "status", "summary", "resource"),
+    ),
+    CapabilitySpec(
+        "comfyui.experiment.cancel",
+        "Cancel an experiment",
+        "Stop new work for an owned experiment using an explicit cancellation mode.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.HIGH,
+        ("experiment", "cancel", "queued", "stop"),
+    ),
+    CapabilitySpec(
+        "comfyui.experiment.variant.list",
+        "List experiment variants",
+        "List bounded owner-visible experiment variants with keyset pagination.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("experiment", "variant", "result", "cursor"),
+    ),
+    CapabilitySpec(
+        "comfyui.experiment.variant.rate",
+        "Rate an experiment variant",
+        "Record bounded rubric-versioned numeric scores for one owned variant.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("experiment", "variant", "rating", "rubric", "score"),
+    ),
+    CapabilitySpec(
+        "comfyui.experiment.variant.promote",
+        "Promote an experiment variant",
+        "Promote one owned variant to a preset or immutable unpublished Revision.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("experiment", "variant", "preset", "revision", "promote"),
+    ),
+    CapabilitySpec(
         "comfyui.admin.workflow.import",
         "Preview or commit workflow import",
         "Validate API or Editor JSON and optionally create an unpublished Revision.",
@@ -432,7 +495,7 @@ class ToolInventory:
     """Validate and bound one endpoint's stable active Tool surface."""
 
     DEFAULT_FIXED_LIMIT = 16
-    HARD_FIXED_LIMIT = 20
+    HARD_FIXED_LIMIT = 24
     DYNAMIC_LIMIT = 8
 
     def __init__(
@@ -442,7 +505,7 @@ class ToolInventory:
         max_fixed_limit: int = DEFAULT_FIXED_LIMIT,
     ) -> None:
         if type(max_fixed_limit) is not int or not 1 <= max_fixed_limit <= self.HARD_FIXED_LIMIT:
-            raise ValueError("max_fixed_limit must be between 1 and 20")
+            raise ValueError("max_fixed_limit must be between 1 and 24")
         names = tuple(tool.name for tool in fixed)
         if len(names) != len(set(names)):
             raise ValueError("fixed Tool names must be unique")
