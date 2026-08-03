@@ -1,20 +1,20 @@
 """Retention policy contracts for MCP metadata."""
 
 from __future__ import annotations
-from concurrent.futures import ThreadPoolExecutor
-from threading import Event
 
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 from filelock import FileLock
 
 from comfyui_mcp_skills.domain.models import Asset, Job
 from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
-from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.retention import FileRetentionService
+from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
 
 
 def _record(path: Path, payload: dict[str, object], *, age_days: int = 30) -> None:

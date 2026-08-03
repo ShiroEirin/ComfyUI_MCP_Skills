@@ -16,10 +16,14 @@ from comfyui_mcp_skills.adapters.mcp import resources as resource_adapter
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.application.authorization import Scope
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.domain.errors import AssetLibraryConflict
 from comfyui_mcp_skills.domain.models import Asset, Job
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
     SQLiteLegacyResourceAliasReader,
+)
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
+    SQLiteAssetLibraryRepository,
 )
 
 _ASSET_ID = "asset_" + "a" * 64
@@ -124,6 +128,24 @@ def alias_reader(tmp_path: Path) -> SQLiteLegacyResourceAliasReader:
             """,
             (_ARTIFACT_ID, _JOB_ID, "2" * 64, _CREATED_AT),
         )
+        connection.execute(
+            """
+            INSERT INTO artifact_completeness(
+                artifact_id, completeness, mime_type, size_bytes, sha256,
+                legacy_index, observed_at
+            ) VALUES (?, 'locator_only', 'image/png', NULL, NULL, 0, ?)
+            """,
+            (_ARTIFACT_ID, _CREATED_AT),
+        )
+        connection.execute(
+            """
+            UPDATE job_artifact_collections
+            SET status='complete', artifact_count=1,
+                output_snapshot_digest=?, error_code=NULL, updated_at=?
+            WHERE job_id=?
+            """,
+            ("4" * 64, _CREATED_AT, _JOB_ID),
+        )
         connection.executemany(
             """
             INSERT INTO legacy_resource_aliases(
@@ -179,6 +201,102 @@ def test_alias_reader_resolves_legacy_and_canonical_uris_to_same_targets(
         assert legacy is not None
         assert legacy == canonical
         assert legacy.canonical_uri == canonical_uri
+
+
+@pytest.mark.parametrize("state", ["archived", "deleted"])
+def test_alias_reader_rejects_unavailable_artifact_locations(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+    state: str,
+) -> None:
+    archived_at = _CREATED_AT if state == "archived" else None
+    deleted_at = _CREATED_AT if state == "deleted" else None
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            """
+            UPDATE media_locations
+            SET state=?, archived_at=?, deleted_at=?, updated_at=?
+            WHERE artifact_id=?
+            """,
+            (state, archived_at, deleted_at, _CREATED_AT, _ARTIFACT_ID),
+        )
+
+    assert alias_reader.resolve(_CANONICAL_ARTIFACT_URI, owner_id=_OWNER) is None
+    assert alias_reader.resolve(_LEGACY_OUTPUT_URI, owner_id=_OWNER) is None
+
+
+def test_alias_reader_fails_closed_while_artifact_backfill_is_pending(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+) -> None:
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            """
+            UPDATE phase_l_backfill_state
+            SET status='pending', incomplete_count=1, completed_at=NULL,
+                failure_code=NULL
+            WHERE backfill_name='artifact_outputs'
+            """
+        )
+
+    for uri in (_CANONICAL_ARTIFACT_URI, _LEGACY_OUTPUT_URI):
+        with pytest.raises(AssetLibraryConflict) as raised:
+            alias_reader.resolve(uri, owner_id=_OWNER)
+        assert raised.value.details == {"reason": "backfill_pending"}
+
+
+def test_alias_reader_rejects_incomplete_job_artifact_collection(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+) -> None:
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            """
+            UPDATE job_artifact_collections
+            SET status='needs_backfill', output_snapshot_digest=NULL,
+                error_code=NULL, updated_at=?
+            WHERE job_id=?
+            """,
+            (_CREATED_AT, _JOB_ID),
+        )
+
+    assert alias_reader.resolve(_CANONICAL_ARTIFACT_URI, owner_id=_OWNER) is None
+    assert alias_reader.resolve(_LEGACY_OUTPUT_URI, owner_id=_OWNER) is None
+
+
+def test_alias_reader_rejects_missing_artifact_completeness_fact(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+) -> None:
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            "DELETE FROM artifact_completeness WHERE artifact_id=?",
+            (_ARTIFACT_ID,),
+        )
+
+    assert alias_reader.resolve(_CANONICAL_ARTIFACT_URI, owner_id=_OWNER) is None
+    assert alias_reader.resolve(_LEGACY_OUTPUT_URI, owner_id=_OWNER) is None
+
+
+@pytest.mark.parametrize(
+    "alias_uri",
+    [
+        "comfyui://outputs/local/prompt-1/1",
+        "comfyui://outputs/local/other-prompt/0",
+    ],
+)
+def test_output_alias_requires_exact_job_and_legacy_index_binding(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+    alias_uri: str,
+) -> None:
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            """
+            INSERT INTO legacy_resource_aliases(
+                alias_uri, canonical_uri, object_kind, asset_id, job_id,
+                artifact_id, created_at
+            ) VALUES (?, ?, 'output', NULL, NULL, ?, ?)
+            """,
+            (alias_uri, _CANONICAL_ARTIFACT_URI, _ARTIFACT_ID, _CREATED_AT),
+        )
+
+    assert alias_reader.resolve(alias_uri, owner_id=_OWNER) is None
 
 
 def test_alias_reader_resolves_safe_workflow_revision_and_deployment_metadata(
@@ -294,6 +412,83 @@ class _Gateway:
     ) -> bytes:
         self.downloads.append((filename, subfolder, output_type, max_bytes))
         return b"same-output"
+
+
+class _AssetLibraryList:
+    def list_assets(self, *, owner_id: str, limit: int) -> dict[str, Any]:
+        assert owner_id == _OWNER
+        assert limit == 100
+        return {"items": [], "next_cursor": ""}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("state", ["archived", "deleted"])
+async def test_resource_listing_omits_unavailable_artifacts(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+    monkeypatch: pytest.MonkeyPatch,
+    state: str,
+) -> None:
+    monkeypatch.setattr(resource_adapter, "current_owner", lambda: _OWNER)
+    repository = SQLiteAssetLibraryRepository(alias_reader._store)
+    handlers = create_resource_handlers(
+        catalog=Any,  # type: ignore[arg-type]
+        servers=Any,  # type: ignore[arg-type]
+        assets=Any,  # type: ignore[arg-type]
+        jobs=Any,  # type: ignore[arg-type]
+        gateway_factory=Any,  # type: ignore[arg-type]
+        enabled_workflows=lambda: [],
+        asset_library=_AssetLibraryList(),  # type: ignore[arg-type]
+        asset_library_repository=repository,
+    )
+
+    available = await handlers.list_resources(None, None)
+    assert [str(resource.uri) for resource in available.resources] == [_CANONICAL_ARTIFACT_URI]
+
+    archived_at = _CREATED_AT if state == "archived" else None
+    deleted_at = _CREATED_AT if state == "deleted" else None
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            """
+            UPDATE media_locations
+            SET state=?, archived_at=?, deleted_at=?, updated_at=?
+            WHERE artifact_id=?
+            """,
+            (state, archived_at, deleted_at, _CREATED_AT, _ARTIFACT_ID),
+        )
+
+    unavailable = await handlers.list_resources(None, None)
+    assert unavailable.resources == []
+
+
+@pytest.mark.anyio
+async def test_resource_listing_fails_closed_while_artifact_backfill_is_pending(
+    alias_reader: SQLiteLegacyResourceAliasReader,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resource_adapter, "current_owner", lambda: _OWNER)
+    with sqlite3.connect(alias_reader._store.path) as connection:
+        connection.execute(
+            """
+            UPDATE phase_l_backfill_state
+            SET status='pending', incomplete_count=1, completed_at=NULL,
+                failure_code=NULL
+            WHERE backfill_name='artifact_outputs'
+            """
+        )
+    handlers = create_resource_handlers(
+        catalog=Any,  # type: ignore[arg-type]
+        servers=Any,  # type: ignore[arg-type]
+        assets=Any,  # type: ignore[arg-type]
+        jobs=Any,  # type: ignore[arg-type]
+        gateway_factory=Any,  # type: ignore[arg-type]
+        enabled_workflows=lambda: [],
+        asset_library=_AssetLibraryList(),  # type: ignore[arg-type]
+        asset_library_repository=SQLiteAssetLibraryRepository(alias_reader._store),
+    )
+
+    with pytest.raises(AssetLibraryConflict) as raised:
+        await handlers.list_resources(None, None)
+    assert raised.value.details == {"reason": "backfill_pending"}
 
 
 @pytest.mark.anyio

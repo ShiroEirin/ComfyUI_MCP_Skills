@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from comfyui_mcp_skills.application.planning_lineage import (
+    persist_execution_plan_inputs,
+    resolve_execution_plan_inputs,
+)
 from comfyui_mcp_skills.application.ports import WorkflowRepository
 from comfyui_mcp_skills.domain.control_plane import derived_control_plane_id
 from comfyui_mcp_skills.domain.errors import PayloadTooLarge
@@ -82,14 +86,26 @@ class ExecutionPlanningService:
             if published is None:
                 raise LookupError(f"published Workflow not found: {workflow_id}")
             revision_id, deployment_id = str(published[0]), str(published[1])
+            published_graph = json.loads(str(published[2]))
+            published_parameters = normalize_parameters(json.loads(str(published[3])))
             if workflow_graph is not None and _canonical_json(workflow_graph) != _canonical_json(
-                json.loads(str(published[2]))
+                published_graph
             ):
                 raise RuntimeError("published workflow changed before execution planning")
             if parameter_schema is not None and _canonical_json(
                 parameter_schema
-            ) != _canonical_json(normalize_parameters(json.loads(str(published[3])))):
+            ) != _canonical_json(published_parameters):
                 raise RuntimeError("published workflow schema changed before execution planning")
+            plan_inputs = resolve_execution_plan_inputs(
+                connection,
+                arguments=arguments,
+                graph=published_graph,
+                parameters=published_parameters,
+                owner_id=owner_id,
+                server_id=server_id,
+                revision_id=revision_id,
+                deployment_id=deployment_id,
+            )
             plan_digest = hashlib.sha256(
                 _canonical_json(
                     {
@@ -98,6 +114,7 @@ class ExecutionPlanningService:
                         "deployment_id": deployment_id,
                         "server_id": server_id,
                         "inputs": input_snapshot,
+                        "lineage_inputs": [item.digest_payload() for item in plan_inputs],
                     }
                 ).encode()
             ).hexdigest()
@@ -145,6 +162,13 @@ class ExecutionPlanningService:
                     created_at,
                 ),
             )
+            persist_execution_plan_inputs(
+                connection,
+                plan_id=plan_id,
+                inputs=plan_inputs,
+                created_at=created_at,
+            )
+            _inject(failure_injector, "after_plan_inputs")
             connection.execute(
                 """
                 INSERT OR IGNORE INTO execution_attempts(

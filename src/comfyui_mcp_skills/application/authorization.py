@@ -42,6 +42,16 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.capability.search": frozenset(Scope),
     "comfyui.capability.describe": frozenset(Scope),
     "comfyui.asset.upload": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.list": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.describe": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.collection.update": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.metadata.extract": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.import_output": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.delete.plan": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.delete.commit": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.transfer.plan": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.transfer.commit": frozenset({Scope.EXECUTE}),
+    "comfyui.asset.transfer.get": frozenset({Scope.EXECUTE}),
     "comfyui.job.get": frozenset({Scope.EXECUTE}),
     "comfyui.job.cancel": frozenset({Scope.EXECUTE}),
     "comfyui.job.list": frozenset({Scope.EXECUTE}),
@@ -70,6 +80,7 @@ _RESOURCE_SCOPES: dict[str, frozenset[Scope]] = {
     "job": frozenset({Scope.EXECUTE}),
     "output": frozenset({Scope.EXECUTE}),
     "artifact": frozenset({Scope.EXECUTE}),
+    "lineage": frozenset({Scope.EXECUTE}),
     "workflows": frozenset({Scope.EXECUTE, Scope.OBSERVE, Scope.AUTHOR}),
     "revisions": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
     "deployments": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
@@ -77,6 +88,7 @@ _RESOURCE_SCOPES: dict[str, frozenset[Scope]] = {
     "jobs": frozenset({Scope.EXECUTE}),
     "outputs": frozenset({Scope.EXECUTE}),
     "artifacts": frozenset({Scope.EXECUTE}),
+    "lineages": frozenset({Scope.EXECUTE}),
 }
 _PRINCIPAL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 

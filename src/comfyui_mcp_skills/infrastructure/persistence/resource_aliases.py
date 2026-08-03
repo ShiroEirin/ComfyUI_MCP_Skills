@@ -12,7 +12,11 @@ from comfyui_mcp_skills.domain.control_plane import (
     parse_legacy_resource_uri,
     validate_control_plane_id,
 )
+from comfyui_mcp_skills.domain.models import Artifact
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
+    SQLiteAssetLibraryRepository,
+)
 
 _CanonicalKind = Literal["workflow", "revision", "deployment", "asset", "job", "artifact"]
 _MAX_RESOURCE_URI_LENGTH = 2048
@@ -31,6 +35,7 @@ class SQLiteLegacyResourceAliasReader:
 
     def __init__(self, store: SQLiteControlPlaneStore) -> None:
         self._store = store
+        self._artifacts = SQLiteAssetLibraryRepository(store)
 
     def resolve(self, uri: str, *, owner_id: str) -> ResourceTarget | None:
         if not isinstance(owner_id, str):
@@ -94,7 +99,7 @@ class SQLiteLegacyResourceAliasReader:
                 prompt_id=prompt_id,
             )
         elif object_kind == "output" and row[3] is not None:
-            target = self._read_artifact(str(row[3]), owner_id)
+            target = self._artifact_target(self._artifacts.resolve_artifact_alias(uri, owner_id))
         else:
             return None
         if target is None or target.canonical_uri != canonical_uri:
@@ -266,32 +271,20 @@ class SQLiteLegacyResourceAliasReader:
         )
 
     def _read_artifact(self, artifact_id: str, owner_id: str) -> ResourceTarget | None:
-        connection = self._connect()
-        try:
-            row = connection.execute(
-                """
-                SELECT artifacts.artifact_id, artifacts.server_id,
-                       artifacts.filename, artifacts.subfolder,
-                       artifacts.storage_type
-                FROM artifacts
-                JOIN jobs ON jobs.job_id = artifacts.job_id
-                WHERE artifacts.artifact_id = ? AND jobs.owner_id = ?
-                """,
-                (artifact_id, owner_id),
-            ).fetchone()
-        finally:
-            connection.close()
-        if row is None:
+        return self._artifact_target(self._artifacts.get_artifact(artifact_id, owner_id))
+
+    @staticmethod
+    def _artifact_target(artifact: Artifact | None) -> ResourceTarget | None:
+        if artifact is None:
             return None
-        identifier = str(row[0])
         return ResourceTarget(
             kind="artifact",
-            canonical_uri=canonical_resource_uri("artifact", identifier),
-            object_id=identifier,
-            server_id=str(row[1]),
-            filename=str(row[2]),
-            subfolder=str(row[3]),
-            storage_type=str(row[4]),
+            canonical_uri=artifact.resource_uri,
+            object_id=artifact.artifact_id,
+            server_id=artifact.server_id,
+            filename=artifact.filename,
+            subfolder=artifact.subfolder,
+            storage_type=artifact.storage_type,
         )
 
     def _connect(self) -> sqlite3.Connection:

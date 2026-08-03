@@ -11,15 +11,15 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger(__name__)
-
-import typer
 import requests
+import typer
+
 from comfyui_mcp_skills.domain.errors import WorkflowArgumentsError
 from comfyui_mcp_skills.domain.workflow_schema import normalize_parameters, validate_arguments
-
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
+
 from ..config import get_base_dir, get_default_server_id, get_server, load_config
+from ..error_hints import match_error_hint
 from ..history_writer import (
     claim_job,
     find_existing_run,
@@ -27,9 +27,16 @@ from ..history_writer import (
     renew_job_claim,
     save_run_record,
 )
-from ..output import OutputFormat, get_output_format, is_machine_mode, output_error, output_event, output_result
-from ..error_hints import match_error_hint
+from ..output import (
+    OutputFormat,
+    get_output_format,
+    output_error,
+    output_event,
+    output_result,
+)
 from ..storage import get_schema, get_workflow_data
+
+logger = logging.getLogger(__name__)
 
 _POLL_INITIAL = 1.0
 _POLL_MAX = 10.0
@@ -75,9 +82,7 @@ class _RunContext:
     def start(self) -> None:
         self._t0 = time.time()
 
-    def save(
-        self, status: str, outputs: list | None = None, error: str = ""
-    ) -> None:
+    def save(self, status: str, outputs: list | None = None, error: str = "") -> None:
         duration_ms = int((time.time() - self._t0) * 1000) if self._t0 else 0
         save_run_record(
             self.base_dir,
@@ -98,6 +103,7 @@ class _RunContext:
 def _ws_available() -> bool:
     try:
         import websocket  # noqa: F401
+
         return True
     except ImportError:
         return False
@@ -107,16 +113,37 @@ def run_cmd(
     ctx: typer.Context,
     skill_id: str = typer.Argument(help="Skill ID: server_id/workflow_id or workflow_id"),
     args: str = typer.Option("{}", "--args", "-a", help="JSON parameters"),
-    only: str = typer.Option("", "--only", help="Comma-separated node IDs for partial execution (only run subgraph needed for these nodes)"),
-    priority: float = typer.Option(0, "--priority", "-p", help="Queue priority (lower runs first, negative to jump queue)"),
-    validate: bool = typer.Option(False, "--validate", help="Validate workflow without executing (checks node errors, then cancels)"),
-    job_id: str = typer.Option("", "--job-id", help="Idempotency key — if this job was already executed, return cached result"),
-    wait_timeout_seconds: float = typer.Option(3600.0, "--wait-timeout", min=0.0, help="Maximum seconds to wait; zero waits indefinitely"),
+    only: str = typer.Option(
+        "",
+        "--only",
+        help=(
+            "Comma-separated node IDs for partial execution "
+            "(only run subgraph needed for these nodes)"
+        ),
+    ),
+    priority: float = typer.Option(
+        0, "--priority", "-p", help="Queue priority (lower runs first, negative to jump queue)"
+    ),
+    validate: bool = typer.Option(
+        False,
+        "--validate",
+        help="Validate workflow without executing (checks node errors, then cancels)",
+    ),
+    job_id: str = typer.Option(
+        "",
+        "--job-id",
+        help="Idempotency key — if this job was already executed, return cached result",
+    ),
+    wait_timeout_seconds: float = typer.Option(
+        3600.0, "--wait-timeout", min=0.0, help="Maximum seconds to wait; zero waits indefinitely"
+    ),
 ):
     """Execute a skill (blocking — waits for completion)."""
     base_dir, server_id, workflow_id = _resolve_skill(ctx, skill_id)
 
-    client, schema_data, workflow_data, server_config = _prepare(ctx, base_dir, server_id, workflow_id)
+    client, schema_data, workflow_data, server_config = _prepare(
+        ctx, base_dir, server_id, workflow_id
+    )
 
     input_args = _parse_args(ctx, args)
     parameters = _get_parameters(schema_data)
@@ -153,20 +180,21 @@ def run_cmd(
         _upload_media(ctx, client, parameters, input_args)
     except BaseException:
         if job_id:
-            release_job_claim(
-                base_dir, server_id, workflow_id, job_id, claim_token
-            )
+            release_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
         raise
     if job_id:
-        renew_job_claim(
-            base_dir, server_id, workflow_id, job_id, claim_token
-        )
+        renew_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
     workflow = _inject_params(workflow_data, parameters, input_args)
 
     targets = [t.strip() for t in only.split(",") if t.strip()] if only else None
 
     try:
-        result = client.queue_prompt(workflow, client_id=client_id, targets=targets, priority=priority if priority != 0 else None)
+        result = client.queue_prompt(
+            workflow,
+            client_id=client_id,
+            targets=targets,
+            priority=priority if priority != 0 else None,
+        )
     except Exception as exc:
         outcome_unknown = _submission_outcome_unknown(exc)
         if job_id and outcome_unknown:
@@ -182,9 +210,7 @@ def run_cmd(
                 client_id=client_id,
             )
         if job_id and not outcome_unknown:
-            release_job_claim(
-                base_dir, server_id, workflow_id, job_id, claim_token
-            )
+            release_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
         code = "SUBMISSION_UNKNOWN" if outcome_unknown else "SUBMIT_FAILED"
         output_error(ctx, code, f"Failed to submit workflow: {exc}")
         return
@@ -215,23 +241,32 @@ def run_cmd(
             except Exception:
                 pass
         if node_errors:
-            output_result(ctx, {"status": "invalid", "prompt_id": prompt_id, "node_errors": node_errors})
-        else:
-            output_result(ctx, {"status": "valid", "prompt_id": prompt_id, "node_count": len(workflow)})
-        if job_id:
-            release_job_claim(
-                base_dir, server_id, workflow_id, job_id, claim_token
+            output_result(
+                ctx, {"status": "invalid", "prompt_id": prompt_id, "node_errors": node_errors}
             )
+        else:
+            output_result(
+                ctx, {"status": "valid", "prompt_id": prompt_id, "node_count": len(workflow)}
+            )
+        if job_id:
+            release_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
         return
 
     if node_errors:
-        output_event(ctx, "warning", prompt_id=prompt_id, message="Workflow has node errors", node_errors=node_errors)
+        output_event(
+            ctx,
+            "warning",
+            prompt_id=prompt_id,
+            message="Workflow has node errors",
+            node_errors=node_errors,
+        )
 
     fmt = get_output_format(ctx)
     output_event(ctx, "queued", prompt_id=prompt_id)
 
     if fmt == OutputFormat.TEXT:
         from rich.console import Console
+
         console = Console(stderr=True)
         console.print(f"[dim]Queued: {prompt_id}[/dim]")
 
@@ -248,17 +283,21 @@ def run_cmd(
     )
     run_ctx.start()
     run_ctx.save("submitted")
-    deadline = (
-        time.monotonic() + wait_timeout_seconds
-        if wait_timeout_seconds > 0
-        else None
-    )
+    deadline = time.monotonic() + wait_timeout_seconds if wait_timeout_seconds > 0 else None
 
     if _ws_available():
         try:
             _run_with_ws(
-                ctx, client, workflow, prompt_id, client_id, base_dir,
-                server_config, fmt, run_ctx, deadline=deadline,
+                ctx,
+                client,
+                workflow,
+                prompt_id,
+                client_id,
+                base_dir,
+                server_config,
+                fmt,
+                run_ctx,
+                deadline=deadline,
             )
             return
         except typer.Exit:
@@ -267,8 +306,14 @@ def run_cmd(
             logger.debug("WebSocket failed, falling back to polling", exc_info=True)
 
     _run_with_poll(
-        ctx, client, prompt_id, base_dir, server_config, fmt,
-        run_ctx, deadline=deadline,
+        ctx,
+        client,
+        prompt_id,
+        base_dir,
+        server_config,
+        fmt,
+        run_ctx,
+        deadline=deadline,
     )
 
 
@@ -286,6 +331,7 @@ def _run_with_ws(
 ) -> None:
     if fmt == OutputFormat.TEXT:
         from rich.console import Console
+
         console = Console(stderr=True)
 
     node_classes: dict[str, str] = {}
@@ -298,11 +344,14 @@ def _run_with_ws(
         if deadline is not None and time.monotonic() >= deadline:
             output_event(ctx, "submitted", prompt_id=prompt_id, reason="wait_timeout")
             if fmt != OutputFormat.STREAM_JSON:
-                output_result(ctx, {
-                    "status": "submitted",
-                    "prompt_id": prompt_id,
-                    "reason": "wait_timeout",
-                })
+                output_result(
+                    ctx,
+                    {
+                        "status": "submitted",
+                        "prompt_id": prompt_id,
+                        "reason": "wait_timeout",
+                    },
+                )
             return
         etype = event["type"]
         data = event["data"]
@@ -321,24 +370,43 @@ def _run_with_ws(
             if node is None:
                 break
             display = node_classes.get(node, node)
-            output_event(ctx, "node_executing", prompt_id=prompt_id, node=node, node_display=display)
+            output_event(
+                ctx, "node_executing", prompt_id=prompt_id, node=node, node_display=display
+            )
             if fmt == OutputFormat.TEXT:
                 console.print(f"  [cyan]{display}[/cyan] ({node})")
 
         elif etype == "executed":
             node = data.get("node", "")
             display = node_classes.get(node, node)
-            output_event(ctx, "node_completed", prompt_id=prompt_id, node=node, node_display=display, outputs=data.get("output", {}))
+            output_event(
+                ctx,
+                "node_completed",
+                prompt_id=prompt_id,
+                node=node,
+                node_display=display,
+                outputs=data.get("output", {}),
+            )
 
         elif etype == "progress":
             node = data.get("node", "")
             value = data.get("value", 0)
             max_val = data.get("max", 0)
             display = node_classes.get(node, node)
-            output_event(ctx, "progress", prompt_id=prompt_id, node=node, node_display=display, value=value, max=max_val)
+            output_event(
+                ctx,
+                "progress",
+                prompt_id=prompt_id,
+                node=node,
+                node_display=display,
+                value=value,
+                max=max_val,
+            )
             if fmt == OutputFormat.TEXT and max_val > 0:
                 pct = int(value / max_val * 100)
-                console.print(f"    [dim]{display} {value}/{max_val} ({pct}%)[/dim]", highlight=False)
+                console.print(
+                    f"    [dim]{display} {value}/{max_val} ({pct}%)[/dim]", highlight=False
+                )
 
         elif etype == "execution_error":
             error_msg = data.get("exception_message", "Execution error")
@@ -379,6 +447,7 @@ def _run_with_poll(
 ) -> None:
     if fmt == OutputFormat.TEXT:
         from rich.console import Console
+
         console = Console(stderr=True)
 
     poll_interval = _POLL_INITIAL
@@ -387,11 +456,14 @@ def _run_with_poll(
         if deadline is not None and time.monotonic() >= deadline:
             output_event(ctx, "submitted", prompt_id=prompt_id, reason="wait_timeout")
             if fmt != OutputFormat.STREAM_JSON:
-                output_result(ctx, {
-                    "status": "submitted",
-                    "prompt_id": prompt_id,
-                    "reason": "wait_timeout",
-                })
+                output_result(
+                    ctx,
+                    {
+                        "status": "submitted",
+                        "prompt_id": prompt_id,
+                        "reason": "wait_timeout",
+                    },
+                )
             return
         history = client.get_history(prompt_id)
         if history:
@@ -412,11 +484,14 @@ def _run_with_poll(
                     run_ctx.save("success", outputs=collected)
                 if fmt == OutputFormat.STREAM_JSON:
                     return
-                output_result(ctx, {
-                    "status": "success",
-                    "prompt_id": prompt_id,
-                    "outputs": collected,
-                })
+                output_result(
+                    ctx,
+                    {
+                        "status": "success",
+                        "prompt_id": prompt_id,
+                        "outputs": collected,
+                    },
+                )
                 return
 
         queue = client.get_queue()
@@ -486,23 +561,17 @@ def submit_cmd(
             reconciled = _reconcile_cli_submission(
                 client, base_dir, server_id, workflow_id, job_id, existing
             )
-            output_result(
-                ctx, reconciled or {"job_id": job_id, "status": "reserved"}
-            )
+            output_result(ctx, reconciled or {"job_id": job_id, "status": "reserved"})
             return
         claim_token = str(claimed)
     try:
         _upload_media(ctx, client, parameters, input_args)
     except BaseException:
         if job_id:
-            release_job_claim(
-                base_dir, server_id, workflow_id, job_id, claim_token
-            )
+            release_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
         raise
     if job_id:
-        renew_job_claim(
-            base_dir, server_id, workflow_id, job_id, claim_token
-        )
+        renew_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
     workflow = _inject_params(workflow_data, parameters, input_args)
     targets = [item.strip() for item in only.split(",") if item.strip()] or None
     try:
@@ -527,9 +596,7 @@ def submit_cmd(
                 client_id=client_id,
             )
         if job_id and not outcome_unknown:
-            release_job_claim(
-                base_dir, server_id, workflow_id, job_id, claim_token
-            )
+            release_job_claim(base_dir, server_id, workflow_id, job_id, claim_token)
         code = "SUBMISSION_UNKNOWN" if outcome_unknown else "SUBMIT_FAILED"
         output_error(ctx, code, f"Failed to submit workflow: {exc}")
         return
@@ -595,9 +662,7 @@ def status_cmd(
             return
         if state == "completed":
             collected = _collect_outputs(outputs)
-            collected = _download_outputs(
-                client, collected, base_dir, server_config
-            )
+            collected = _download_outputs(client, collected, base_dir, server_config)
             output_result(
                 ctx,
                 {"status": "success", "prompt_id": prompt_id, "outputs": collected},
@@ -667,11 +732,7 @@ def _reconcile_cli_submission(
 def _prompt_for_client(queue: dict[str, Any], client_id: str) -> str:
     for key in ("queue_running", "queue_pending"):
         for item in queue.get(key, []):
-            if (
-                isinstance(item, list)
-                and len(item) > 1
-                and _contains_client_id(item, client_id)
-            ):
+            if isinstance(item, list) and len(item) > 1 and _contains_client_id(item, client_id):
                 return str(item[1])
     return ""
 
@@ -680,15 +741,14 @@ def _contains_client_id(value: Any, client_id: str) -> bool:
     if isinstance(value, dict):
         if value.get("client_id") == client_id:
             return True
-        return any(
-            _contains_client_id(item, client_id) for item in value.values()
-        )
+        return any(_contains_client_id(item, client_id) for item in value.values())
     if isinstance(value, list):
         return any(_contains_client_id(item, client_id) for item in value)
     return False
 
 
 # -- Helpers --
+
 
 def _resolve_skill(ctx: typer.Context, skill_id: str) -> tuple[Any, str, str]:
     base_dir = get_base_dir(ctx.obj.get("base_dir", ""))
@@ -806,7 +866,11 @@ def _inject_params(
             continue
         node_id = str(parameters[key].get("node_id", ""))
         field = parameters[key].get("field", "")
-        if node_id in workflow and isinstance(workflow[node_id], dict) and "inputs" in workflow[node_id]:
+        if (
+            node_id in workflow
+            and isinstance(workflow[node_id], dict)
+            and "inputs" in workflow[node_id]
+        ):
             workflow[node_id]["inputs"][field] = value
     return workflow
 
@@ -839,18 +903,18 @@ def _collect_outputs(outputs: dict[str, Any]) -> list[dict[str, str]]:
             continue
         for key in _MEDIA_KEYS:
             fallback = (
-                "audio"
-                if key == "audio"
-                else ("video" if key in {"gifs", "video"} else "image")
+                "audio" if key == "audio" else ("video" if key in {"gifs", "video"} else "image")
             )
             for item in node_output.get(key, []):
                 filename = item.get("filename", "")
-                collected.append({
-                    "filename": filename,
-                    "subfolder": item.get("subfolder", ""),
-                    "type": item.get("type", "output"),
-                    "media_type": _infer_media_type(filename, fallback),
-                })
+                collected.append(
+                    {
+                        "filename": filename,
+                        "subfolder": item.get("subfolder", ""),
+                        "type": item.get("type", "output"),
+                        "media_type": _infer_media_type(filename, fallback),
+                    }
+                )
     return collected
 
 
@@ -864,12 +928,8 @@ def _download_outputs(
     configured_dir = Path(raw_dir) if Path(raw_dir).is_absolute() else base_dir / raw_dir
     output_dir = configured_dir.resolve()
     try:
-        max_file_bytes = int(
-            server_config.get("max_output_file_bytes", 100 * 1024 * 1024)
-        )
-        max_total_bytes = int(
-            server_config.get("max_output_total_bytes", 500 * 1024 * 1024)
-        )
+        max_file_bytes = int(server_config.get("max_output_file_bytes", 100 * 1024 * 1024))
+        max_total_bytes = int(server_config.get("max_output_total_bytes", 500 * 1024 * 1024))
     except (TypeError, ValueError) as exc:
         raise ValueError("Output download limits must be integers") from exc
     if max_file_bytes <= 0 or max_total_bytes <= 0:
@@ -889,14 +949,15 @@ def _download_outputs(
             remaining = max_total_bytes - downloaded_bytes
             if remaining <= 0:
                 raise ValueError("Output download total limit exceeded")
-            size = client.download_output_to(
+            receipt = client.download_output_to(
                 filename,
                 local_path,
                 subfolder,
                 item.get("type", "output"),
                 max_bytes=min(max_file_bytes, remaining),
             )
-            downloaded_bytes += size
+            downloaded_bytes += int(receipt["size_bytes"])
+            item["sha256"] = str(receipt["sha256"])
             item["local_path"] = str(local_path)
         except Exception as exc:
             logger.warning("Failed to download %s: %s", item["filename"], exc)

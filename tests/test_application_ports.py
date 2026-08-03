@@ -55,9 +55,7 @@ class MemoryRunRepository:
     ) -> str | None:
         return ""
 
-    def get_claim(
-        self, server_id: str, key: str, owner_id: str = ""
-    ) -> dict[str, Any] | None:
+    def get_claim(self, server_id: str, key: str, owner_id: str = "") -> dict[str, Any] | None:
         return None
 
     def release_claim(
@@ -88,9 +86,7 @@ class MemoryRunRepository:
     def get(self, server_id: str, prompt_id: str) -> Job | None:
         return self.jobs.get((server_id, prompt_id))
 
-    def get_by_idempotency(
-        self, server_id: str, key: str, owner_id: str = ""
-    ) -> Job | None:
+    def get_by_idempotency(self, server_id: str, key: str, owner_id: str = "") -> Job | None:
         return None
 
 
@@ -103,13 +99,7 @@ def test_repository_backed_services_accept_memory_port_implementations(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "config.json").write_text(
-        json.dumps(
-            {
-                "servers": [
-                    {"id": "local", "url": "http://127.0.0.1:8188"}
-                ]
-            }
-        ),
+        json.dumps({"servers": [{"id": "local", "url": "http://127.0.0.1:8188"}]}),
         encoding="utf-8",
     )
     workflow = Workflow(

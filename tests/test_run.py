@@ -26,7 +26,11 @@ class UploadMediaTests(unittest.TestCase):
 
     def test_rewrites_local_image_path_without_subfolder(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            self.client.upload_image.return_value = {"name": "uploaded.png", "subfolder": "", "type": "input"}
+            self.client.upload_image.return_value = {
+                "name": "uploaded.png",
+                "subfolder": "",
+                "type": "input",
+            }
             parameters = {"image": {"type": "image"}}
             args = {"image": f.name}
             _upload_media(self.ctx, self.client, parameters, args)
@@ -35,7 +39,11 @@ class UploadMediaTests(unittest.TestCase):
 
     def test_rewrites_local_image_path_with_subfolder(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".png") as f:
-            self.client.upload_image.return_value = {"name": "uploaded.png", "subfolder": "clipspace", "type": "input"}
+            self.client.upload_image.return_value = {
+                "name": "uploaded.png",
+                "subfolder": "clipspace",
+                "type": "input",
+            }
             parameters = {"image": {"type": "image"}}
             args = {"image": f.name}
             _upload_media(self.ctx, self.client, parameters, args)
@@ -108,7 +116,11 @@ class UploadMediaTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             test_file = Path(tmp) / "cat.png"
             test_file.write_bytes(b"\x89PNG\r\n\x1a\n")
-            self.client.upload_image.return_value = {"name": "cat.png", "subfolder": "", "type": "input"}
+            self.client.upload_image.return_value = {
+                "name": "cat.png",
+                "subfolder": "",
+                "type": "input",
+            }
             with patch.dict(os.environ, {"HOME": tmp, "USERPROFILE": tmp}):
                 parameters = {"image": {"type": "image"}}
                 args = {"image": "~/cat.png"}
@@ -120,11 +132,7 @@ class UploadMediaTests(unittest.TestCase):
 class CollectOutputsTests(unittest.TestCase):
     def test_collects_explicit_video_history_key(self) -> None:
         outputs = {
-            "10": {
-                "video": [
-                    {"filename": "render.webm", "subfolder": "video", "type": "output"}
-                ]
-            }
+            "10": {"video": [{"filename": "render.webm", "subfolder": "video", "type": "output"}]}
         }
 
         self.assertEqual(

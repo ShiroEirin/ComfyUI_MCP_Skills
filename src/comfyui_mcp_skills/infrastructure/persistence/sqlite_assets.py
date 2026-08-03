@@ -23,8 +23,8 @@ class SQLiteAssetRepository:
                 INSERT INTO assets(
                     asset_id, owner_id, server_id, name, subfolder, media_type,
                     mime_type, size_bytes, sha256, source_type, comfyui_ref,
-                    created_at, expires_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime_upload', ?, ?, NULL)
+                    created_at, expires_at, deleted_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'runtime_upload', ?, ?, NULL, NULL)
                 """,
                 (
                     asset.asset_id,
@@ -54,15 +54,13 @@ class SQLiteAssetRepository:
                 """
                 SELECT asset_id, server_id, comfyui_ref, name, subfolder,
                        media_type, mime_type, size_bytes, sha256, owner_id, created_at
-                FROM assets WHERE asset_id = ?
+                FROM assets WHERE asset_id = ? AND deleted_at IS NULL
                 """,
                 (asset_id,),
             ).fetchone()
         finally:
             connection.close()
-        if row is None:
-            return None
-        return Asset(*tuple(row))
+        return None if row is None else Asset(*tuple(row))
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)

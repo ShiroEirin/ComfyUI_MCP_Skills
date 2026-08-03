@@ -41,9 +41,7 @@ def test_uploads_authorized_image_and_returns_asset_handle(tmp_path: Path) -> No
         "type": "input",
     }
 
-    asset = _service(tmp_path, upload_root).upload_local(
-        gateway, "local", image, purpose="image"
-    )
+    asset = _service(tmp_path, upload_root).upload_local(gateway, "local", image, purpose="image")
 
     assert asset.asset_id.startswith("asset_")
     assert asset.comfyui_ref == "agent/assets/cat.png"
@@ -54,9 +52,7 @@ def test_uploads_authorized_image_and_returns_asset_handle(tmp_path: Path) -> No
     assert uploaded_path.parent != image.parent
     assert uploaded_path.name.endswith("-cat.png")
     assert not uploaded_path.exists()
-    assert gateway.upload_file.call_args.kwargs == {
-        "purpose": "image", "original_ref": ""
-    }
+    assert gateway.upload_file.call_args.kwargs == {"purpose": "image", "original_ref": ""}
 
 
 def test_upload_rejects_source_replacement_before_read(
@@ -79,9 +75,7 @@ def test_upload_rejects_source_replacement_before_read(
 
     monkeypatch.setattr(Path, "open", swap_before_open)
     with pytest.raises(UnsafePath):
-        _service(tmp_path, upload_root).upload_local(
-            gateway, "local", image, purpose="image"
-        )
+        _service(tmp_path, upload_root).upload_local(gateway, "local", image, purpose="image")
     gateway.upload_file.assert_not_called()
 
 
@@ -91,13 +85,9 @@ def test_accepts_bare_mpeg_audio_frame(tmp_path: Path) -> None:
     audio = upload_root / "sample.mp3"
     audio.write_bytes(b"\xff\xfb\x90\x64" + b"frame-data")
     gateway = MagicMock()
-    gateway.upload_file.return_value = {
-        "name": "sample.mp3", "subfolder": "agent", "type": "input"
-    }
+    gateway.upload_file.return_value = {"name": "sample.mp3", "subfolder": "agent", "type": "input"}
 
-    asset = _service(tmp_path, upload_root).upload_local(
-        gateway, "local", audio, purpose="audio"
-    )
+    asset = _service(tmp_path, upload_root).upload_local(gateway, "local", audio, purpose="audio")
 
     assert asset.media_type == "audio"
     assert asset.mime_type == "audio/mpeg"
@@ -110,9 +100,7 @@ def test_rejects_file_outside_authorized_roots(tmp_path: Path) -> None:
     gateway = MagicMock()
 
     with pytest.raises(UnsafePath):
-        _service(tmp_path, upload_root).upload_local(
-            gateway, "local", image, purpose="image"
-        )
+        _service(tmp_path, upload_root).upload_local(gateway, "local", image, purpose="image")
 
     gateway.upload_file.assert_not_called()
 
@@ -138,9 +126,7 @@ def test_rejects_extension_spoofing(tmp_path: Path) -> None:
     fake.write_bytes(b"not an image")
 
     with pytest.raises(UnsupportedMediaType):
-        _service(tmp_path, upload_root).upload_local(
-            MagicMock(), "local", fake, purpose="image"
-        )
+        _service(tmp_path, upload_root).upload_local(MagicMock(), "local", fake, purpose="image")
 
 
 def test_video_purpose_and_owner_are_enforced(tmp_path: Path) -> None:
@@ -149,14 +135,10 @@ def test_video_purpose_and_owner_are_enforced(tmp_path: Path) -> None:
     video = upload_root / "clip.mp4"
     video.write_bytes(b"\x00\x00\x00\x18ftypisom")
     gateway = MagicMock()
-    gateway.upload_file.return_value = {
-        "name": "clip.mp4", "subfolder": "agent", "type": "input"
-    }
+    gateway.upload_file.return_value = {"name": "clip.mp4", "subfolder": "agent", "type": "input"}
     service = _service(tmp_path, upload_root)
 
-    asset = service.upload_local(
-        gateway, "local", video, purpose="video", owner_id="principal-a"
-    )
+    asset = service.upload_local(gateway, "local", video, purpose="video", owner_id="principal-a")
 
     assert asset.media_type == "video"
     assert service.get(asset.asset_id, owner_id="principal-a") == asset

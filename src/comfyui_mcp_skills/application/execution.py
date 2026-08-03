@@ -10,14 +10,18 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
-from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.planning import ExecutionIdentity, ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import (
+    ArtifactRepository,
     AssetRepository,
     ComfyUIGateway,
     RunRepository,
 )
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.domain.control_plane import (
+    parse_legacy_resource_uri,
+    validate_control_plane_id,
+)
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
     ExecutionInProgress,
@@ -25,11 +29,31 @@ from comfyui_mcp_skills.domain.errors import (
     ServerOffline,
     WorkflowArgumentsError,
 )
-from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Job
 from comfyui_mcp_skills.domain.workflow_schema import validate_arguments
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+DIRECT_OUTPUT_COMPATIBILITY_REGISTRY_VERSION = 1
+_DIRECT_OUTPUT_COMPATIBILITY = frozenset(
+    {
+        ("LoadImageOutput", "image", "image", "output"),
+    }
+)
+
+
+def direct_output_compatible(
+    consumer_class: str,
+    parameter_type: str,
+    field: str,
+    storage_type: str,
+) -> bool:
+    """Return whether fixed compatibility evidence permits direct output reuse."""
+    return (
+        consumer_class,
+        parameter_type,
+        field,
+        storage_type,
+    ) in _DIRECT_OUTPUT_COMPATIBILITY
 
 
 class ExecutionService:
@@ -41,6 +65,7 @@ class ExecutionService:
         assets: AssetRepository,
         gateway_factory: GatewayFactory,
         planning: ExecutionPlanningService | None = None,
+        artifacts: ArtifactRepository | None = None,
     ) -> None:
         self._catalog = catalog
         self._servers = servers
@@ -48,7 +73,7 @@ class ExecutionService:
         self._assets = assets
         self._gateway_factory = gateway_factory
         self._planning = planning
-        self._jobs = JobService(servers, runs, gateway_factory)
+        self._artifacts = artifacts
 
     def submit(
         self,
@@ -68,7 +93,9 @@ class ExecutionService:
             raise ValueError("idempotency_key must contain printable non-whitespace characters")
         workflow = self._catalog.get(server_id, workflow_id)
         validate_arguments(workflow.parameters, arguments)
-        resolved = self._resolve_assets(server_id, workflow.parameters, arguments, owner_id)
+        resolved = self._resolve_assets(
+            server_id, workflow.parameters, workflow.graph, arguments, owner_id
+        )
         request_digest = self._runs.request_digest(workflow_id, arguments)
         client_id = uuid.uuid4().hex
         gateway = self._gateway_factory(self._servers.connection(server_id))
@@ -267,6 +294,7 @@ class ExecutionService:
         self,
         server_id: str,
         parameters: dict[str, Any],
+        graph: dict[str, Any],
         arguments: dict[str, Any],
         owner_id: str = "",
     ) -> dict[str, Any]:
@@ -276,11 +304,18 @@ class ExecutionService:
             parameter_type = str(metadata.get("type", ""))
             if parameter_type not in {"image", "mask", "audio", "video"}:
                 continue
-            if metadata.get("storage_type") == "output" and not (
-                isinstance(value, str) and value.startswith("comfyui://outputs/")
-            ):
-                raise AssetNotFound(f'Media parameter "{name}" requires an output URI')
-            if isinstance(value, str) and value.startswith("comfyui://outputs/"):
+            consumer_class = self._consumer_class(graph, metadata, name)
+            direct_output_consumer = self._direct_output_compatible(
+                consumer_class, metadata, parameter_type
+            )
+            output_reference = isinstance(value, str) and value.startswith(
+                ("comfyui://outputs/", "comfyui://artifacts/")
+            )
+            if output_reference:
+                if not direct_output_consumer:
+                    raise AssetNotFound(
+                        f'Media parameter "{name}" must use an imported Asset for {consumer_class}'
+                    )
                 resolved[name] = self._resolve_output(
                     server_id,
                     value,
@@ -288,11 +323,11 @@ class ExecutionService:
                     owner_id,
                 )
                 continue
+            if direct_output_consumer:
+                raise AssetNotFound(f'Media parameter "{name}" requires an output URI')
             if not isinstance(value, str) or not value.startswith("asset_"):
-                if owner_id:
-                    raise AssetNotFound(
-                        f'Media parameter "{name}" requires an authorized asset_id or output URI'
-                    )
+                if owner_id or consumer_class == "LoadImage":
+                    raise AssetNotFound(f'Media parameter "{name}" requires an authorized asset_id')
                 continue
             asset = self._assets.get(value)
             if asset is None or asset.server_id != server_id:
@@ -307,6 +342,38 @@ class ExecutionService:
             resolved[name] = asset.comfyui_ref
         return resolved
 
+    @staticmethod
+    def _consumer_class(
+        graph: dict[str, Any], metadata: dict[str, Any], parameter_name: str
+    ) -> str:
+        node_id = str(metadata.get("node_id", ""))
+        field = str(metadata.get("field", ""))
+        node = graph.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        consumer_class = str(node.get("class_type", "")) if isinstance(node, dict) else ""
+        if (
+            not node_id
+            or not field
+            or not consumer_class
+            or not isinstance(inputs, dict)
+            or field not in inputs
+        ):
+            raise WorkflowArgumentsError(
+                f'Workflow parameter "{parameter_name}" has an invalid target'
+            )
+        return consumer_class
+
+    @staticmethod
+    def _direct_output_compatible(
+        consumer_class: str, metadata: dict[str, Any], parameter_type: str
+    ) -> bool:
+        return direct_output_compatible(
+            consumer_class,
+            parameter_type,
+            str(metadata.get("field", "")),
+            str(metadata.get("storage_type", "")),
+        )
+
     def _resolve_output(
         self,
         server_id: str,
@@ -314,26 +381,51 @@ class ExecutionService:
         parameter_type: str,
         owner_id: str,
     ) -> str:
-        match = re.fullmatch(
-            r"comfyui://outputs/([^/?#%]+)/([^/?#%]+)/([0-9]+)",
-            uri,
-            flags=re.ASCII,
+        legacy = parse_legacy_resource_uri(uri)
+        artifact_match = re.fullmatch(
+            r"comfyui://artifacts/(artifact_[0-9a-f]+)", uri, flags=re.ASCII
         )
-        if match is None:
+        if artifact_match is not None:
+            artifact_id = artifact_match.group(1)
+            try:
+                validate_control_plane_id("artifact", artifact_id)
+            except ValueError as exc:
+                raise AssetNotFound(f"Invalid output URI: {uri}") from exc
+            artifact = (
+                self._artifacts.get_artifact(artifact_id, owner_id)
+                if self._artifacts is not None
+                else None
+            )
+            if artifact is None:
+                raise AssetNotFound(f"Artifact not found: {artifact_id}")
+            if artifact.server_id != server_id:
+                raise AssetNotFound(f"Output does not belong to server: {server_id}")
+            output = {
+                "filename": artifact.filename,
+                "subfolder": artifact.subfolder,
+                "storage_type": artifact.storage_type,
+                "media_type": artifact.media_type,
+            }
+        elif legacy is not None and legacy.kind == "output" and legacy.index is not None:
+            if legacy.server_id != server_id:
+                raise AssetNotFound(f"Output does not belong to server: {server_id}")
+            artifact = (
+                self._artifacts.resolve_artifact_alias(uri, owner_id)
+                if self._artifacts is not None
+                else None
+            )
+            if artifact is None:
+                raise AssetNotFound(f"Output not found: {uri}")
+            if artifact.server_id != server_id:
+                raise AssetNotFound(f"Output does not belong to server: {server_id}")
+            output = {
+                "filename": artifact.filename,
+                "subfolder": artifact.subfolder,
+                "storage_type": artifact.storage_type,
+                "media_type": artifact.media_type,
+            }
+        else:
             raise AssetNotFound(f"Invalid output URI: {uri}")
-        output_server_id, prompt_id, raw_index = match.groups()
-        try:
-            validate_identifier(output_server_id, field="server_id")
-            validate_identifier(prompt_id, field="prompt_id")
-        except ValueError as exc:
-            raise AssetNotFound(f"Invalid output URI: {uri}") from exc
-        if output_server_id != server_id:
-            raise AssetNotFound(f"Output does not belong to server: {server_id}")
-        job = self._jobs.get(server_id, prompt_id, owner_id=owner_id)
-        index = int(raw_index)
-        if index >= len(job.outputs):
-            raise AssetNotFound(f"Output not found: {uri}")
-        output = job.outputs[index]
         expected_media = "image" if parameter_type == "mask" else parameter_type
         media_type = str(output.get("media_type", ""))
         if media_type != expected_media:
@@ -344,7 +436,7 @@ class ExecutionService:
     def _comfyui_output_ref(uri: str, output: dict[str, Any]) -> str:
         filename = str(output.get("filename", ""))
         subfolder = str(output.get("subfolder", ""))
-        storage_type = str(output.get("type", ""))
+        storage_type = str(output.get("storage_type", output.get("type", "")))
         if storage_type != "output":
             raise AssetNotFound(f"Output has an unsupported storage type: {uri}")
         if not ExecutionService._safe_server_path(filename, nested=False):

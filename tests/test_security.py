@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 import typer
-from concurrent.futures import ThreadPoolExecutor
 
 from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
 from comfyui_skills_cli.commands.config import config_import
 from comfyui_skills_cli.commands.run import _download_outputs
-
-
 from comfyui_skills_cli.history_writer import (
     claim_job,
     find_existing_run,
@@ -22,6 +20,7 @@ from comfyui_skills_cli.history_writer import (
     renew_job_claim,
     save_run_record,
 )
+
 
 def _ctx(base_dir: Path) -> typer.Context:
     ctx = MagicMock(spec=typer.Context)
@@ -106,7 +105,6 @@ def test_workflow_enabled_string_fails_closed(tmp_path: Path) -> None:
     workflows = FileWorkflowRepository(tmp_path).list()
     assert len(workflows) == 1
     assert workflows[0].enabled is False
-
 
 
 def test_output_download_rejects_path_traversal(tmp_path: Path) -> None:

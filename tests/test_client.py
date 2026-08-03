@@ -2,13 +2,32 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import requests
+
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
+
+
+def _streaming_response(
+    payload: bytes,
+    *,
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+) -> MagicMock:
+    response = MagicMock(status_code=status_code)
+    response.headers = {"Content-Length": str(len(payload))} if headers is None else headers
+    response.iter_content.side_effect = lambda chunk_size: [
+        payload[offset : offset + chunk_size] for offset in range(0, len(payload), chunk_size)
+    ]
+    return response
+
 
 # -- queue_prompt --
 
@@ -141,15 +160,8 @@ class UploadFileTests(unittest.TestCase):
 
     @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_upload_file_calls_upload_image_endpoint(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = MagicMock(status_code=200)
-        mock_post.return_value.json.return_value = {
-            "name": "test.png",
-            "subfolder": "",
-            "type": "input",
-        }
-
-        import os
-        import tempfile
+        payload = json.dumps({"name": "test.png", "subfolder": "", "type": "input"}).encode("utf-8")
+        mock_post.return_value = _streaming_response(payload)
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
             f.write(b"fake png data")
@@ -159,6 +171,10 @@ class UploadFileTests(unittest.TestCase):
             result = self.client.upload_file(tmp_path)
             self.assertEqual(result["name"], "test.png")
             self.assertIn("/upload/image", mock_post.call_args.args[0])
+            self.assertTrue(mock_post.call_args.kwargs["stream"])
+            self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
+            self.assertEqual(mock_post.call_args.kwargs["headers"]["Accept-Encoding"], "identity")
+            mock_post.return_value.close.assert_called_once()
         finally:
             os.unlink(tmp_path)
 
@@ -173,8 +189,7 @@ class UploadFileTests(unittest.TestCase):
     def test_upload_streams_chunks_and_sanitizes_crlf_filename(
         self, path_class: MagicMock, mock_post: MagicMock
     ) -> None:
-        mock_post.return_value = MagicMock(status_code=200)
-        mock_post.return_value.json.return_value = {"name": "safe.png"}
+        mock_post.return_value = _streaming_response(b'{"name":"safe.png"}')
         path = MagicMock()
         path.name = "cat.png\r\nX-Injected: yes"
         path.stat.return_value.st_size = 7
@@ -195,10 +210,7 @@ class UploadFileTests(unittest.TestCase):
 
     @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_upload_mask_has_well_formed_multipart_boundaries(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = MagicMock(status_code=200)
-        mock_post.return_value.json.return_value = {"name": "mask.png"}
-        import os
-        import tempfile
+        mock_post.return_value = _streaming_response(b'{"name":"mask.png"}')
 
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as file:
             file.write(b"mask")
@@ -213,6 +225,124 @@ class UploadFileTests(unittest.TestCase):
             assert b'name="original_ref"\r\n\r\nsource.png\r\n' in body
         finally:
             os.unlink(path)
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_redirect_is_rejected_without_reading_body(self, mock_post: MagicMock) -> None:
+        response = _streaming_response(
+            b"redirect body",
+            status_code=302,
+            headers={"Location": "http://internal.example/private"},
+        )
+        mock_post.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"payload")
+            with self.assertRaises(requests.HTTPError):
+                self.client.upload_file(str(path))
+
+        self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_mask_redirect_is_rejected(self, mock_post: MagicMock) -> None:
+        response = _streaming_response(
+            b"redirect body",
+            status_code=303,
+            headers={"Location": "http://internal.example/private"},
+        )
+        mock_post.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mask.png"
+            path.write_bytes(b"payload")
+            with self.assertRaises(requests.HTTPError):
+                self.client.upload_mask(str(path), original_ref="source.png")
+
+        self.assertIn("/upload/mask", mock_post.call_args.args[0])
+        self.assertFalse(mock_post.call_args.kwargs["allow_redirects"])
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_receipt_rejects_declared_and_chunked_oversize(
+        self, mock_post: MagicMock
+    ) -> None:
+        declared = _streaming_response(b"{}", headers={"Content-Length": str(64 * 1024 + 1)})
+        chunked = _streaming_response(b"x" * (64 * 1024 + 1), headers={})
+        mock_post.side_effect = [declared, chunked]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"payload")
+            for response in (declared, chunked):
+                with self.subTest(response=response):
+                    with self.assertRaisesRegex(ValueError, "too large"):
+                        self.client.upload_file(str(path))
+                    response.close.assert_called_once()
+
+        declared.iter_content.assert_not_called()
+        chunked.iter_content.assert_called_once_with(chunk_size=64 * 1024)
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_receipt_rejects_gzip_without_reading_body(self, mock_post: MagicMock) -> None:
+        response = _streaming_response(
+            b"compressed",
+            headers={"Content-Encoding": "gzip", "Content-Length": "10"},
+        )
+        mock_post.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"payload")
+            with self.assertRaisesRegex(ValueError, "Content-Encoding"):
+                self.client.upload_file(str(path))
+
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_receipt_bounds_content_length_and_json_numbers(
+        self, mock_post: MagicMock
+    ) -> None:
+        invalid_length = _streaming_response(b"{}", headers={"Content-Length": "9" * 129})
+        huge_number = _streaming_response(b'{"name":"image.png","number":' + b"9" * 129 + b"}")
+        mock_post.side_effect = [invalid_length, huge_number]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"payload")
+            with self.assertRaisesRegex(ValueError, "Content-Length"):
+                self.client.upload_file(str(path))
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                self.client.upload_file(str(path))
+
+        invalid_length.iter_content.assert_not_called()
+        invalid_length.close.assert_called_once()
+        huge_number.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_receipt_must_be_json_object(self, mock_post: MagicMock) -> None:
+        response = _streaming_response(b"[]")
+        mock_post.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"payload")
+            with self.assertRaisesRegex(ValueError, "invalid"):
+                self.client.upload_file(str(path))
+
+        response.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
+    def test_upload_receipt_stream_failure_closes_response(self, mock_post: MagicMock) -> None:
+        response = _streaming_response(b"{}", headers={})
+        response.iter_content.side_effect = requests.ConnectionError(
+            "https://secret.internal/receipt failed"
+        )
+        mock_post.return_value = response
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"payload")
+            with self.assertRaises(requests.ConnectionError):
+                self.client.upload_file(str(path))
+
+        response.close.assert_called_once()
 
 
 # -- object_info --
@@ -541,9 +671,36 @@ class DownloadOutputTests(unittest.TestCase):
         mock_get.return_value = response
         with tempfile.TemporaryDirectory() as directory:
             destination = Path(directory) / "output.bin"
-            size = self.client.download_output_to("output.bin", destination, max_bytes=6)
-            self.assertEqual(size, 6)
+            receipt = self.client.download_output_to("output.bin", destination, max_bytes=6)
+            self.assertEqual(
+                receipt,
+                {"size_bytes": 6, "sha256": hashlib.sha256(b"abcdef").hexdigest()},
+            )
             self.assertEqual(destination.read_bytes(), b"abcdef")
+        response.close.assert_called_once()
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+        self.assertTrue(mock_get.call_args.kwargs["stream"])
+        self.assertEqual(mock_get.call_args.kwargs["headers"]["Accept-Encoding"], "identity")
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_stream_failure_cleans_partial_file_and_preserves_destination(
+        self, mock_get: MagicMock
+    ) -> None:
+        response = MagicMock()
+        response.headers = {}
+        response.iter_content.return_value = [b"abcd", b"efgh"]
+        mock_get.return_value = response
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "output.bin"
+            destination.write_bytes(b"existing")
+
+            with self.assertRaisesRegex(ValueError, "byte limit"):
+                self.client.download_output_to("output.bin", destination, max_bytes=6)
+
+            self.assertEqual(destination.read_bytes(), b"existing")
+            self.assertEqual([path.name for path in Path(directory).iterdir()], ["output.bin"])
+        response.iter_content.assert_called_once_with(chunk_size=64 * 1024)
         response.close.assert_called_once()
 
     @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
@@ -555,6 +712,44 @@ class DownloadOutputTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "byte limit"):
             self.client.download_output("large.bin", max_bytes=4)
+        response.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_download_redirect_is_rejected_and_destination_is_unchanged(
+        self, mock_get: MagicMock
+    ) -> None:
+        response = MagicMock(status_code=307)
+        response.headers = {"Location": "http://internal.example/private"}
+        mock_get.return_value = response
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "output.bin"
+            destination.write_bytes(b"existing")
+            with self.assertRaises(requests.HTTPError):
+                self.client.download_output_to("output.bin", destination, max_bytes=1024)
+            self.assertEqual(destination.read_bytes(), b"existing")
+            self.assertEqual([path.name for path in Path(directory).iterdir()], ["output.bin"])
+
+        self.assertFalse(mock_get.call_args.kwargs["allow_redirects"])
+        response.iter_content.assert_not_called()
+        response.close.assert_called_once()
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_download_rejects_encoded_response_and_cleans_partial_state(
+        self, mock_get: MagicMock
+    ) -> None:
+        response = MagicMock(status_code=200)
+        response.headers = {"Content-Encoding": "gzip", "Content-Length": "10"}
+        mock_get.return_value = response
+
+        with tempfile.TemporaryDirectory() as directory:
+            destination = Path(directory) / "output.bin"
+            with self.assertRaisesRegex(ValueError, "Content-Encoding"):
+                self.client.download_output_to("output.bin", destination, max_bytes=1024)
+            self.assertFalse(destination.exists())
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+        response.iter_content.assert_not_called()
         response.close.assert_called_once()
 
 

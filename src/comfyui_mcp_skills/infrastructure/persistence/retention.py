@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -15,8 +16,21 @@ from comfyui_mcp_skills.infrastructure.persistence.migration_lock import (
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     create_repository_bundle,
 )
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
+    SQLiteAssetLibraryRepository,
+)
 
 _TERMINAL = {"completed", "error", "interrupted", "cancelled"}
+
+
+class SQLiteRetentionService:
+    """Apply due SQLite media lifecycle work without deleting logical identities."""
+
+    def __init__(self, repository: SQLiteAssetLibraryRepository) -> None:
+        self._repository = repository
+
+    def prune(self, *, now: datetime | None = None) -> dict[str, int]:
+        return self._repository.apply_retention(now=now or datetime.now(timezone.utc))
 
 
 class FileRetentionService:
@@ -58,13 +72,21 @@ class FileRetentionService:
         """Read cutover state and prune legacy files under the same migration lock."""
         with self._migration_lock:
             repositories = create_repository_bundle(self._base_dir)
-            return self._prune_locked(
+            file_result = self._prune_locked(
                 run_days=run_days,
                 asset_days=asset_days,
                 max_history_records=max_history_records,
                 preserve_runs=repositories.run_store == "sqlite",
                 preserve_assets=repositories.asset_store == "sqlite",
             )
+            if repositories.store is not None and (
+                repositories.run_store == "sqlite" or repositories.asset_store == "sqlite"
+            ):
+                sqlite_result = SQLiteRetentionService(
+                    SQLiteAssetLibraryRepository(repositories.store)
+                ).prune()
+                file_result["assets_deleted"] += sqlite_result["assets_tombstoned"]
+            return file_result
 
     def _prune_locked(
         self,

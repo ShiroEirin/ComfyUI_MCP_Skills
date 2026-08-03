@@ -9,7 +9,6 @@ from typer.testing import CliRunner
 
 from comfyui_skills_cli.main import app
 
-
 runner = CliRunner()
 
 
@@ -52,7 +51,6 @@ def test_server_add_never_returns_credentials(tmp_path: Path) -> None:
     assert "comfy_api_key" not in payload
 
 
-
 def test_server_add_rejects_noncanonical_identifier(tmp_path: Path) -> None:
     _project(tmp_path)
 
@@ -75,6 +73,7 @@ def test_server_add_rejects_noncanonical_identifier(tmp_path: Path) -> None:
     assert result.exit_code == 1
     assert json.loads(result.stderr)["error"]["code"] == "INVALID_ID"
     assert json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))["servers"] == []
+
 
 def test_config_export_excludes_credentials_by_default(tmp_path: Path) -> None:
     _project(tmp_path)

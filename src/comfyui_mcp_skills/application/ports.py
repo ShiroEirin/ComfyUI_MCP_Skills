@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Callable, Generator
-from typing import Any, Protocol
+from collections.abc import Callable, Generator, Mapping, Sequence
+from pathlib import Path
+from typing import Any, Protocol, TypedDict
 
-from comfyui_mcp_skills.domain.models import Asset, Job, Workflow
+from comfyui_mcp_skills.domain.models import Artifact, Asset, Job, Workflow
 
 
 class WorkflowRepository(Protocol):
@@ -72,6 +73,27 @@ class RunRepository(Protocol):
     ) -> builtins.list[dict[str, str]]: ...
 
 
+class ArtifactRepository(Protocol):
+    def record_artifacts(
+        self, job: Job, observations: Sequence[Mapping[str, Any]]
+    ) -> tuple[Artifact, ...]: ...
+    def terminalize(
+        self,
+        job: Job,
+        observations: Sequence[Mapping[str, Any]],
+        *,
+        failure_injector: Callable[[str], None] | None = None,
+    ) -> tuple[Artifact, ...]: ...
+    def get_artifact(self, artifact_id: str, owner_id: str) -> Artifact | None: ...
+    def resolve_artifact_alias(self, uri: str, owner_id: str) -> Artifact | None: ...
+    def list_artifacts_for_job(self, job_id: str, owner_id: str) -> tuple[Artifact, ...]: ...
+
+
+class DownloadReceipt(TypedDict):
+    size_bytes: int
+    sha256: str
+
+
 class AssetRepository(Protocol):
     def save(self, asset: Asset) -> None: ...
     def get(self, asset_id: str) -> Asset | None: ...
@@ -106,6 +128,15 @@ class ComfyUIGateway(Protocol):
         *,
         max_bytes: int,
     ) -> bytes: ...
+    def download_output_to(
+        self,
+        filename: str,
+        destination: str | Path,
+        subfolder: str = "",
+        storage_type: str = "output",
+        *,
+        max_bytes: int,
+    ) -> dict[str, int | str]: ...
     def ws_events(
         self,
         client_id: str,

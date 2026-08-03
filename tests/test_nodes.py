@@ -40,6 +40,7 @@ class FlattenNodesTests(unittest.TestCase):
 class WsAvailableTests(unittest.TestCase):
     def test_returns_bool(self) -> None:
         from comfyui_skills_cli.commands.run import _ws_available
+
         self.assertIsInstance(_ws_available(), bool)
 
 

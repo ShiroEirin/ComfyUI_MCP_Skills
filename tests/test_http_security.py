@@ -21,7 +21,7 @@ from comfyui_mcp_skills.adapters.http.server import (
     StaticTokenVerifier,
     create_http_app,
 )
-from comfyui_mcp_skills.domain.errors import UnsafePath
+from comfyui_mcp_skills.domain.errors import UnsafePath, UploadFailed
 from comfyui_mcp_skills.http_main import (
     _default_allowed_hosts,
     _validate_worker_limits,
@@ -150,10 +150,61 @@ def test_http_upload_and_fetch_are_bounded(tmp_path: Path) -> None:
         )
 
     assert uploaded.status_code == 201
-    assert uploaded.json()["resource_uri"].startswith("comfyui://assets/local/")
+    assert uploaded.json()["resource_uri"].startswith("comfyui://assets/asset_")
     assert fetched.status_code == 201
     assert limited.status_code == 429
     assert "x-request-id" in limited.headers
+
+
+def test_http_upload_error_hides_upstream_url_and_staging_path(tmp_path: Path) -> None:
+    _project(tmp_path)
+    upload_root = tmp_path / "uploads"
+    app = create_http_app(
+        tmp_path,
+        host="127.0.0.1",
+        allowed_hosts=["testserver"],
+        allowed_origins=["https://agent.example"],
+        tokens=_tokens(),
+        upload_root=upload_root,
+    )
+    staged_paths: list[Path] = []
+    gateway = MagicMock()
+
+    def fail_upload(path: str, *, purpose: str, original_ref: str) -> None:
+        del purpose, original_ref
+        staged_paths.append(Path(path))
+        raise UploadFailed(
+            "POST https://secret.internal/private failed for C:\\private\\staged.png"
+        )
+
+    gateway.upload_file.side_effect = fail_upload
+    with (
+        patch(
+            "comfyui_mcp_skills.adapters.http.uploads.create_gateway",
+            return_value=gateway,
+        ),
+        TestClient(app) as client,
+    ):
+        response = client.post(
+            "/assets?server_id=local&filename=cat.png",
+            content=b"\x89PNG\r\n\x1a\n",
+            headers={
+                "authorization": "Bearer secret",
+                "content-type": "image/png",
+                "origin": "https://agent.example",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "UPLOAD_FAILED"
+    assert response.json()["message"] == "ComfyUI upload failed"
+    assert "secret.internal" not in response.text
+    assert "private" not in response.text
+    assert str(tmp_path) not in response.text
+    assert len(staged_paths) == 1
+    assert str(staged_paths[0]) not in response.text
+    assert not staged_paths[0].exists()
+    assert list(upload_root.iterdir()) == []
 
 
 def test_https_downloader_connects_to_validated_ip(tmp_path: Path) -> None:

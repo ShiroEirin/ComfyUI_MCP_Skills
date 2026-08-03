@@ -82,7 +82,9 @@ class ErrorHintTests(unittest.TestCase):
 
     # -- General file --
     def test_file_not_found(self) -> None:
-        hint = match_error_hint("FileNotFoundError: [Errno 2] No such file or directory: 'input.png'")
+        hint = match_error_hint(
+            "FileNotFoundError: [Errno 2] No such file or directory: 'input.png'"
+        )
         self.assertIn("required file is missing", hint)
 
     # -- No match --

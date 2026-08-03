@@ -10,7 +10,6 @@ from comfyui_mcp_skills.domain.workflow_schema import (
     validate_arguments,
 )
 
-
 PARAMETERS = {
     "prompt": {"type": "string", "required": True, "description": "Prompt"},
     "steps": {"type": "int", "minimum": 1, "maximum": 100, "default": 20},
@@ -52,6 +51,4 @@ def test_validation_accepts_valid_arguments() -> None:
 
 def test_build_input_schema_rejects_invalid_json_schema_metadata() -> None:
     with pytest.raises(ValueError, match="Invalid JSON Schema"):
-        build_input_schema(
-            {"sampler": {"type": "string", "enum": "not-an-array"}}
-        )
+        build_input_schema({"sampler": {"type": "string", "enum": "not-an-array"}})

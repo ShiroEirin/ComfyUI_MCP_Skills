@@ -54,6 +54,34 @@ class AssetNotFound(ComfyUISkillsError):
     code = "ASSET_NOT_FOUND"
 
 
+class AssetLibraryInvalidRequest(ComfyUISkillsError):
+    code = "ASSET_LIBRARY_INVALID_REQUEST"
+
+
+class AssetLibraryConflict(ComfyUISkillsError):
+    code = "ASSET_LIBRARY_CONFLICT"
+
+
+class AssetMetadataUnavailable(ComfyUISkillsError):
+    code = "ASSET_METADATA_UNAVAILABLE"
+
+
+class AssetDeletePlanNotFound(ComfyUISkillsError):
+    code = "ASSET_DELETE_PLAN_NOT_FOUND"
+
+
+class ArtifactNotFound(ComfyUISkillsError):
+    code = "ARTIFACT_NOT_FOUND"
+
+
+class ArtifactTransferNotFound(ComfyUISkillsError):
+    code = "ARTIFACT_TRANSFER_NOT_FOUND"
+
+
+class ArtifactTransferConflict(ComfyUISkillsError):
+    code = "ARTIFACT_TRANSFER_CONFLICT"
+
+
 class UploadFailed(ComfyUISkillsError):
     code = "UPLOAD_FAILED"
     retryable = True

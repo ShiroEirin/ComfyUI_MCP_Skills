@@ -33,7 +33,6 @@ from comfyui_skills_cli.commands.workflow import (
     _is_widget_type,
 )
 
-
 # Schema for EmptyFlux2LatentImage as ComfyUI's /object_info reports it.
 EMPTY_FLUX2_NODE_INFO: dict[str, Any] = {
     "input_order": {"required": ["width", "height", "batch_size"]},
@@ -52,8 +51,16 @@ EMPTY_FLUX2_NODE_INFO: dict[str, Any] = {
 KSAMPLER_NODE_INFO: dict[str, Any] = {
     "input_order": {
         "required": [
-            "model", "seed", "steps", "cfg", "sampler_name",
-            "scheduler", "positive", "negative", "latent_image", "denoise",
+            "model",
+            "seed",
+            "steps",
+            "cfg",
+            "sampler_name",
+            "scheduler",
+            "positive",
+            "negative",
+            "latent_image",
+            "denoise",
         ]
     },
     "input": {
@@ -310,9 +317,7 @@ class EditorWorkflowValidationTests(unittest.TestCase):
             ],
             "links": [],
         }
-        object_info = {
-            "KnownNode": {"input": {"required": {}}, "input_order": {"required": []}}
-        }
+        object_info = {"KnownNode": {"input": {"required": {}}, "input_order": {"required": []}}}
 
         with self.assertRaisesRegex(ValueError, "MissingCustomNode"):
             _convert_editor_to_api(editor, object_info)

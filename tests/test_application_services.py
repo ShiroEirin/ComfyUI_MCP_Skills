@@ -199,7 +199,9 @@ def test_catalog_registry_execution_and_job_lifecycle(tmp_path: Path) -> None:
     cancelled = jobs.cancel("local", "prompt-1")
 
     assert completed.status == "completed"
-    assert completed.outputs[0]["resource_uri"].startswith("comfyui://outputs/local/prompt-1/")
+    assert completed.outputs[0]["resource_uri"] == "comfyui://outputs/local/prompt-1/0"
+    assert completed.outputs[0]["legacy_uri"] == completed.outputs[0]["resource_uri"]
+    assert completed.outputs[0]["canonical_uri"].startswith("comfyui://artifacts/artifact_")
     assert cancelled.status == "completed"
     assert gateway.interrupted == []
 
@@ -391,16 +393,20 @@ def test_job_outputs_include_video_key_and_media_metadata(tmp_path: Path) -> Non
 
     completed = service.get("local", "prompt-video-key")
 
-    assert completed.outputs == (
-        {
-            "filename": "render.webm",
-            "subfolder": "video",
-            "type": "output",
-            "media_type": "video",
-            "mime_type": "video/webm",
-            "resource_uri": "comfyui://outputs/local/prompt-video-key/0",
-        },
-    )
+    output = completed.outputs[0]
+    assert output["filename"] == "render.webm"
+    assert output["subfolder"] == "video"
+    assert output["type"] == "output"
+    assert output["storage_type"] == "output"
+    assert output["upstream_node_id"] == "10"
+    assert output["output_key"] == "video"
+    assert output["upstream_output_index"] == 0
+    assert output["legacy_index"] == 0
+    assert output["media_type"] == "video"
+    assert output["mime_type"] == "video/webm"
+    assert output["resource_uri"] == "comfyui://outputs/local/prompt-video-key/0"
+    assert output["legacy_uri"] == output["resource_uri"]
+    assert output["canonical_uri"].startswith("comfyui://artifacts/artifact_")
 
 
 def test_wait_zero_returns_handle_and_callback_errors_propagate(tmp_path: Path) -> None:

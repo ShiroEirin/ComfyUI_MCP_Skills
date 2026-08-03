@@ -9,17 +9,19 @@ import re
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
+from comfyui_mcp_skills.application.assets import MediaType, classify_media_type
 from comfyui_mcp_skills.application.pagination import (
     decode_keyset_cursor,
     encode_keyset_cursor,
 )
-from comfyui_mcp_skills.application.ports import ComfyUIGateway, RunRepository
+from comfyui_mcp_skills.application.ports import ArtifactRepository, ComfyUIGateway, RunRepository
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.control_plane import (
     canonical_resource_uri,
+    derive_legacy_artifact_id,
+    derive_legacy_job_id,
     validate_control_plane_id,
 )
 from comfyui_mcp_skills.domain.errors import (
@@ -29,13 +31,18 @@ from comfyui_mcp_skills.domain.errors import (
     WorkflowArgumentsError,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
+from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Job
 
 logger = logging.getLogger(__name__)
 
 _TERMINAL_STATUSES = {"completed", "error", "interrupted", "cancelled", "lost"}
-_VIDEO_EXTENSIONS = {".avi", ".gif", ".mkv", ".mov", ".mp4", ".webm"}
-_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".wav"}
+_OUTPUT_MEDIA: tuple[tuple[str, MediaType], ...] = (
+    ("images", "image"),
+    ("gifs", "video"),
+    ("audio", "audio"),
+    ("video", "video"),
+)
 _SAFE_ERROR_FIELD = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_ERROR_MESSAGES = 8
 _MAX_ERROR_LENGTH = 2048
@@ -62,10 +69,12 @@ class JobService:
         servers: ServerRegistry,
         runs: RunRepository,
         gateway_factory: Callable[[dict[str, Any]], ComfyUIGateway],
+        artifacts: ArtifactRepository | None = None,
     ) -> None:
         self._servers = servers
         self._runs = runs
         self._gateway_factory = gateway_factory
+        self._artifacts = artifacts
 
     def list(
         self,
@@ -203,9 +212,23 @@ class JobService:
                     owner_id=owner_id,
                 )
             elif status_info.get("completed", False) or history.get("outputs"):
-                outputs: tuple[dict[str, Any], ...] = tuple(
-                    self._outputs(server_id, prompt_id, history.get("outputs", {}))
+                job_id = (
+                    saved.job_id
+                    if saved and saved.job_id
+                    else derive_legacy_job_id(server_id, prompt_id)
                 )
+                outputs: tuple[dict[str, Any], ...] = tuple(
+                    self._outputs(server_id, prompt_id, job_id, history.get("outputs", {}))
+                )
+                if self._artifacts is None:
+                    outputs = tuple(
+                        {
+                            **output,
+                            "canonical_uri": output["resource_uri"],
+                            "resource_uri": output["legacy_uri"],
+                        }
+                        for output in outputs
+                    )
                 job = self._copy(
                     saved,
                     server_id,
@@ -216,7 +239,10 @@ class JobService:
                 )
             else:
                 job = self._copy(saved, server_id, prompt_id, "running", owner_id=owner_id)
-            self._runs.save(job)
+            if self._artifacts is not None and job.status == "completed":
+                self._artifacts.terminalize(job, job.outputs)
+            else:
+                self._runs.save(job)
             return job
         if deadline is None:
             queue = gateway.get_queue()
@@ -375,44 +401,69 @@ class JobService:
 
     @staticmethod
     def _outputs(
-        server_id: str, prompt_id: str, outputs: dict[str, Any]
+        server_id: str,
+        prompt_id: str,
+        job_id: str,
+        outputs: dict[str, Any],
     ) -> builtins.list[dict[str, Any]]:
         result: list[dict[str, Any]] = []
-        for node_output in outputs.values():
+        if not isinstance(outputs, dict):
+            return result
+        for raw_node_id, node_output in outputs.items():
             if not isinstance(node_output, dict):
                 continue
-            for key, fallback in (
-                ("images", "image"),
-                ("gifs", "video"),
-                ("audio", "audio"),
-                ("video", "video"),
-            ):
-                for item in node_output.get(key, []):
-                    filename = str(item.get("filename", ""))
-                    media_type = JobService._infer_media_type(filename, fallback)
-                    mime_type = mimetypes.guess_type(filename)[0]
+            try:
+                node_id = validate_identifier(str(raw_node_id), field="upstream_node_id")
+            except ValueError:
+                continue
+            for key, fallback in _OUTPUT_MEDIA:
+                items = node_output.get(key, [])
+                if not isinstance(items, list):
+                    continue
+                for output_index, item in enumerate(items):
+                    if not isinstance(item, dict):
+                        continue
+                    storage_type = str(item.get("type", "output"))
+                    if storage_type != "output":
+                        continue
+                    try:
+                        filename, subfolder = validate_media_locator(
+                            item.get("filename"), item.get("subfolder", "")
+                        )
+                    except ValueError:
+                        continue
+                    mime_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+                    media_type = classify_media_type(mime_type, fallback)
+                    artifact_id = derive_legacy_artifact_id(
+                        job_id,
+                        node_id,
+                        key,
+                        output_index,
+                        filename,
+                        subfolder,
+                        storage_type,
+                    )
+                    legacy_index = len(result)
                     result.append(
                         {
+                            "artifact_id": artifact_id,
+                            "upstream_node_id": node_id,
+                            "output_key": key,
+                            "upstream_output_index": output_index,
+                            "legacy_index": legacy_index,
                             "filename": filename,
-                            "subfolder": str(item.get("subfolder", "")),
-                            "type": str(item.get("type", "output")),
+                            "subfolder": subfolder,
+                            "type": storage_type,
+                            "storage_type": storage_type,
                             "media_type": media_type,
-                            "mime_type": mime_type or "application/octet-stream",
-                            "resource_uri": (
-                                f"comfyui://outputs/{server_id}/{prompt_id}/{len(result)}"
+                            "mime_type": mime_type,
+                            "resource_uri": canonical_resource_uri("artifact", artifact_id),
+                            "legacy_uri": (
+                                f"comfyui://outputs/{server_id}/{prompt_id}/{legacy_index}"
                             ),
                         }
                     )
         return result
-
-    @staticmethod
-    def _infer_media_type(filename: str, fallback: str) -> str:
-        extension = Path(filename).suffix.lower()
-        if extension in _VIDEO_EXTENSIONS:
-            return "video"
-        if extension in _AUDIO_EXTENSIONS:
-            return "audio"
-        return fallback
 
     @staticmethod
     def _format_errors(history: dict[str, Any]) -> str:

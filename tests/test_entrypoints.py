@@ -9,7 +9,8 @@ from comfyui_mcp_skills.__main__ import _configured_upload_roots
 
 
 def test_stdio_upload_root_defaults_to_dedicated_directory(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     monkeypatch.delenv("COMFYUI_MCP_UPLOAD_ROOTS", raising=False)
 
@@ -17,12 +18,11 @@ def test_stdio_upload_root_defaults_to_dedicated_directory(
 
 
 def test_stdio_upload_roots_support_explicit_multiple_roots(
-    tmp_path: Path, monkeypatch,
+    tmp_path: Path,
+    monkeypatch,
 ) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
-    monkeypatch.setenv(
-        "COMFYUI_MCP_UPLOAD_ROOTS", os.pathsep.join((str(first), str(second)))
-    )
+    monkeypatch.setenv("COMFYUI_MCP_UPLOAD_ROOTS", os.pathsep.join((str(first), str(second))))
 
     assert _configured_upload_roots(tmp_path) == [first.resolve(), second.resolve()]

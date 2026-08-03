@@ -42,11 +42,13 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     optional_boolean,
     optional_string,
     phase_h_tools,
+    phase_l_tools,
     required_string,
     tool_result,
     validate_fixed_arguments,
     workflow_tool_names,
 )
+from comfyui_mcp_skills.application.asset_library import AssetLibraryService
 from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.authorization import (
     AuthorizationContext,
@@ -99,6 +101,9 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
 from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
     SQLiteLegacyResourceAliasReader,
 )
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
+    SQLiteAssetLibraryRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
     SQLiteWorkflowChangeRepository,
 )
@@ -109,6 +114,20 @@ G3_AUTHORING_TOOLS = frozenset(
         "comfyui.revision.diff",
         "comfyui.workflow.describe",
         "comfyui.workflow.dependencies.check",
+    }
+)
+PHASE_L_TOOL_NAMES = frozenset(
+    {
+        "comfyui.asset.list",
+        "comfyui.asset.describe",
+        "comfyui.asset.collection.update",
+        "comfyui.asset.metadata.extract",
+        "comfyui.asset.import_output",
+        "comfyui.asset.delete.plan",
+        "comfyui.asset.delete.commit",
+        "comfyui.asset.transfer.plan",
+        "comfyui.asset.transfer.commit",
+        "comfyui.asset.transfer.get",
     }
 )
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
@@ -136,6 +155,26 @@ def create_server(
     )
     run_repository = repositories.runs
     asset_repository = repositories.assets
+    asset_library_repository = (
+        (
+            asset_repository
+            if isinstance(asset_repository, SQLiteAssetLibraryRepository)
+            else SQLiteAssetLibraryRepository(repositories.store)
+        )
+        if (repositories.store is not None and repositories.run_store == "sqlite")
+        else None
+    )
+    asset_library = (
+        AssetLibraryService(
+            asset_library_repository,
+            servers,
+            gateway_factory,
+            max_bytes=max_upload_bytes,
+            staging_root=base_dir / "data" / "asset-staging",
+        )
+        if asset_library_repository is not None and repositories.asset_store == "sqlite"
+        else None
+    )
     assets = AssetService(
         asset_repository,
         upload_roots=upload_roots if upload_roots is not None else [base_dir / "uploads"],
@@ -155,8 +194,9 @@ def create_server(
         asset_repository,
         gateway_factory,
         planning=planning,
+        artifacts=asset_library_repository,
     )
-    jobs = JobService(servers, run_repository, gateway_factory)
+    jobs = JobService(servers, run_repository, gateway_factory, artifacts=asset_library_repository)
     discovery = DiscoveryService(servers, gateway_factory)
     observation = ObservationService(servers, gateway_factory)
     workflow_graphs = WorkflowGraphService(
@@ -177,11 +217,16 @@ def create_server(
         if repositories.store is not None and repositories.workflow_store == "sqlite"
         else None
     )
-    fixed_surface = [*fixed_tools(), *phase_h_tools()]
+    fixed_surface = [
+        *fixed_tools(),
+        *phase_h_tools(),
+        *(phase_l_tools() if asset_library is not None else []),
+    ]
     capability_catalog = CapabilityCatalog(
         spec
         for spec in CAPABILITY_SPECS
-        if repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS
+        if (repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS)
+        and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
     )
     tool_inventory = ToolInventory(
         (
@@ -289,6 +334,8 @@ def create_server(
         resource_aliases=resource_aliases,
         require_authorization=enforce_authorization,
         workflow_inspection=workflow_inspection,
+        asset_library=asset_library,
+        asset_library_repository=asset_library_repository,
     )
     prompt_handlers = create_prompt_handlers(authorization, require_authorization=True)
 
@@ -460,6 +507,120 @@ def create_server(
                     raise PermissionError("capability is unavailable")
                 result["input_schema"] = described_tool.input_schema
                 result["output_schema"] = described_tool.output_schema
+                return tool_result(result)
+            if params.name in PHASE_L_TOOL_NAMES:
+                if asset_library is None:
+                    raise ValueError("Asset library is unavailable")
+                if params.name == "comfyui.asset.list":
+                    validate_fixed_arguments(
+                        arguments, {"limit", "cursor", "media_type", "collection"}
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.list_assets(
+                            owner_id=owner_id,
+                            limit=bounded_integer(arguments, "limit", 20, minimum=1, maximum=100),
+                            cursor=optional_string(arguments, "cursor", "", max_length=2048),
+                            media_type=optional_string(arguments, "media_type", "", max_length=16),
+                            collection=optional_string(arguments, "collection", "", max_length=128),
+                        )
+                    )
+                elif params.name == "comfyui.asset.describe":
+                    validate_fixed_arguments(arguments, {"asset_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.describe(
+                            required_string(arguments, "asset_id", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.collection.update":
+                    validate_fixed_arguments(arguments, {"collection", "asset_ids", "action"})
+                    asset_ids = arguments.get("asset_ids")
+                    if (
+                        not isinstance(asset_ids, list)
+                        or not asset_ids
+                        or len(asset_ids) > 100
+                        or any(
+                            not isinstance(item, str) or not item or len(item) > 128
+                            for item in asset_ids
+                        )
+                    ):
+                        raise TypeError("asset_ids must be a non-empty list of strings")
+                    action = required_string(arguments, "action", max_length=16)
+                    if action not in {"add", "remove"}:
+                        raise ValueError("action must be add or remove")
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.collection_update(
+                            required_string(arguments, "collection", max_length=128),
+                            asset_ids,
+                            action,
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.metadata.extract":
+                    validate_fixed_arguments(arguments, {"asset_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.metadata_extract(
+                            required_string(arguments, "asset_id", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.import_output":
+                    validate_fixed_arguments(
+                        arguments,
+                        {"artifact_id", "target_server_id", "workflow_id", "parameter_name"},
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.import_output(
+                            required_string(arguments, "artifact_id", max_length=128),
+                            required_string(arguments, "target_server_id", max_length=128),
+                            required_string(arguments, "workflow_id", max_length=128),
+                            required_string(arguments, "parameter_name", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.delete.plan":
+                    validate_fixed_arguments(arguments, {"asset_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.delete_plan(
+                            required_string(arguments, "asset_id", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.delete.commit":
+                    validate_fixed_arguments(arguments, {"plan_id", "plan_digest"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.delete_commit(
+                            required_string(arguments, "plan_id", max_length=128),
+                            required_string(arguments, "plan_digest", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.transfer.plan":
+                    validate_fixed_arguments(arguments, {"artifact_id", "target_server_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.transfer_plan(
+                            required_string(arguments, "artifact_id", max_length=128),
+                            required_string(arguments, "target_server_id", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                elif params.name == "comfyui.asset.transfer.commit":
+                    validate_fixed_arguments(arguments, {"transfer_id", "plan_digest"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.transfer_commit(
+                            required_string(arguments, "transfer_id", max_length=128),
+                            required_string(arguments, "plan_digest", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
+                else:
+                    validate_fixed_arguments(arguments, {"transfer_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: asset_library.transfer_get(
+                            required_string(arguments, "transfer_id", max_length=128),
+                            owner_id=owner_id,
+                        )
+                    )
                 return tool_result(result)
             if params.name == "comfyui.revision.list":
                 validate_fixed_arguments(arguments, {"workflow_id"})
@@ -687,7 +848,7 @@ def create_server(
             else:
                 error = {
                     "code": "INVALID_ARGUMENTS",
-                    "message": str(exc),
+                    "message": "Invalid tool arguments",
                     "retryable": False,
                     "details": {},
                 }

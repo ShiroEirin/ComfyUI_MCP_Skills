@@ -27,6 +27,7 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills.adapters.mcp.tooling import current_owner, current_scopes, job_dict
+from comfyui_mcp_skills.application.asset_library import AssetLibraryService
 from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.authorization import is_authorized, scopes_for_resource
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
@@ -35,9 +36,13 @@ from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.resource_aliases import ResourceAliasReader, ResourceTarget
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.application.workflow_inspection import WorkflowInspectionService
-from comfyui_mcp_skills.domain.control_plane import parse_legacy_resource_uri
+from comfyui_mcp_skills.domain.control_plane import (
+    parse_legacy_resource_uri,
+    validate_control_plane_id,
+)
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
+    ComfyUISkillsError,
     JobNotFound,
     ServerNotFound,
     WorkflowNotFound,
@@ -46,6 +51,9 @@ from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
+    SQLiteAssetLibraryRepository,
+)
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 EnabledWorkflows = Callable[[], list[Workflow]]
@@ -83,6 +91,8 @@ def create_resource_handlers(
     resource_aliases: ResourceAliasReader | None = None,
     require_authorization: bool = False,
     workflow_inspection: WorkflowInspectionService | None = None,
+    asset_library: AssetLibraryService | None = None,
+    asset_library_repository: SQLiteAssetLibraryRepository | None = None,
 ) -> ResourceHandlers:
     async def list_templates(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -192,6 +202,20 @@ def create_resource_handlers(
                     name="Canonical generated artifact",
                 ),
             ),
+            *(
+                [
+                    (
+                        "lineage",
+                        ResourceTemplate(
+                            uri_template="comfyui://lineage/{artifact_id}",
+                            name="Canonical Artifact lineage",
+                            mime_type="application/json",
+                        ),
+                    )
+                ]
+                if asset_library_repository is not None
+                else []
+            ),
         ]
         return ListResourceTemplatesResult(
             resource_templates=[
@@ -218,6 +242,43 @@ def create_resource_handlers(
             )
             for workflow in enabled_workflows()
         ]
+        if asset_library is not None and _resource_scope_allowed(
+            "asset", required=require_authorization
+        ):
+            owner_id = current_owner()
+            asset_page = await anyio.to_thread.run_sync(
+                lambda: asset_library.list_assets(owner_id=owner_id, limit=100)
+            )
+            for item in asset_page.get("items", []):
+                if not isinstance(item, dict):
+                    continue
+                uri = item.get("resource_uri")
+                asset_id = item.get("asset_id")
+                if not isinstance(uri, str) or not isinstance(asset_id, str):
+                    continue
+                resources.append(
+                    Resource(
+                        uri=uri,
+                        name=asset_id,
+                        title=f"Asset {asset_id}",
+                        description="Owner-visible input asset",
+                        mime_type=str(item.get("mime_type", "application/octet-stream")),
+                    )
+                )
+            if asset_library_repository is not None:
+                artifacts = await anyio.to_thread.run_sync(
+                    lambda: asset_library_repository.list_artifacts(owner_id, limit=100)
+                )
+                for artifact in artifacts:
+                    resources.append(
+                        Resource(
+                            uri=artifact.resource_uri,
+                            name=artifact.artifact_id,
+                            title=f"Artifact {artifact.artifact_id}",
+                            description="Owner-visible generated Artifact",
+                            mime_type=artifact.mime_type or "application/octet-stream",
+                        )
+                    )
         return ListResourcesResult(resources=resources, ttl_ms=5_000, cache_scope="private")
 
     async def read_resource(
@@ -236,6 +297,8 @@ def create_resource_handlers(
                 resource_aliases=resource_aliases,
                 require_authorization=require_authorization,
                 workflow_inspection=workflow_inspection,
+                asset_library=asset_library,
+                asset_library_repository=asset_library_repository,
             )
         except MCPError:
             raise
@@ -245,12 +308,12 @@ def create_resource_handlers(
             ServerNotFound,
             WorkflowNotFound,
             ValueError,
+            ComfyUISkillsError,
             LookupError,
         ) as exc:
             raise MCPError(
                 code=INVALID_PARAMS,
                 message="Resource not found",
-                data={"uri": str(params.uri)},
             ) from exc
 
     return ResourceHandlers(list_templates, list_resources, read_resource)
@@ -260,6 +323,8 @@ async def _read_resource(
     _ctx: ServerRequestContext[dict[str, object]],
     params: ReadResourceRequestParams,
     *,
+    asset_library: AssetLibraryService | None = None,
+    asset_library_repository: SQLiteAssetLibraryRepository | None = None,
     catalog: WorkflowCatalog,
     servers: ServerRegistry,
     assets: AssetService,
@@ -270,6 +335,21 @@ async def _read_resource(
     workflow_inspection: WorkflowInspectionService | None = None,
 ) -> ReadResourceResult:
     uri = str(params.uri)
+    parsed = urlsplit(uri)
+    if parsed.scheme == "comfyui" and parsed.netloc == "lineage":
+        _require_resource_scope("lineage", required=require_authorization)
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 1 or parsed.query or parsed.fragment:
+            raise ValueError("Invalid lineage URI")
+        artifact_id = validate_identifier(parts[0], field="artifact_id")
+        if asset_library_repository is None:
+            raise ValueError("Artifact lineage is unavailable")
+        lineage = await anyio.to_thread.run_sync(
+            lambda: asset_library_repository.artifact_lineage(artifact_id, current_owner())
+        )
+        if lineage is None:
+            raise ValueError("Resource not found")
+        return _json_resource(uri, lineage)
     semantic_ref = _semantic_workflow_ref(uri)
     if semantic_ref is not None:
         _require_resource_scope("workflow", required=require_authorization)
@@ -324,6 +404,13 @@ async def _read_resource(
             gateway_factory=gateway_factory,
             owner_id=owner_id,
         )
+    elif resource_aliases is None and parsed.scheme == "comfyui" and parsed.netloc == "assets":
+        parts = [part for part in parsed.path.split("/") if part]
+        if len(parts) != 1 or parsed.query or parsed.fragment:
+            raise ValueError("Invalid Asset URI")
+        _require_resource_scope("asset", required=require_authorization)
+        asset_id = validate_control_plane_id("asset", parts[0])
+        document = assets.get(asset_id, owner_id=owner_id).to_public_dict()
     elif legacy is not None and legacy.kind == "asset":
         servers.connection(legacy.server_id)
         asset = assets.get(legacy.upstream_id, owner_id=owner_id)
@@ -508,7 +595,7 @@ async def _download_output(
             )
         )
     except ValueError as exc:
-        raise MCPError(code=INVALID_PARAMS, message=str(exc)) from exc
+        raise MCPError(code=INVALID_PARAMS, message="Output resource unavailable") from exc
     return ReadResourceResult(
         contents=[
             BlobResourceContents(

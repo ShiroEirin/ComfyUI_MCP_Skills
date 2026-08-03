@@ -339,14 +339,18 @@ def test_g1_cutover_retries_same_evidence_but_rejects_database_tampering(
     assert second.outcome == "already_switched"
 
     with sqlite3.connect(store.path) as connection:
+        trigger_sql = connection.execute(
+            "SELECT sql FROM sqlite_schema WHERE type='trigger' "
+            "AND name='tr_assets_identity_update'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER tr_assets_identity_update")
         connection.execute("UPDATE assets SET name = 'tampered.png'")
+        connection.execute(trigger_sql)
     with pytest.raises(RehearsalFailure, match="projection"):
         rehearsal.cutover_g1(plan, store)
 
 
-def test_g1_retry_rejects_extra_related_alias(
-    tmp_path: Path, private_evidence_dir: Path
-) -> None:
+def test_g1_retry_rejects_extra_related_alias(tmp_path: Path, private_evidence_dir: Path) -> None:
     source = tmp_path / "source"
     record = _asset()
     asset_id = str(record["asset_id"])

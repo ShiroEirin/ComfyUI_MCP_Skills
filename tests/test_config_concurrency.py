@@ -24,7 +24,5 @@ def test_save_config_serializes_concurrent_atomic_writes(tmp_path: Path) -> None
             future.result()
 
     saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-    assert saved in [
-        {"writer": index, "payload": "x" * 4096} for index in range(workers)
-    ]
+    assert saved in [{"writer": index, "payload": "x" * 4096} for index in range(workers)]
     assert not (tmp_path / "config.tmp").exists()

@@ -1,4 +1,5 @@
 """SQLite schema and transaction boundary for the agent-native control plane."""
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -1021,6 +1022,362 @@ _PHASE_J_WORKFLOW_CHANGE_UP = (
     """,
 )
 
+_PHASE_L_ASSET_LIBRARY_UP = (
+    "ALTER TABLE assets ADD COLUMN deleted_at TEXT",
+    "CREATE UNIQUE INDEX uq_assets_owner_asset ON assets(owner_id, asset_id)",
+    "CREATE UNIQUE INDEX uq_artifacts_artifact_job ON artifacts(artifact_id, job_id)",
+    "CREATE UNIQUE INDEX uq_execution_plans_plan_revision_deployment ON execution_plans(plan_id, revision_id, deployment_id)",
+    "CREATE INDEX ix_assets_owner_active_created ON assets(owner_id, created_at DESC, asset_id DESC) WHERE deleted_at IS NULL",
+    "CREATE INDEX ix_assets_owner_media_created ON assets(owner_id, media_type, created_at DESC, asset_id DESC) WHERE deleted_at IS NULL",
+    "CREATE INDEX ix_artifacts_job_created ON artifacts(job_id, created_at DESC, artifact_id DESC)",
+    """
+    CREATE TABLE asset_collections (
+        owner_id TEXT NOT NULL,
+        collection TEXT NOT NULL CHECK(length(collection) BETWEEN 1 AND 128),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY(owner_id, collection)
+    )
+    """,
+    """
+    CREATE TABLE asset_collection_members (
+        owner_id TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        asset_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(owner_id, collection, asset_id),
+        FOREIGN KEY(owner_id, collection)
+            REFERENCES asset_collections(owner_id, collection) ON DELETE CASCADE,
+        FOREIGN KEY(owner_id, asset_id)
+            REFERENCES assets(owner_id, asset_id) ON DELETE RESTRICT
+    )
+    """,
+    "CREATE INDEX ix_asset_collection_members_asset ON asset_collection_members(owner_id,asset_id,collection)",
+    """
+    CREATE TABLE execution_plan_owners (
+        plan_id TEXT NOT NULL PRIMARY KEY, owner_id TEXT NOT NULL,
+        revision_id TEXT NOT NULL, deployment_id TEXT NOT NULL, created_at TEXT NOT NULL,
+        UNIQUE(plan_id, owner_id, revision_id, deployment_id),
+        FOREIGN KEY(plan_id, revision_id, deployment_id)
+            REFERENCES execution_plans(plan_id, revision_id, deployment_id) ON DELETE RESTRICT,
+        CHECK(typeof(owner_id) = 'text' AND length(owner_id) > 0)
+    )
+    """,
+    """INSERT INTO execution_plan_owners
+       SELECT plans.plan_id,MIN(jobs.owner_id),plans.revision_id,plans.deployment_id,
+              plans.created_at
+       FROM execution_plans AS plans JOIN jobs ON jobs.plan_id=plans.plan_id
+       GROUP BY plans.plan_id,plans.revision_id,plans.deployment_id,plans.created_at
+       HAVING count(DISTINCT jobs.owner_id)=1 AND min(length(jobs.owner_id))>0""",
+    """
+    CREATE TRIGGER tr_jobs_phase_l_plan_owner_insert AFTER INSERT ON jobs WHEN NEW.plan_id IS NOT NULL
+    BEGIN
+        INSERT INTO execution_plan_owners VALUES(NEW.plan_id,NEW.owner_id,NEW.revision_id,NEW.deployment_id,NEW.created_at)
+        ON CONFLICT(plan_id) DO NOTHING;
+        SELECT CASE WHEN NOT EXISTS (SELECT 1 FROM execution_plan_owners
+            WHERE plan_id=NEW.plan_id AND owner_id=NEW.owner_id AND revision_id=NEW.revision_id
+              AND deployment_id=NEW.deployment_id)
+            THEN RAISE(ABORT, 'execution plan owner mismatch') END;
+    END
+    """,
+    "CREATE TRIGGER tr_execution_plan_owners_immutable_update BEFORE UPDATE ON execution_plan_owners BEGIN SELECT RAISE(ABORT, 'execution plan owner is immutable'); END",
+    "CREATE TRIGGER tr_execution_plan_owners_immutable_delete BEFORE DELETE ON execution_plan_owners BEGIN SELECT RAISE(ABORT, 'execution plan owner is immutable'); END",
+    f"""
+    CREATE TABLE execution_plan_inputs (
+        plan_id TEXT NOT NULL, owner_id TEXT NOT NULL, revision_id TEXT NOT NULL,
+        deployment_id TEXT NOT NULL,
+        parameter_name TEXT NOT NULL CHECK({_safe_identifier_check("parameter_name")}),
+        consumer_node_id TEXT NOT NULL CHECK({_safe_identifier_check("consumer_node_id")}),
+        consumer_input_name TEXT NOT NULL CHECK({_safe_identifier_check("consumer_input_name")}),
+        consumer_class TEXT NOT NULL CHECK({_safe_identifier_check("consumer_class")}),
+        source_kind TEXT NOT NULL CHECK(source_kind IN ('asset','artifact')),
+        asset_id TEXT, artifact_id TEXT, source_job_id TEXT,
+        reuse_strategy TEXT NOT NULL CHECK(reuse_strategy IN ('direct','copy','upload')),
+        source_digest TEXT NOT NULL CHECK({_sha256_check("source_digest")}), created_at TEXT NOT NULL,
+        PRIMARY KEY(plan_id,parameter_name),
+        FOREIGN KEY(plan_id,owner_id,revision_id,deployment_id)
+            REFERENCES execution_plan_owners(plan_id,owner_id,revision_id,deployment_id) ON DELETE RESTRICT,
+        FOREIGN KEY(owner_id,asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT,
+        FOREIGN KEY(artifact_id,source_job_id) REFERENCES artifacts(artifact_id,job_id) ON DELETE RESTRICT,
+        FOREIGN KEY(source_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        CHECK((source_kind='asset' AND asset_id IS NOT NULL AND artifact_id IS NULL AND source_job_id IS NULL) OR
+              (source_kind='artifact' AND asset_id IS NULL AND artifact_id IS NOT NULL AND source_job_id IS NOT NULL))
+    )
+    """,
+    "CREATE INDEX ix_execution_plan_inputs_owner_asset ON execution_plan_inputs(owner_id,asset_id,plan_id,parameter_name) WHERE asset_id IS NOT NULL",
+    "CREATE INDEX ix_execution_plan_inputs_owner_artifact ON execution_plan_inputs(owner_id,artifact_id,plan_id,parameter_name) WHERE artifact_id IS NOT NULL",
+    "CREATE INDEX ix_execution_plan_inputs_owner_plan ON execution_plan_inputs(owner_id,plan_id,parameter_name)",
+    "CREATE TRIGGER tr_execution_plan_inputs_immutable_update BEFORE UPDATE ON execution_plan_inputs BEGIN SELECT RAISE(ABORT, 'execution plan input is immutable'); END",
+    "CREATE TRIGGER tr_execution_plan_inputs_immutable_delete BEFORE DELETE ON execution_plan_inputs BEGIN SELECT RAISE(ABORT, 'execution plan input is immutable'); END",
+    """
+    CREATE TABLE phase_l_backfill_state (
+        backfill_name TEXT NOT NULL PRIMARY KEY CHECK(backfill_name IN ('artifact_outputs','execution_plan_inputs')),
+        status TEXT NOT NULL CHECK(status IN ('pending','running','complete','failed')),
+        incomplete_count INTEGER NOT NULL CHECK(typeof(incomplete_count)='integer' AND incomplete_count>=0),
+        detected_at TEXT NOT NULL, completed_at TEXT, failure_code TEXT,
+        CHECK((status='complete' AND incomplete_count=0 AND completed_at IS NOT NULL AND failure_code IS NULL) OR
+              (status='failed' AND incomplete_count>0 AND completed_at IS NULL AND failure_code IS NOT NULL) OR
+              (status IN ('pending','running') AND incomplete_count>0 AND completed_at IS NULL AND failure_code IS NULL))
+    )
+    """,
+    """
+    INSERT INTO phase_l_backfill_state
+    SELECT 'artifact_outputs',CASE WHEN count(*)=0 THEN 'complete' ELSE 'pending' END,count(*),
+           strftime('%Y-%m-%dT%H:%M:%fZ','now'),CASE WHEN count(*)=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') END,NULL
+    FROM jobs WHERE trim(outputs_json) NOT IN ('','[]','{}','null')
+    """,
+    """
+    INSERT INTO phase_l_backfill_state
+    SELECT 'execution_plan_inputs',CASE WHEN count(*)=0 THEN 'complete' ELSE 'pending' END,count(*),
+           strftime('%Y-%m-%dT%H:%M:%fZ','now'),CASE WHEN count(*)=0 THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') END,NULL
+    FROM execution_plans
+    """,
+    f"""
+    CREATE TABLE job_artifact_collections (
+        job_id TEXT NOT NULL PRIMARY KEY REFERENCES jobs(job_id) ON DELETE RESTRICT,
+        status TEXT NOT NULL CHECK(status IN ('needs_backfill','complete','failed')),
+        artifact_count INTEGER NOT NULL CHECK(typeof(artifact_count)='integer' AND artifact_count>=0),
+        output_snapshot_digest TEXT CHECK(output_snapshot_digest IS NULL OR {_sha256_check("output_snapshot_digest")}),
+        error_code TEXT, updated_at TEXT NOT NULL,
+        CHECK((status='complete' AND error_code IS NULL) OR (status='failed' AND error_code IS NOT NULL) OR
+              (status='needs_backfill' AND error_code IS NULL))
+    )
+    """,
+    """
+    INSERT INTO job_artifact_collections
+    SELECT job_id,CASE WHEN trim(outputs_json) IN ('','[]','{}','null') THEN 'complete' ELSE 'needs_backfill' END,
+           (SELECT count(*) FROM artifacts WHERE artifacts.job_id=jobs.job_id),NULL,NULL,
+           strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM jobs
+    """,
+    """
+    CREATE TRIGGER tr_jobs_phase_l_collection_insert AFTER INSERT ON jobs
+    BEGIN
+        INSERT INTO job_artifact_collections VALUES(
+            NEW.job_id,CASE WHEN trim(NEW.outputs_json) IN ('','[]','{}','null') THEN 'complete' ELSE 'needs_backfill' END,
+            0,NULL,NULL,NEW.created_at);
+    END
+    """,
+    f"""
+    CREATE TABLE artifact_completeness (
+        artifact_id TEXT NOT NULL PRIMARY KEY REFERENCES artifacts(artifact_id) ON DELETE RESTRICT,
+        completeness TEXT NOT NULL CHECK(completeness IN ('locator_only','verified')),
+        mime_type TEXT, size_bytes INTEGER, sha256 TEXT, legacy_index INTEGER, observed_at TEXT NOT NULL,
+        CHECK(mime_type IS NULL OR (typeof(mime_type)='text' AND length(mime_type)>0)),
+        CHECK(size_bytes IS NULL OR (typeof(size_bytes)='integer' AND size_bytes>=0)),
+        CHECK(sha256 IS NULL OR {_sha256_check("sha256")}),
+        CHECK(legacy_index IS NULL OR (typeof(legacy_index)='integer' AND legacy_index BETWEEN 0 AND 2147483647)),
+        CHECK((completeness='locator_only' AND size_bytes IS NULL AND sha256 IS NULL) OR
+              (completeness='verified' AND size_bytes IS NOT NULL AND sha256 IS NOT NULL))
+    )
+    """,
+    f"""
+    CREATE TABLE media_locations (
+        location_id TEXT NOT NULL PRIMARY KEY CHECK(
+            typeof(location_id)='text' AND length(location_id) BETWEEN 1 AND 256 AND
+            instr(location_id,'/')=0 AND instr(location_id,char(92))=0 AND
+            instr(location_id,char(0))=0
+        ),
+        owner_id TEXT NOT NULL, asset_id TEXT, artifact_id TEXT, source_job_id TEXT,
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        filename TEXT NOT NULL CHECK(length(filename)>0), subfolder TEXT NOT NULL,
+        storage_type TEXT NOT NULL CHECK(storage_type IN ('input','output')),
+        state TEXT NOT NULL CHECK(state IN ('available','archived','deleted')),
+        size_bytes INTEGER, sha256 TEXT, mime_type TEXT NOT NULL CHECK(length(mime_type)>0),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL, archived_at TEXT, deleted_at TEXT,
+        FOREIGN KEY(owner_id,asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT,
+        FOREIGN KEY(artifact_id,source_job_id) REFERENCES artifacts(artifact_id,job_id) ON DELETE RESTRICT,
+        FOREIGN KEY(source_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        CHECK(size_bytes IS NULL OR (typeof(size_bytes)='integer' AND size_bytes>=0)),
+        CHECK(sha256 IS NULL OR {_sha256_check("sha256")}),
+        CHECK((asset_id IS NOT NULL AND artifact_id IS NULL AND source_job_id IS NULL) OR
+              (asset_id IS NULL AND artifact_id IS NOT NULL AND source_job_id IS NOT NULL)),
+        CHECK((state='available' AND archived_at IS NULL AND deleted_at IS NULL) OR
+              (state='archived' AND archived_at IS NOT NULL AND deleted_at IS NULL) OR
+              (state='deleted' AND deleted_at IS NOT NULL))
+    )
+    """,
+    "CREATE INDEX ix_media_locations_owner_asset ON media_locations(owner_id,asset_id,state,location_id) WHERE asset_id IS NOT NULL",
+    "CREATE INDEX ix_media_locations_owner_artifact ON media_locations(owner_id,artifact_id,state,location_id) WHERE artifact_id IS NOT NULL",
+    "CREATE INDEX ix_media_locations_available_server ON media_locations(owner_id,server_id,storage_type,location_id) WHERE state='available'",
+    "CREATE INDEX ix_media_locations_archive_cleanup ON media_locations(state,updated_at,location_id)",
+    """
+    INSERT INTO media_locations
+    SELECT 'asset:'||asset_id,owner_id,asset_id,NULL,NULL,server_id,name,subfolder,'input','available',
+           size_bytes,sha256,mime_type,created_at,created_at,NULL,NULL FROM assets
+    """,
+    """
+    INSERT INTO media_locations
+    SELECT 'artifact:'||artifacts.artifact_id,jobs.owner_id,NULL,artifacts.artifact_id,artifacts.job_id,
+           artifacts.server_id,artifacts.filename,artifacts.subfolder,artifacts.storage_type,'available',
+           NULL,NULL,artifacts.mime_type,artifacts.created_at,artifacts.created_at,NULL,NULL
+    FROM artifacts JOIN jobs ON jobs.job_id=artifacts.job_id
+    """,
+    f"""
+    CREATE TABLE asset_metadata_extractions (
+        asset_id TEXT NOT NULL PRIMARY KEY REFERENCES assets(asset_id) ON DELETE RESTRICT,
+        owner_id TEXT NOT NULL, source_sha256 TEXT NOT NULL CHECK({_sha256_check("source_sha256")}),
+        format TEXT NOT NULL CHECK(format IN ('png','unsupported')), projection_json TEXT NOT NULL,
+        revision_id TEXT REFERENCES workflow_revisions(revision_id) ON DELETE RESTRICT, extracted_at TEXT NOT NULL,
+        FOREIGN KEY(owner_id,asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT
+    )
+    """,
+    "CREATE INDEX ix_asset_metadata_owner ON asset_metadata_extractions(owner_id,extracted_at DESC,asset_id)",
+    """
+    CREATE TABLE asset_artifact_lineage (
+        asset_id TEXT NOT NULL PRIMARY KEY REFERENCES assets(asset_id) ON DELETE RESTRICT,
+        owner_id TEXT NOT NULL, source_artifact_id TEXT NOT NULL, source_job_id TEXT NOT NULL,
+        relationship TEXT NOT NULL CHECK(relationship IN ('import','transfer')), created_at TEXT NOT NULL,
+        FOREIGN KEY(owner_id,asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT,
+        FOREIGN KEY(source_artifact_id,source_job_id) REFERENCES artifacts(artifact_id,job_id) ON DELETE RESTRICT,
+        FOREIGN KEY(source_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        UNIQUE(owner_id,source_artifact_id,asset_id)
+    )
+    """,
+    "CREATE INDEX ix_asset_lineage_source ON asset_artifact_lineage(owner_id,source_artifact_id,created_at,asset_id)",
+    f"""
+    CREATE TABLE asset_delete_plans (
+        plan_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("plan_id", "plan_")}),
+        owner_id TEXT NOT NULL, asset_id TEXT NOT NULL,
+        plan_digest TEXT NOT NULL CHECK({_sha256_check("plan_digest")}),
+        asset_identity_digest TEXT NOT NULL CHECK({_sha256_check("asset_identity_digest")}),
+        impact_digest TEXT NOT NULL CHECK({_sha256_check("impact_digest")}), impact_json TEXT NOT NULL,
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL, committed_at TEXT,
+        FOREIGN KEY(owner_id,asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT,
+        UNIQUE(plan_id,owner_id,asset_id)
+    )
+    """,
+    "CREATE INDEX ix_asset_delete_plans_owner ON asset_delete_plans(owner_id,created_at DESC,plan_id)",
+    "CREATE INDEX ix_asset_delete_plans_expiry ON asset_delete_plans(expires_at,plan_id) WHERE committed_at IS NULL",
+    f"""
+    CREATE TABLE artifact_transfers (
+        transfer_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("transfer_id", "transfer_")}),
+        owner_id TEXT NOT NULL, artifact_id TEXT NOT NULL, source_job_id TEXT NOT NULL,
+        target_server_id TEXT NOT NULL CHECK({_safe_identifier_check("target_server_id")}),
+        target_asset_id TEXT NOT NULL CHECK({_typed_id_check("target_asset_id", "asset_")}),
+        operation TEXT NOT NULL CHECK(operation IN ('import','transfer')),
+        strategy TEXT NOT NULL CHECK(strategy IN ('copy','upload')),
+        state TEXT NOT NULL CHECK(state IN ('planned','transferring','completed','failed')),
+        plan_digest TEXT NOT NULL CHECK({_sha256_check("plan_digest")}),
+        artifact_identity_digest TEXT NOT NULL CHECK({_sha256_check("artifact_identity_digest")}),
+        planned_size_bytes INTEGER NOT NULL CHECK(typeof(planned_size_bytes)='integer' AND planned_size_bytes>=0),
+        planned_sha256 TEXT NOT NULL CHECK({_sha256_check("planned_sha256")}),
+        planned_mime_type TEXT NOT NULL CHECK(length(planned_mime_type)>0),
+        network_policy_json TEXT NOT NULL,
+        temporary_policy TEXT NOT NULL CHECK({_safe_identifier_check("temporary_policy")}),
+        created_at TEXT NOT NULL, expires_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        lease_token TEXT, lease_expires_at TEXT,
+        lease_fence INTEGER NOT NULL DEFAULT 0 CHECK(typeof(lease_fence)='integer' AND lease_fence>=0),
+        completed_at TEXT, result_asset_id TEXT, result_size_bytes INTEGER,
+        result_sha256 TEXT,
+        failure_code TEXT CHECK(failure_code IS NULL OR {_safe_identifier_check("failure_code")}),
+        FOREIGN KEY(artifact_id,source_job_id) REFERENCES artifacts(artifact_id,job_id) ON DELETE RESTRICT,
+        FOREIGN KEY(source_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        FOREIGN KEY(owner_id,result_asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT,
+        CHECK(lease_token IS NULL OR (
+            typeof(lease_token)='text' AND length(lease_token) BETWEEN 32 AND 256
+        )),
+        CHECK(result_size_bytes IS NULL OR (typeof(result_size_bytes)='integer' AND result_size_bytes>=0)),
+        CHECK(result_sha256 IS NULL OR {_sha256_check("result_sha256")}),
+        CHECK((state='planned' AND completed_at IS NULL AND failure_code IS NULL AND lease_token IS NULL AND lease_expires_at IS NULL) OR
+              (state='transferring' AND completed_at IS NULL AND failure_code IS NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL) OR
+              (state='completed' AND completed_at IS NOT NULL AND failure_code IS NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL) OR
+              (state='failed' AND completed_at IS NULL AND failure_code IS NOT NULL AND lease_token IS NOT NULL AND lease_expires_at IS NOT NULL)),
+        CHECK((state='completed' AND result_asset_id=target_asset_id AND result_size_bytes IS NOT NULL AND result_sha256 IS NOT NULL) OR
+              (state!='completed' AND result_asset_id IS NULL AND result_size_bytes IS NULL AND result_sha256 IS NULL))
+    )
+    """,
+    "CREATE UNIQUE INDEX uq_artifact_transfer_plan ON artifact_transfers(owner_id,artifact_id,target_server_id,plan_digest)",
+    "CREATE INDEX ix_artifact_transfers_owner ON artifact_transfers(owner_id,created_at DESC,transfer_id DESC)",
+    "CREATE INDEX ix_artifact_transfers_claimable ON artifact_transfers(state,lease_expires_at,expires_at,transfer_id)",
+    "CREATE INDEX ix_artifact_transfers_result_owner ON artifact_transfers(owner_id,result_asset_id) WHERE result_asset_id IS NOT NULL",
+    """
+    CREATE TRIGGER tr_artifact_transfers_identity_update BEFORE UPDATE OF
+        transfer_id,owner_id,artifact_id,source_job_id,target_server_id,target_asset_id,
+        operation,strategy,plan_digest,artifact_identity_digest,planned_size_bytes,planned_sha256,
+        planned_mime_type,network_policy_json,temporary_policy,created_at,expires_at ON artifact_transfers
+    BEGIN SELECT RAISE(ABORT, 'artifact transfer identity is immutable'); END
+    """,
+    f"""
+    CREATE TABLE media_retention_bindings (
+        binding_id TEXT NOT NULL PRIMARY KEY CHECK({_safe_identifier_check("binding_id")}),
+        owner_id TEXT NOT NULL,
+        asset_id TEXT, artifact_id TEXT, source_job_id TEXT,
+        archive_at TEXT, delete_at TEXT, retain_until TEXT,
+        legal_hold INTEGER NOT NULL DEFAULT 0 CHECK(legal_hold IN (0,1)),
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        FOREIGN KEY(owner_id,asset_id) REFERENCES assets(owner_id,asset_id) ON DELETE RESTRICT,
+        FOREIGN KEY(artifact_id,source_job_id) REFERENCES artifacts(artifact_id,job_id) ON DELETE RESTRICT,
+        FOREIGN KEY(source_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        CHECK((asset_id IS NOT NULL AND artifact_id IS NULL AND source_job_id IS NULL) OR
+              (asset_id IS NULL AND artifact_id IS NOT NULL AND source_job_id IS NOT NULL)),
+        CHECK(delete_at IS NULL OR archive_at IS NULL OR delete_at>=archive_at)
+    )
+    """,
+    "CREATE UNIQUE INDEX uq_media_retention_asset ON media_retention_bindings(owner_id,asset_id) WHERE asset_id IS NOT NULL",
+    "CREATE UNIQUE INDEX uq_media_retention_artifact ON media_retention_bindings(owner_id,artifact_id) WHERE artifact_id IS NOT NULL",
+    "CREATE INDEX ix_media_retention_archive_due ON media_retention_bindings(archive_at,binding_id) WHERE archive_at IS NOT NULL AND legal_hold=0",
+    "CREATE INDEX ix_media_retention_delete_due ON media_retention_bindings(delete_at,binding_id) WHERE delete_at IS NOT NULL AND legal_hold=0",
+    """
+    CREATE TRIGGER tr_assets_identity_update BEFORE UPDATE OF
+        asset_id,owner_id,server_id,name,subfolder,media_type,mime_type,size_bytes,
+        sha256,source_type,comfyui_ref,created_at ON assets
+    BEGIN SELECT RAISE(ABORT, 'asset identity is immutable'); END
+    """,
+    """
+    CREATE TRIGGER tr_assets_media_location_insert AFTER INSERT ON assets
+    BEGIN
+        INSERT INTO media_locations(
+            location_id,owner_id,asset_id,artifact_id,source_job_id,server_id,
+            filename,subfolder,storage_type,state,size_bytes,sha256,mime_type,
+            created_at,updated_at,archived_at,deleted_at
+        ) VALUES(
+            'asset:'||NEW.asset_id,NEW.owner_id,NEW.asset_id,NULL,NULL,NEW.server_id,
+            NEW.name,NEW.subfolder,'input','available',NEW.size_bytes,NEW.sha256,
+            NEW.mime_type,NEW.created_at,NEW.created_at,NULL,NULL
+        );
+    END
+    """,
+    """
+    CREATE TRIGGER tr_artifacts_media_location_insert AFTER INSERT ON artifacts
+    BEGIN
+        INSERT INTO media_locations(
+            location_id,owner_id,asset_id,artifact_id,source_job_id,server_id,
+            filename,subfolder,storage_type,state,size_bytes,sha256,mime_type,
+            created_at,updated_at,archived_at,deleted_at
+        ) SELECT
+            'artifact:'||NEW.artifact_id,jobs.owner_id,NULL,NEW.artifact_id,NEW.job_id,
+            NEW.server_id,NEW.filename,NEW.subfolder,NEW.storage_type,'available',
+            NULL,NULL,NEW.mime_type,NEW.created_at,NEW.created_at,NULL,NULL
+        FROM jobs WHERE jobs.job_id=NEW.job_id;
+    END
+    """,
+    "CREATE TRIGGER tr_asset_lineage_immutable_update BEFORE UPDATE ON asset_artifact_lineage BEGIN SELECT RAISE(ABORT, 'asset lineage is immutable'); END",
+    "CREATE TRIGGER tr_asset_lineage_immutable_delete BEFORE DELETE ON asset_artifact_lineage BEGIN SELECT RAISE(ABORT, 'asset lineage is immutable'); END",
+    "CREATE TRIGGER tr_assets_immutable_delete BEFORE DELETE ON assets BEGIN SELECT RAISE(ABORT, 'asset identity is immutable'); END",
+    "CREATE TRIGGER tr_artifact_transfers_immutable_delete BEFORE DELETE ON artifact_transfers BEGIN SELECT RAISE(ABORT, 'artifact transfer identity is immutable'); END",
+    """
+    CREATE TRIGGER tr_media_locations_identity_update BEFORE UPDATE OF
+        location_id,owner_id,asset_id,artifact_id,source_job_id,server_id,
+        filename,subfolder,storage_type,created_at ON media_locations
+    BEGIN SELECT RAISE(ABORT, 'media location identity is immutable'); END
+    """,
+    "CREATE TRIGGER tr_media_locations_immutable_delete BEFORE DELETE ON media_locations BEGIN SELECT RAISE(ABORT, 'media location identity is immutable'); END",
+    """
+    CREATE TRIGGER tr_asset_delete_plans_identity_update BEFORE UPDATE OF
+        plan_id,owner_id,asset_id,plan_digest,asset_identity_digest,impact_digest,
+        impact_json,created_at,expires_at ON asset_delete_plans
+    BEGIN SELECT RAISE(ABORT, 'asset delete plan identity is immutable'); END
+    """,
+    "CREATE TRIGGER tr_asset_delete_plans_immutable_delete BEFORE DELETE ON asset_delete_plans BEGIN SELECT RAISE(ABORT, 'asset delete plan identity is immutable'); END",
+    """
+    CREATE TRIGGER tr_media_retention_binding_identity_update BEFORE UPDATE OF
+        binding_id,owner_id,asset_id,artifact_id,source_job_id,created_at
+    ON media_retention_bindings
+    BEGIN SELECT RAISE(ABORT, 'media retention binding identity is immutable'); END
+    """,
+    "CREATE TRIGGER tr_media_retention_bindings_immutable_delete BEFORE DELETE ON media_retention_bindings BEGIN SELECT RAISE(ABORT, 'media retention binding identity is immutable'); END",
+)
+
 
 _MIGRATIONS = (
     SchemaMigration(
@@ -1057,6 +1414,13 @@ _MIGRATIONS = (
         _PHASE_J_WORKFLOW_CHANGE_UP,
         (),
         feasibility_note="forward-only immutable workflow change plan storage",
+    ),
+    SchemaMigration(
+        6,
+        "phase-l-asset-library",
+        _PHASE_L_ASSET_LIBRARY_UP,
+        (),
+        feasibility_note="forward-only owner-bound asset and artifact lifecycle storage",
     ),
 )
 
@@ -1149,6 +1513,15 @@ class SQLiteControlPlaneStore:
                         _utc_now(),
                     ),
                 )
+            if (
+                connection.execute("SELECT 1 FROM schema_migrations WHERE version=6").fetchone()
+                is not None
+            ):
+                from comfyui_mcp_skills.infrastructure.persistence.execution_plan_input_backfill import (
+                    backfill_execution_plan_inputs,
+                )
+
+                backfill_execution_plan_inputs(connection)
             violations = connection.execute("PRAGMA foreign_key_check").fetchall()
             if violations:
                 raise SchemaMigrationError("schema migration produced foreign key violations")

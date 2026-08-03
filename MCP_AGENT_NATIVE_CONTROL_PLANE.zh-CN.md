@@ -1626,6 +1626,7 @@ Published Revision + arguments + Asset URI
 - 单个 ComfyUI Core 实例默认一个执行槽；路由并发不超过候选服务器槽位总和，预排队使用独立 `submission_window`。
 
 ### 阶段 L：资产库、Artifact 与血缘（P1）
+> 实施状态：2026-07-31 已完成。已交付 owner-bound Asset/Artifact 资产库、原子 Job→Artifact 收集、规范化输入与输出血缘、受内容事实约束的 transfer/import plan/commit、固定 direct reuse 兼容注册表、PNG metadata 恢复、删除影响重检，以及 SQLite 保留/归档/清理闭环。
 
 交付：
 

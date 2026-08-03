@@ -347,8 +347,6 @@ def test_audit_only_recovery_rejects_different_operation_parameters(
         )
 
     schema = json.loads(
-        (tmp_path / "data" / "local" / "txt2img" / "schema.json").read_text(
-            encoding="utf-8"
-        )
+        (tmp_path / "data" / "local" / "txt2img" / "schema.json").read_text(encoding="utf-8")
     )
     assert schema["enabled"] is False

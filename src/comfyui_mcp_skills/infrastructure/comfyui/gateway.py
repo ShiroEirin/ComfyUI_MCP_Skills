@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
+from pathlib import Path
 from typing import Any
 
 import requests
 import websocket
 
-from comfyui_mcp_skills.domain.errors import ExecutionFailed, ServerOffline
+from comfyui_mcp_skills.domain.errors import ExecutionFailed, ServerOffline, UploadFailed
 from comfyui_mcp_skills.infrastructure.comfyui.capabilities import classify_capability_status
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 
@@ -85,7 +86,18 @@ class ComfyUIGatewayAdapter:
         return self._optional_call(self._client.get_subgraph, subgraph_id)
 
     def get_capabilities(self) -> dict[str, Any]:
-        return self._optional_call(self._client.probe_capabilities)
+        result = self._optional_call(self._client.probe_capabilities)
+        data = result.get("data")
+        if result.get("state") == "supported" and isinstance(data, dict):
+            capabilities = dict(data)
+            capabilities["output_to_input_copy"] = {"state": "unsupported"}
+            return {"state": "supported", "data": capabilities}
+        return result
+
+    @staticmethod
+    def supports_output_to_input_copy() -> bool:
+        """Report false until a real atomic ComfyUI copy endpoint is available."""
+        return False
 
     def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
         return self._call(
@@ -126,9 +138,12 @@ class ComfyUIGatewayAdapter:
             return {"state": "temporarily_unavailable", "data": None}
 
     def upload_file(self, path: str, *, purpose: str, original_ref: str) -> dict[str, Any]:
-        if purpose == "mask":
-            return self._client.upload_mask(path, original_ref)
-        return self._client.upload_file(path)
+        try:
+            if purpose == "mask":
+                return self._client.upload_mask(path, original_ref)
+            return self._client.upload_file(path)
+        except Exception as exc:
+            raise UploadFailed("ComfyUI upload failed") from exc
 
     def download_output(
         self,
@@ -149,6 +164,28 @@ class ComfyUIGatewayAdapter:
             raise
         except requests.RequestException as exc:
             raise ExecutionFailed("ComfyUI output download failed") from exc
+
+    def download_output_to(
+        self,
+        filename: str,
+        destination: str | Path,
+        subfolder: str = "",
+        storage_type: str = "output",
+        *,
+        max_bytes: int,
+    ) -> dict[str, int | str]:
+        try:
+            return self._client.download_output_to(
+                filename,
+                destination,
+                subfolder,
+                storage_type,
+                max_bytes=max_bytes,
+            )
+        except ValueError:
+            raise
+        except (requests.RequestException, OSError) as exc:
+            raise ExecutionFailed("ComfyUI output transfer failed") from exc
 
 
 def create_gateway(config: dict[str, Any]) -> ComfyUIGatewayAdapter:

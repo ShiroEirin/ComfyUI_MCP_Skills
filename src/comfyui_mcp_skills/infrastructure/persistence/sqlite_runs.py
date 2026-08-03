@@ -6,6 +6,7 @@ import hashlib
 import json
 import secrets
 import sqlite3
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -544,6 +545,88 @@ class SQLiteRunRepository:
         connection.execute("PRAGMA synchronous = FULL")
         connection.execute("PRAGMA trusted_schema = OFF")
         return connection
+
+
+def terminalize_job_snapshot(
+    connection: sqlite3.Connection,
+    job: Job,
+    outputs_json: str,
+) -> bool:
+    """Verify and update a persisted Job inside the caller's open transaction."""
+    if job.status != "completed" or not job.job_id or not job.owner_id:
+        raise ValueError("canonical completed Job identity required")
+    row = _terminalization_row(connection, job.job_id)
+    if row is None or not _matches_execution_identity(row, job):
+        raise RuntimeError("completed Job conflicts with persisted execution facts")
+    persisted_status = str(row[5])
+    if persisted_status == "completed":
+        if str(row[6]) != job.error or str(row[7]) != outputs_json:
+            raise RuntimeError("completed Job conflicts with persisted output snapshot")
+        return False
+    if persisted_status in _TERMINAL_STATUSES or str(row[7]) != "[]":
+        raise RuntimeError("completed Job conflicts with persisted terminal state")
+    updated = connection.execute(
+        """UPDATE jobs SET status='completed', error=?, outputs_json=?
+           WHERE job_id=? AND status=? AND owner_id=? AND workflow_id=?""",
+        (
+            job.error,
+            outputs_json,
+            job.job_id,
+            persisted_status,
+            job.owner_id,
+            job.workflow_id,
+        ),
+    ).rowcount
+    if updated != 1:
+        raise RuntimeError("completed Job changed during terminalization")
+    return True
+
+
+def _terminalization_row(connection: sqlite3.Connection, job_id: str) -> Any:
+    return connection.execute(
+        """
+        SELECT jobs.workflow_id, COALESCE(jobs.plan_id, ''),
+               COALESCE(jobs.revision_id, ''), COALESCE(jobs.deployment_id, ''),
+               jobs.owner_id, jobs.status, jobs.error, jobs.outputs_json,
+               execution_attempts.server_id,
+               COALESCE(execution_attempts.upstream_prompt_id, ''),
+               execution_attempts.submission_state,
+               COALESCE(execution_plans.plan_digest, '')
+        FROM jobs JOIN execution_attempts
+          ON execution_attempts.job_id = jobs.job_id
+         AND execution_attempts.attempt = 1
+        LEFT JOIN execution_plans ON execution_plans.plan_id = jobs.plan_id
+        WHERE jobs.job_id = ?
+        """,
+        (job_id,),
+    ).fetchone()
+
+
+def _matches_execution_identity(row: Any, job: Job) -> bool:
+    persisted = tuple(str(row[index]) for index in (0, 1, 2, 3, 4, 8, 9, 10, 11))
+    expected = (
+        job.workflow_id,
+        job.plan_id,
+        job.revision_id,
+        job.deployment_id,
+        job.owner_id,
+        job.server_id,
+        job.prompt_id,
+        "submitted",
+        job.plan_digest,
+    )
+    return persisted == expected
+
+
+def serialize_job_outputs(outputs: Sequence[Mapping[str, Any]]) -> str:
+    """Return the canonical compatibility snapshot stored on one Job."""
+    return json.dumps(
+        tuple(dict(output) for output in outputs),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _scope(server_id: str) -> str:

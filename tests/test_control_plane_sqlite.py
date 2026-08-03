@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -70,6 +72,7 @@ def test_initialize_creates_versioned_control_plane_schema(tmp_path: Path) -> No
         (3, "g5-event-orchestrator", 64, 1, 0, 1),
         (4, "g5-upstream-identity-merge", 64, 1, 0, 1),
         (5, "phase-j-workflow-change-plans", 64, 1, 0, 1),
+        (6, "phase-l-asset-library", 64, 1, 0, 1),
     ]
     assert switched_count == 0
 
@@ -81,7 +84,7 @@ def test_initialize_is_idempotent_and_detects_checksum_drift(tmp_path: Path) -> 
     store.initialize()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone() == (5,)
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone() == (6,)
         connection.execute(
             "UPDATE schema_migrations SET checksum = ? WHERE version = 1", ("0" * 64,)
         )
@@ -737,8 +740,8 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
     database = tmp_path / "control-plane.sqlite3"
     store = SQLiteControlPlaneStore(database)
     store.initialize()
-    migration_v6 = SchemaMigration(
-        6,
+    migration_v7 = SchemaMigration(
+        7,
         "add-probe-table",
         ("CREATE TABLE migration_probe (value TEXT NOT NULL)",),
         ("DROP TABLE migration_probe",),
@@ -746,7 +749,7 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
     monkeypatch.setattr(
         control_plane_module,
         "_MIGRATIONS",
-        (*control_plane_module._MIGRATIONS, migration_v6),
+        (*control_plane_module._MIGRATIONS, migration_v7),
     )
 
     store.initialize()
@@ -755,7 +758,7 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
         rows = connection.execute(
             "SELECT version, schema_fingerprint FROM schema_migrations ORDER BY version"
         ).fetchall()
-        assert [row[0] for row in rows] == [1, 2, 3, 4, 5, 6]
+        assert [row[0] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
         assert len({row[1] for row in rows}) == 1
         assert "migration_probe" in _table_names(database)
     with pytest.raises(SchemaMigrationError, match="cannot be rolled back"):
@@ -808,7 +811,7 @@ def test_g1_schema_preserves_runtime_and_migration_facts(tmp_path: Path) -> None
             row[1] for row in connection.execute("PRAGMA table_info(artifacts)").fetchall()
         }
 
-    assert versions == [(1,), (2,), (3,), (4,), (5,)]
+    assert versions == [(1,), (2,), (3,), (4,), (5,), (6,)]
     assert job_columns["error"][3] == 1
     assert job_columns["execution_origin"][3] == 1
     assert "lease_token" in idempotency_columns
@@ -839,3 +842,328 @@ def test_identity_and_foreign_key_columns_reject_blob_storage(tmp_path: Path) ->
                 """,
                 (sqlite3.Binary(b"event-1"), created_at),
             )
+
+
+def _insert_historical_plans(
+    connection: sqlite3.Connection,
+    *,
+    plans: tuple[tuple[str, str, str], ...],
+    existing_asset_ids: tuple[str, ...],
+    consumer_class: str = "LoadImage",
+) -> tuple[str, str, str]:
+    created_at = "2026-07-31T00:00:00.000000Z"
+    revision_id = "revision_" + "1" * 32
+    deployment_id = "deployment_" + "2" * 32
+    graph = {"7": {"class_type": consumer_class, "inputs": {"image": "default.png"}}}
+    schema = {"parameters": {"source": {"type": "image", "node_id": "7", "field": "image"}}}
+    connection.execute(
+        "INSERT INTO workflows(workflow_id,created_at) VALUES('historical-plan',?)",
+        (created_at,),
+    )
+    connection.execute(
+        """INSERT INTO workflow_revisions(
+               revision_id,workflow_id,graph_json,parameter_schema_json,
+               dependency_contract_json,content_digest,created_at
+           ) VALUES(?,'historical-plan',?,?,?,?,?)""",
+        (
+            revision_id,
+            json.dumps(graph, sort_keys=True, separators=(",", ":")),
+            json.dumps(schema, sort_keys=True, separators=(",", ":")),
+            "{}",
+            "3" * 64,
+            created_at,
+        ),
+    )
+    connection.execute(
+        """INSERT INTO workflow_deployments(
+               deployment_id,workflow_id,revision_id,server_id,enabled,
+               validation_status,published,created_at
+           ) VALUES(?,'historical-plan',?,'local',1,'valid',1,?)""",
+        (deployment_id, revision_id, created_at),
+    )
+    for asset_id in existing_asset_ids:
+        connection.execute(
+            """INSERT INTO assets(
+                   asset_id,owner_id,server_id,name,subfolder,media_type,mime_type,
+                   size_bytes,sha256,source_type,comfyui_ref,created_at,expires_at
+               ) VALUES(?,'owner-a','local','source.png','inputs','image','image/png',
+                        3,?,'upload','inputs/source.png',?,NULL)""",
+            (asset_id, "4" * 64, created_at),
+        )
+    for index, (plan_id, job_id, asset_id) in enumerate(plans, start=1):
+        snapshot = json.dumps(
+            {"source": asset_id},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        connection.execute(
+            """INSERT INTO execution_plans(
+                   plan_id,workflow_id,revision_id,deployment_id,server_id,
+                   resolved_inputs_json,input_digest,plan_digest,created_at
+               ) VALUES(?,'historical-plan',?,?,'local',?,?,?,?)""",
+            (
+                plan_id,
+                revision_id,
+                deployment_id,
+                snapshot,
+                hashlib.sha256(snapshot.encode()).hexdigest(),
+                f"{index + 100:064x}",
+                created_at,
+            ),
+        )
+        connection.execute(
+            """INSERT INTO jobs(
+                   job_id,workflow_id,plan_id,revision_id,deployment_id,owner_id,
+                   status,error,outputs_json,retry_of,created_at,created_at_source,
+                   legacy_migrated,execution_origin
+               ) VALUES(?,'historical-plan',?,?,?,'owner-a','completed','','[]',NULL,
+                        ?,'runtime',0,'planned')""",
+            (job_id, plan_id, revision_id, deployment_id, created_at),
+        )
+    return revision_id, deployment_id, created_at
+
+
+def test_phase_l_upgrade_backfills_historical_execution_plan_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control-plane.sqlite3"
+    store = SQLiteControlPlaneStore(database)
+    migrations = control_plane_module._MIGRATIONS
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations[:5])
+    store.initialize()
+    plan_id = "plan_" + "5" * 32
+    job_id = "job_" + "6" * 32
+    asset_id = "asset_" + "7" * 32
+    with sqlite3.connect(database) as connection:
+        revision_id, deployment_id, created_at = _insert_historical_plans(
+            connection,
+            plans=((plan_id, job_id, asset_id),),
+            existing_asset_ids=(asset_id,),
+        )
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations)
+
+    store.initialize()
+    store.initialize()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """SELECT owner_id,revision_id,deployment_id,parameter_name,
+                      consumer_node_id,consumer_input_name,consumer_class,source_kind,
+                      asset_id,artifact_id,source_job_id,reuse_strategy,source_digest,created_at
+               FROM execution_plan_inputs WHERE plan_id=?""",
+            (plan_id,),
+        ).fetchone() == (
+            "owner-a",
+            revision_id,
+            deployment_id,
+            "source",
+            "7",
+            "image",
+            "LoadImage",
+            "asset",
+            asset_id,
+            None,
+            None,
+            "direct",
+            "4" * 64,
+            created_at,
+        )
+        assert connection.execute(
+            """SELECT status,incomplete_count,completed_at IS NOT NULL,failure_code
+               FROM phase_l_backfill_state
+               WHERE backfill_name='execution_plan_inputs'"""
+        ).fetchone() == ("complete", 0, 1, None)
+        assert connection.execute(
+            "SELECT count(*) FROM execution_plan_inputs WHERE plan_id=?", (plan_id,)
+        ).fetchone() == (1,)
+
+
+def test_phase_l_upgrade_backfills_historical_artifact_plan_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control-plane.sqlite3"
+    store = SQLiteControlPlaneStore(database)
+    migrations = control_plane_module._MIGRATIONS
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations[:5])
+    store.initialize()
+    plan_id = "plan_" + "e" * 32
+    plan_job_id = "job_" + "e" * 32
+    source_job_id = "job_" + "f" * 32
+    artifact_id = "artifact_" + "e" * 32
+    artifact_uri = f"comfyui://artifacts/{artifact_id}"
+    with sqlite3.connect(database) as connection:
+        revision_id, deployment_id, _ = _insert_historical_plans(
+            connection,
+            plans=((plan_id, plan_job_id, artifact_uri),),
+            existing_asset_ids=(),
+            consumer_class="LoadImageOutput",
+        )
+        connection.execute(
+            """INSERT INTO jobs(
+                   job_id,workflow_id,plan_id,revision_id,deployment_id,owner_id,
+                   status,error,outputs_json,retry_of,created_at,created_at_source,
+                   legacy_migrated,execution_origin
+               ) VALUES(?,'historical-plan',NULL,NULL,NULL,'owner-a','completed','','[]',
+                        NULL,?,'legacy',1,'legacy_migrated')""",
+            (source_job_id, "2026-07-31T00:00:00.000000Z"),
+        )
+        connection.execute(
+            """INSERT INTO artifacts(
+                   artifact_id,job_id,server_id,upstream_node_id,output_key,
+                   upstream_output_index,filename,subfolder,storage_type,media_type,
+                   digest,created_at,mime_type
+               ) VALUES(?,?,'local','9','images',0,'source.png','renders','output',
+                        'image',?,?,'image/png')""",
+            (
+                artifact_id,
+                source_job_id,
+                "a" * 64,
+                "2026-07-31T00:00:00.000000Z",
+            ),
+        )
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations)
+
+    store.initialize()
+    store.initialize()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """SELECT owner_id,revision_id,deployment_id,parameter_name,
+                      consumer_node_id,consumer_input_name,consumer_class,source_kind,
+                      asset_id,artifact_id,source_job_id,reuse_strategy,source_digest
+               FROM execution_plan_inputs WHERE plan_id=?""",
+            (plan_id,),
+        ).fetchone() == (
+            "owner-a",
+            revision_id,
+            deployment_id,
+            "source",
+            "7",
+            "image",
+            "LoadImageOutput",
+            "artifact",
+            None,
+            artifact_id,
+            source_job_id,
+            "direct",
+            "a" * 64,
+        )
+        assert connection.execute(
+            """SELECT status,incomplete_count,failure_code
+               FROM phase_l_backfill_state
+               WHERE backfill_name='execution_plan_inputs'"""
+        ).fetchone() == ("complete", 0, None)
+
+
+def test_phase_l_plan_input_backfill_fails_atomically_and_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control-plane.sqlite3"
+    store = SQLiteControlPlaneStore(database)
+    migrations = control_plane_module._MIGRATIONS
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations[:5])
+    store.initialize()
+    good_plan_id = "plan_" + "8" * 32
+    bad_plan_id = "plan_" + "9" * 32
+    good_asset_id = "asset_" + "c" * 32
+    missing_asset_id = "asset_" + "d" * 32
+    with sqlite3.connect(database) as connection:
+        _insert_historical_plans(
+            connection,
+            plans=(
+                (good_plan_id, "job_" + "a" * 32, good_asset_id),
+                (bad_plan_id, "job_" + "b" * 32, missing_asset_id),
+            ),
+            existing_asset_ids=(good_asset_id,),
+        )
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations)
+
+    store.initialize()
+    store.initialize()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """SELECT status,incomplete_count,completed_at,failure_code
+               FROM phase_l_backfill_state
+               WHERE backfill_name='execution_plan_inputs'"""
+        ).fetchone() == (
+            "failed",
+            2,
+            None,
+            "execution_plan_inputs_unreconstructable",
+        )
+        assert connection.execute("SELECT count(*) FROM execution_plan_inputs").fetchone() == (0,)
+        connection.execute(
+            """INSERT INTO assets(
+                   asset_id,owner_id,server_id,name,subfolder,media_type,mime_type,
+                   size_bytes,sha256,source_type,comfyui_ref,created_at,expires_at
+               ) VALUES(?,'owner-a','local','source.png','inputs','image','image/png',
+                        3,?,'upload','inputs/source.png',?,NULL)""",
+            (missing_asset_id, "4" * 64, "2026-07-31T00:00:00.000000Z"),
+        )
+
+    store.initialize()
+    store.initialize()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """SELECT status,incomplete_count,completed_at IS NOT NULL,failure_code
+               FROM phase_l_backfill_state
+               WHERE backfill_name='execution_plan_inputs'"""
+        ).fetchone() == ("complete", 0, 1, None)
+        assert connection.execute(
+            """SELECT plan_id,asset_id FROM execution_plan_inputs
+               ORDER BY plan_id"""
+        ).fetchall() == [
+            (good_plan_id, good_asset_id),
+            (bad_plan_id, missing_asset_id),
+        ]
+
+
+def test_phase_l_fresh_database_marks_backfills_complete(tmp_path: Path) -> None:
+    database = tmp_path / "control-plane.sqlite3"
+    SQLiteControlPlaneStore(database).initialize()
+
+    with sqlite3.connect(database) as connection:
+        states = connection.execute(
+            """SELECT backfill_name,status,incomplete_count,completed_at IS NOT NULL
+               FROM phase_l_backfill_state ORDER BY backfill_name"""
+        ).fetchall()
+
+    assert states == [
+        ("artifact_outputs", "complete", 0, 1),
+        ("execution_plan_inputs", "complete", 0, 1),
+    ]
+
+
+def test_phase_l_upgrade_marks_outputful_jobs_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "control-plane.sqlite3"
+    migrations = control_plane_module._MIGRATIONS
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations[:5])
+    SQLiteControlPlaneStore(database).initialize()
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """INSERT INTO jobs(
+                job_id,workflow_id,plan_id,revision_id,deployment_id,owner_id,
+                status,error,outputs_json,retry_of,created_at,created_at_source,
+                legacy_migrated,execution_origin
+            ) VALUES(?, 'legacy-workflow', NULL, NULL, NULL, 'owner-a',
+                     'completed', '', '[{"filename":"old.png"}]', NULL, ?,
+                     'legacy', 1, 'legacy_migrated')""",
+            ("job_" + "a" * 32, "2026-07-31T00:00:00+00:00"),
+        )
+    monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations)
+
+    SQLiteControlPlaneStore(database).initialize()
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """SELECT status,incomplete_count,completed_at
+               FROM phase_l_backfill_state WHERE backfill_name='artifact_outputs'"""
+        ).fetchone() == ("pending", 1, None)
+        assert connection.execute(
+            "SELECT status FROM job_artifact_collections WHERE job_id=?",
+            ("job_" + "a" * 32,),
+        ).fetchone() == ("needs_backfill",)

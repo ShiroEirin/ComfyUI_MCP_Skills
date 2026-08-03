@@ -7,6 +7,7 @@ import json
 import mimetypes
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.types import (
@@ -134,16 +135,71 @@ def job_dict(job: Job) -> dict[str, Any]:
         media_type = raw.get("media_type")
         if media_type not in {"image", "audio", "video"}:
             media_type = "image"
-        outputs.append(
-            {
-                "filename": filename,
-                "subfolder": subfolder,
-                "type": "output",
-                "media_type": media_type,
-                "mime_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
-                "resource_uri": f"comfyui://outputs/{job.server_id}/{job.prompt_id}/{index}",
-            }
-        )
+        legacy_uri = raw.get("legacy_uri")
+        if isinstance(legacy_uri, str):
+            legacy_parts = urlsplit(legacy_uri)
+            legacy_segments = [part for part in legacy_parts.path.split("/") if part]
+            if (
+                legacy_parts.scheme != "comfyui"
+                or legacy_parts.netloc != "outputs"
+                or len(legacy_segments) != 3
+                or legacy_parts.query
+                or legacy_parts.fragment
+            ):
+                legacy_uri = ""
+        else:
+            legacy_uri = ""
+        resource_uri = raw.get("resource_uri")
+        if isinstance(resource_uri, str):
+            resource_parts = urlsplit(resource_uri)
+            resource_segments = [part for part in resource_parts.path.split("/") if part]
+            if (
+                resource_parts.scheme != "comfyui"
+                or resource_parts.netloc != "artifacts"
+                or len(resource_segments) != 1
+                or not re.fullmatch(r"artifact_[A-Za-z0-9_-]{1,119}", resource_segments[0])
+                or resource_parts.query
+                or resource_parts.fragment
+            ):
+                resource_uri = ""
+        else:
+            resource_uri = ""
+        if not resource_uri:
+            resource_uri = f"comfyui://outputs/{job.server_id}/{job.prompt_id}/{index}"
+        output = {
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": "output",
+            "media_type": media_type,
+            "mime_type": mimetypes.guess_type(filename)[0] or "application/octet-stream",
+            "resource_uri": resource_uri,
+        }
+        if legacy_uri:
+            output["legacy_uri"] = legacy_uri
+        artifact_id = raw.get("artifact_id")
+        if isinstance(artifact_id, str) and re.fullmatch(
+            r"artifact_[A-Za-z0-9_-]{1,119}", artifact_id
+        ):
+            output["artifact_id"] = artifact_id
+        for key in ("upstream_node_id", "output_key"):
+            value = raw.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", value):
+                output[key] = value
+        output_index = raw.get("upstream_output_index")
+        if (
+            isinstance(output_index, int)
+            and not isinstance(output_index, bool)
+            and output_index >= 0
+        ):
+            output["upstream_output_index"] = output_index
+        legacy_index = raw.get("legacy_index")
+        if (
+            isinstance(legacy_index, int)
+            and not isinstance(legacy_index, bool)
+            and legacy_index >= 0
+        ):
+            output["legacy_index"] = legacy_index
+        outputs.append(output)
     return {
         "prompt_id": job.prompt_id,
         "server_id": job.server_id,
@@ -183,6 +239,20 @@ def tool_result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
                         mime_type=mime_type if isinstance(mime_type, str) else None,
                     )
                 )
+                legacy_uri = output.get("legacy_uri")
+                if isinstance(legacy_uri, str) and legacy_uri and legacy_uri != uri:
+                    content.append(
+                        ResourceLink(
+                            type="resource_link",
+                            uri=legacy_uri,
+                            name=(
+                                f"{filename} (legacy alias)"
+                                if isinstance(filename, str) and filename
+                                else legacy_uri
+                            ),
+                            mime_type=mime_type if isinstance(mime_type, str) else None,
+                        )
+                    )
     return CallToolResult(
         content=content,
         structured_content=None if error else data,
@@ -875,6 +945,237 @@ def phase_h_tools() -> list[Tool]:
                 idempotent_hint=True,
                 open_world_hint=True,
             ),
+        ),
+    ]
+    return [decorate_tool(tool) for tool in tools]
+
+
+def phase_l_tools() -> list[Tool]:
+    """Return the stable Phase L asset, Artifact, and transfer Tool surface."""
+    identifier = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+    }
+    asset_id = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])asset_[A-Za-z0-9_-]{1,121}$",
+    }
+    artifact_id = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])artifact_[A-Za-z0-9_-]{1,119}$",
+    }
+    cursor = {"type": "string", "maxLength": 2048, "default": ""}
+    media_type = {
+        "type": "string",
+        "enum": ["", "image", "audio", "video"],
+        "default": "",
+    }
+    collection = {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9_. -]{0,128}$",
+        "default": "",
+    }
+    object_result = {"type": "object"}
+    page_result = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": {"type": "object"}},
+            "next_cursor": {"type": "string"},
+            "total": {"type": "integer", "minimum": 0},
+        },
+        "required": ["items", "next_cursor"],
+        "additionalProperties": False,
+    }
+
+    tools = [
+        Tool(
+            name="comfyui.asset.list",
+            description="List owner-visible assets with bounded cursor pagination and filters.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+                    "cursor": cursor,
+                    "media_type": media_type,
+                    "collection": collection,
+                },
+                "additionalProperties": False,
+            },
+            output_schema=page_result,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.asset.describe",
+            description="Describe one owner-visible asset without host paths or private locators.",
+            input_schema={
+                "type": "object",
+                "properties": {"asset_id": asset_id},
+                "required": ["asset_id"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.asset.collection.update",
+            description="Add or remove owned assets from a named collection.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "collection": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9_. -]{1,128}$",
+                    },
+                    "asset_ids": {
+                        "type": "array",
+                        "items": asset_id,
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "uniqueItems": True,
+                    },
+                    "action": {"type": "string", "enum": ["add", "remove"]},
+                },
+                "required": ["collection", "asset_ids", "action"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
+            name="comfyui.asset.metadata.extract",
+            description="Extract safe generation metadata from one owned asset.",
+            input_schema={
+                "type": "object",
+                "properties": {"asset_id": asset_id},
+                "required": ["asset_id"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.asset.import_output",
+            description=(
+                "Directly reuse a graph-compatible owned Artifact or return a reviewable "
+                "verified transfer plan."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "artifact_id": artifact_id,
+                    "target_server_id": identifier,
+                    "workflow_id": identifier,
+                    "parameter_name": identifier,
+                },
+                "required": [
+                    "artifact_id",
+                    "target_server_id",
+                    "workflow_id",
+                    "parameter_name",
+                ],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.asset.delete.plan",
+            description="Plan deletion of an owned asset and return its bounded impact.",
+            input_schema={
+                "type": "object",
+                "properties": {"asset_id": asset_id},
+                "required": ["asset_id"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
+            name="comfyui.asset.delete.commit",
+            description="Commit an unexpired digest-bound asset deletion plan.",
+            input_schema={
+                "type": "object",
+                "properties": {"plan_id": identifier, "plan_digest": identifier},
+                "required": ["plan_id", "plan_digest"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=True,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
+            name="comfyui.asset.transfer.plan",
+            description="Verify source bytes and plan a digest-bound Artifact upload.",
+            input_schema={
+                "type": "object",
+                "properties": {"artifact_id": artifact_id, "target_server_id": identifier},
+                "required": ["artifact_id", "target_server_id"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.asset.transfer.commit",
+            description=("Upload and read back an unexpired digest-bound Artifact transfer plan."),
+            input_schema={
+                "type": "object",
+                "properties": {"transfer_id": identifier, "plan_digest": identifier},
+                "required": ["transfer_id", "plan_digest"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.asset.transfer.get",
+            description="Read one owner-bound Artifact transfer state.",
+            input_schema={
+                "type": "object",
+                "properties": {"transfer_id": identifier},
+                "required": ["transfer_id"],
+                "additionalProperties": False,
+            },
+            output_schema=object_result,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
     ]
     return [decorate_tool(tool) for tool in tools]

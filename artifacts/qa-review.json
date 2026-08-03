@@ -1,33 +1,63 @@
 {
   "qaMode": "deep",
-  "scope": "Phase J bounded graph change plan/commit, immutable structured Revision diff, atomic publish, idempotent rollback, dynamic Tool schema switching, Revision subscriptions, canonical V2 content identity, and legacy output-contract compatibility",
+  "scope": "Phase L owner-bound Asset/Artifact library, normalized input-output lineage, bounded transfer/import, lifecycle-aware canonical and legacy resources, atomic Job terminalization, migration-6 backfill, retention, and GIF media consistency",
   "outcome": "pass",
-  "conclusion": "Phase J is complete: graph edits are validation-gated and cycle-safe; plans bind expiry and published base identity; commits reuse canonical immutable Revisions; publish atomically switches Deployments without mutating existing Jobs; rollback is durable, atomic, and actor/request-idempotent; and MCP clients receive stable conflict/not-found errors.",
+  "conclusion": "Phase L is complete. Asset and Artifact lifecycle facts are owner-bound and fail closed; historical Plan inputs are reconstructed transactionally or marked with a stable failure; canonical and legacy Artifact aliases share completeness and availability checks; transfers bind and reverify content facts; direct reuse is graph- and compatibility-bound; GIF outputs remain consistent through terminalization and transfer/import.",
   "findings": [],
+  "remediatedFindings": [
+    "Historical execution Plans no longer leave execution_plan_inputs permanently pending.",
+    "Canonical and legacy Artifact Resources reject incomplete, archived, or deleted media facts.",
+    "Legacy output aliases resolve through canonical lifecycle-aware Artifact facts during execution.",
+    "GIF87a and GIF89a share one image/gif classifier across terminalization and transfer/import."
+  ],
   "fileReferences": [
-    "src/comfyui_mcp_skills/application/workflow_change.py",
-    "src/comfyui_mcp_skills/application/workflow_import.py",
-    "src/comfyui_mcp_skills/domain/errors.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/workflow_changes.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_workflows.py",
+    "src/comfyui_mcp_skills/application/asset_library.py",
+    "src/comfyui_mcp_skills/application/assets.py",
+    "src/comfyui_mcp_skills/application/execution.py",
+    "src/comfyui_mcp_skills/application/jobs.py",
+    "src/comfyui_mcp_skills/application/planning.py",
+    "src/comfyui_mcp_skills/application/planning_lineage.py",
+    "src/comfyui_mcp_skills/infrastructure/comfyui/core_client.py",
+    "src/comfyui_mcp_skills/infrastructure/comfyui/gateway.py",
     "src/comfyui_mcp_skills/infrastructure/persistence/control_plane.py",
-    "src/comfyui_mcp_skills/adapters/mcp/admin.py",
-    "src/comfyui_mcp_skills/adapters/mcp/server.py",
-    "src/comfyui_mcp_skills/adapters/mcp/tooling.py",
-    "tests/test_phase_j_workflow_changes.py",
-    "tests/test_control_plane_sqlite.py"
+    "src/comfyui_mcp_skills/infrastructure/persistence/execution_plan_input_backfill.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/resource_aliases.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_asset_library.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_runs.py",
+    "src/comfyui_mcp_skills/infrastructure/persistence/retention.py",
+    "tests/test_control_plane_sqlite.py",
+    "tests/test_mcp_resource_aliases.py",
+    "tests/test_output_reuse.py",
+    "tests/test_phase_l_assets.py",
+    "tests/test_phase_l_job_artifacts.py",
+    "tests/test_phase_l_job_terminalization.py",
+    "tests/test_phase_l_mcp.py"
   ],
   "commands": [
-    {"command": "uv run ruff check <Phase J changed paths>", "result": "passed"},
-    {"command": "uv run mypy src/comfyui_mcp_skills", "result": "passed"},
-    {"command": "uv run python -m pytest --cov --cov-report=term-missing -q", "result": "528 passed, 1 skipped; coverage 84.63%"},
-    {"command": "uv run pip-audit", "result": "no known vulnerabilities; local project package not on PyPI"},
-    {"command": "uv build", "result": "sdist and wheel built"}
+    {
+      "command": "uv run ruff check src/comfyui_mcp_skills tests comfyui_skills_cli/commands/run.py",
+      "result": "passed"
+    },
+    {
+      "command": "uv run mypy src/comfyui_mcp_skills",
+      "result": "passed"
+    },
+    {
+      "command": "uv run python -m pytest --cov --cov-report=term-missing -q",
+      "result": "605 passed, 1 skipped, 2 subtests passed; coverage 83.91%"
+    },
+    {
+      "command": "uv run pip-audit",
+      "result": "no known vulnerabilities; local project package not on PyPI"
+    },
+    {
+      "command": "uv build",
+      "result": "sdist and wheel built successfully"
+    }
   ],
   "independentReview": {
-    "code": "PASS after three remediation cycles; all eight original findings and four compatibility follow-ups resolved",
-    "security": "PASS; plan digests bind expiry, public diffs omit raw graphs, rollback request reuse conflicts safely, and MCP errors remain structured",
-    "python": "PASS; ruff and mypy clean on all Phase J changed paths",
-    "database": "PASS; commit/publish/rollback transactions preserve immutable Revision and Deployment identities with durable idempotency"
+    "initial": "FAIL with four blockers covering Plan-input upgrade backfill, Artifact lifecycle availability, legacy execution aliases, and GIF media consistency",
+    "remediation": "All four blockers fixed with focused regressions",
+    "final": "PASS; no concrete Phase L blocker remains"
   }
 }
