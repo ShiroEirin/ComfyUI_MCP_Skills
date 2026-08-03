@@ -91,6 +91,8 @@ def test_initialized_database_without_switch_rows_stays_on_files(tmp_path: Path)
     assert isinstance(repositories.assets, FileAssetRepository)
     assert repositories.run_store == "file"
     assert repositories.asset_store == "file"
+    assert repositories.diagnostics is None
+    assert repositories.retries is None
 
 
 def test_complete_job_and_asset_switches_route_both_ports_to_sqlite(tmp_path: Path) -> None:
@@ -108,6 +110,19 @@ def test_complete_job_and_asset_switches_route_both_ports_to_sqlite(tmp_path: Pa
     assert repositories.store.path == store.path
     assert repositories.runs._store is repositories.store  # type: ignore[attr-defined]
     assert repositories.assets._store is repositories.store  # type: ignore[attr-defined]
+    assert repositories.diagnostics is None
+    assert repositories.retries is None
+
+
+def test_phase_n_repositories_require_workflow_and_job_cutover(tmp_path: Path) -> None:
+    store = _initialized_store(tmp_path)
+    _switch(store, ("workflow", "revision", "deployment"))
+    _switch(store, _JOB_GROUP)
+
+    repositories = create_repository_bundle(tmp_path)
+
+    assert repositories.diagnostics is not None
+    assert repositories.retries is repositories.diagnostics
 
 
 def test_mcp_resource_alias_reader_uses_repository_bundle_store(tmp_path: Path) -> None:

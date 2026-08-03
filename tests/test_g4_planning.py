@@ -168,6 +168,35 @@ def test_planning_reuses_digest_and_rolls_back_plan_with_job_on_failure(tmp_path
         assert connection.execute("SELECT count(*) FROM jobs").fetchone() == (1,)
 
 
+def test_planning_rejects_idempotent_job_with_conflicting_retry_lineage(tmp_path: Path) -> None:
+    store = _project(tmp_path)
+    service = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
+    parent = service.materialize(
+        server_id="local",
+        workflow_id="portrait",
+        owner_id="principal",
+        arguments={"seed": 6},
+        client_id="parent-client",
+    )
+    service.materialize(
+        server_id="local",
+        workflow_id="portrait",
+        owner_id="principal",
+        arguments={"seed": 7},
+        client_id="retry-client",
+    )
+
+    with pytest.raises(RuntimeError, match="identity conflicts"):
+        service.materialize(
+            server_id="local",
+            workflow_id="portrait",
+            owner_id="principal",
+            arguments={"seed": 7},
+            client_id="retry-client",
+            retry_of=parent.job_id,
+        )
+
+
 class _Gateway:
     def queue_prompt(self, workflow: dict[str, object], **kwargs: object) -> dict[str, str]:
         return {"prompt_id": "prompt-g4", "job_id": "upstream-job-g4"}

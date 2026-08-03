@@ -1850,6 +1850,244 @@ _PHASE_M_EXPERIMENT_RATINGS_UP = (
     "CREATE TRIGGER tr_experiment_promotions_immutable_delete BEFORE DELETE ON experiment_promotions BEGIN SELECT RAISE(ABORT,'experiment promotion is immutable'); END",
 )
 
+
+_PHASE_N_DIAGNOSTIC_RECOVERY_UP = (
+    """
+    CREATE TABLE diagnostic_rule_versions (
+        registry_version TEXT NOT NULL PRIMARY KEY,
+        rule_count INTEGER NOT NULL CHECK(typeof(rule_count)='integer' AND rule_count>0),
+        created_at TEXT NOT NULL,
+        CHECK(typeof(registry_version)='text' AND length(registry_version) BETWEEN 1 AND 128)
+    )
+    """,
+    "INSERT INTO diagnostic_rule_versions(registry_version,rule_count,created_at) VALUES('diagnostic-rules-v1',18,'2026-08-03T00:00:00+00:00')",
+    "CREATE TRIGGER tr_diagnostic_rule_versions_immutable_update BEFORE UPDATE ON diagnostic_rule_versions BEGIN SELECT RAISE(ABORT,'diagnostic rule version is immutable'); END",
+    "CREATE TRIGGER tr_diagnostic_rule_versions_immutable_delete BEFORE DELETE ON diagnostic_rule_versions BEGIN SELECT RAISE(ABORT,'diagnostic rule version is immutable'); END",
+    f"""
+    CREATE TABLE diagnostic_reports (
+        diagnostic_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("diagnostic_id", "diagnostic_")}),
+        owner_id TEXT NOT NULL CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256),
+        registry_version TEXT NOT NULL REFERENCES diagnostic_rule_versions(registry_version) ON DELETE RESTRICT,
+        subject_uri TEXT NOT NULL CHECK(typeof(subject_uri)='text' AND length(subject_uri) BETWEEN 1 AND 2048),
+        subject_kind TEXT NOT NULL CHECK(subject_kind IN ('job','server')),
+        job_id TEXT,
+        server_id TEXT,
+        classification TEXT NOT NULL CHECK({_safe_identifier_check("classification")}),
+        rule_id TEXT NOT NULL CHECK(typeof(rule_id)='text' AND length(rule_id) BETWEEN 1 AND 128 AND rule_id NOT GLOB '*[^A-Za-z0-9_.-]*'),
+        retryable INTEGER NOT NULL CHECK(typeof(retryable)='integer' AND retryable IN (0,1)),
+        evidence_json TEXT NOT NULL CHECK(json_valid(evidence_json) AND json_type(evidence_json)='object' AND length(CAST(evidence_json AS BLOB))<=65536),
+        safe_actions_json TEXT NOT NULL CHECK(json_valid(safe_actions_json) AND json_type(safe_actions_json)='array' AND json_array_length(safe_actions_json)<=32 AND length(CAST(safe_actions_json AS BLOB))<=32768),
+        approval_actions_json TEXT NOT NULL CHECK(json_valid(approval_actions_json) AND json_type(approval_actions_json)='array' AND json_array_length(approval_actions_json)<=32 AND length(CAST(approval_actions_json AS BLOB))<=32768),
+        created_at TEXT NOT NULL CHECK(typeof(created_at)='text' AND length(created_at)>0),
+        resource_uri TEXT NOT NULL UNIQUE CHECK(resource_uri='comfyui://diagnostics/'||diagnostic_id),
+        FOREIGN KEY(job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        CHECK((subject_kind='job' AND job_id IS NOT NULL AND server_id IS NULL AND subject_uri='comfyui://jobs/'||job_id) OR
+              (subject_kind='server' AND job_id IS NULL AND server_id IS NOT NULL AND subject_uri='comfyui://servers/'||server_id)),
+        CHECK(server_id IS NULL OR {_safe_identifier_check("server_id")}),
+        UNIQUE(diagnostic_id,owner_id),
+        UNIQUE(owner_id,subject_uri,diagnostic_id)
+    )
+    """,
+    "CREATE INDEX ix_diagnostic_reports_owner_created ON diagnostic_reports(owner_id,created_at DESC,diagnostic_id DESC)",
+    "CREATE INDEX ix_diagnostic_reports_owner_subject ON diagnostic_reports(owner_id,subject_uri,created_at DESC,diagnostic_id DESC)",
+    """
+    CREATE TRIGGER tr_diagnostic_reports_shape_insert BEFORE INSERT ON diagnostic_reports
+    WHEN json_type(NEW.evidence_json,'$.status')!='text'
+      OR length(COALESCE(json_extract(NEW.evidence_json,'$.status'),''))>128
+      OR json_type(NEW.evidence_json,'$.failed_node')!='object'
+      OR json_type(NEW.evidence_json,'$.events')!='array'
+      OR json_array_length(NEW.evidence_json,'$.events')>32
+      OR json_type(NEW.evidence_json,'$.log_window')!='array'
+      OR json_array_length(NEW.evidence_json,'$.log_window')>32
+      OR EXISTS(SELECT 1 FROM json_each(NEW.evidence_json,'$.log_window') WHERE type!='text' OR length(CAST(value AS BLOB))>2048)
+      OR EXISTS(SELECT 1 FROM json_each(NEW.evidence_json,'$.events') WHERE type!='object' OR json_type(value,'$.event_type')!='text' OR json_type(value,'$.occurred_at')!='text' OR json_type(value,'$.message')!='text' OR length(CAST(json_extract(value,'$.message') AS BLOB))>2048)
+      OR EXISTS(SELECT 1 FROM json_each(NEW.safe_actions_json) WHERE type!='object' OR json_type(value,'$.tool')!='text' OR json_extract(value,'$.tool') NOT LIKE 'comfyui.%' OR json_type(value,'$.name')!='text' OR json_type(value,'$.required_arguments')!='object' OR json_extract(value,'$.risk')!='safe')
+      OR EXISTS(SELECT 1 FROM json_each(NEW.approval_actions_json) WHERE type!='object' OR json_type(value,'$.tool')!='text' OR json_extract(value,'$.tool') NOT LIKE 'comfyui.%' OR json_type(value,'$.name')!='text' OR json_type(value,'$.required_arguments')!='object' OR json_extract(value,'$.risk')!='approval_required')
+      OR EXISTS(SELECT 1 FROM json_tree(NEW.safe_actions_json) WHERE lower(COALESCE(key,'')) IN ('command','shell','cli','argv') OR (type='text' AND lower(CAST(value AS TEXT)) LIKE '%comfyui-skill%'))
+      OR EXISTS(SELECT 1 FROM json_tree(NEW.approval_actions_json) WHERE lower(COALESCE(key,'')) IN ('command','shell','cli','argv') OR (type='text' AND lower(CAST(value AS TEXT)) LIKE '%comfyui-skill%'))
+    BEGIN SELECT RAISE(ABORT,'diagnostic evidence or action shape is invalid'); END
+    """,
+    "CREATE TRIGGER tr_diagnostic_reports_owner_insert BEFORE INSERT ON diagnostic_reports WHEN NEW.job_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM jobs WHERE job_id=NEW.job_id AND owner_id=NEW.owner_id) BEGIN SELECT RAISE(ABORT,'diagnostic report owner conflict'); END",
+    "CREATE TRIGGER tr_diagnostic_reports_immutable_update BEFORE UPDATE ON diagnostic_reports BEGIN SELECT RAISE(ABORT,'diagnostic report is immutable'); END",
+    "CREATE TRIGGER tr_diagnostic_reports_immutable_delete BEFORE DELETE ON diagnostic_reports BEGIN SELECT RAISE(ABORT,'diagnostic report is immutable'); END",
+    f"""
+    CREATE TABLE repair_plans (
+        repair_plan_id TEXT NOT NULL PRIMARY KEY CHECK({_typed_id_check("repair_plan_id", "repair_plan_")}),
+        plan_digest TEXT NOT NULL CHECK({_sha256_check("plan_digest")}),
+        owner_id TEXT NOT NULL CHECK(typeof(owner_id)='text' AND length(owner_id) BETWEEN 1 AND 256),
+        resource_uri TEXT NOT NULL UNIQUE CHECK(resource_uri='comfyui://plans/'||repair_plan_id),
+        original_job_id TEXT NOT NULL CHECK({_typed_id_check("original_job_id", "job_")}),
+        workflow_id TEXT NOT NULL CHECK({_workflow_id_check("workflow_id")}),
+        server_id TEXT NOT NULL CHECK({_safe_identifier_check("server_id")}),
+        pinned_plan_id TEXT NOT NULL CHECK({_typed_id_check("pinned_plan_id", "plan_")}),
+        pinned_revision_id TEXT NOT NULL CHECK({_typed_id_check("pinned_revision_id", "revision_")}),
+        pinned_deployment_id TEXT NOT NULL CHECK({_typed_id_check("pinned_deployment_id", "deployment_")}),
+        pinned_content_digest TEXT NOT NULL CHECK({_sha256_check("pinned_content_digest")}),
+        original_arguments_json TEXT NOT NULL CHECK(json_valid(original_arguments_json) AND json_type(original_arguments_json)='object' AND length(CAST(original_arguments_json AS BLOB))<=1048576),
+        original_arguments_digest TEXT NOT NULL CHECK({_sha256_check("original_arguments_digest")}),
+        normalized_changes_json TEXT NOT NULL CHECK(json_valid(normalized_changes_json) AND json_type(normalized_changes_json)='object' AND length(CAST(normalized_changes_json AS BLOB))<=262144),
+        resulting_arguments_json TEXT NOT NULL CHECK(json_valid(resulting_arguments_json) AND json_type(resulting_arguments_json)='object' AND length(CAST(resulting_arguments_json AS BLOB))<=1048576),
+        resulting_arguments_digest TEXT NOT NULL CHECK({_sha256_check("resulting_arguments_digest")}),
+        diff_json TEXT NOT NULL CHECK(json_valid(diff_json) AND json_type(diff_json)='array' AND json_array_length(diff_json)<=10000 AND length(CAST(diff_json AS BLOB))<=1048576),
+        status TEXT NOT NULL CHECK(status='planned'),
+        created_at TEXT NOT NULL CHECK(typeof(created_at)='text' AND length(created_at)>0),
+        expires_at TEXT NOT NULL CHECK(
+            typeof(expires_at)='text'
+            AND substr(created_at,-6)='+00:00' AND substr(expires_at,-6)='+00:00'
+            AND strftime('%s',created_at) IS NOT NULL AND strftime('%s',expires_at) IS NOT NULL
+            AND CAST(strftime('%s',expires_at) AS INTEGER)=CAST(strftime('%s',created_at) AS INTEGER)+3600
+            AND (CASE WHEN instr(created_at,'.')>0 THEN substr(created_at,instr(created_at,'.')+1,length(created_at)-instr(created_at,'.')-6) ELSE '' END)
+                =(CASE WHEN instr(expires_at,'.')>0 THEN substr(expires_at,instr(expires_at,'.')+1,length(expires_at)-instr(expires_at,'.')-6) ELSE '' END)
+        ),
+        FOREIGN KEY(original_job_id,owner_id,workflow_id,server_id) REFERENCES jobs(job_id,owner_id,workflow_id,server_id) ON DELETE RESTRICT,
+        FOREIGN KEY(pinned_plan_id,workflow_id,pinned_revision_id,pinned_deployment_id) REFERENCES execution_plans(plan_id,workflow_id,revision_id,deployment_id) ON DELETE RESTRICT,
+        FOREIGN KEY(workflow_id,pinned_revision_id,pinned_content_digest) REFERENCES workflow_revisions(workflow_id,revision_id,content_digest) ON DELETE RESTRICT,
+        FOREIGN KEY(pinned_deployment_id,workflow_id,pinned_revision_id,server_id) REFERENCES workflow_deployments(deployment_id,workflow_id,revision_id,server_id) ON DELETE RESTRICT,
+        UNIQUE(repair_plan_id,owner_id,plan_digest),
+        UNIQUE(owner_id,original_job_id,plan_digest)
+    )
+    """,
+    "CREATE INDEX ix_repair_plans_owner_created ON repair_plans(owner_id,created_at DESC,repair_plan_id DESC)",
+    "CREATE INDEX ix_repair_plans_owner_subject ON repair_plans(owner_id,original_job_id,created_at DESC,repair_plan_id DESC)",
+    "CREATE INDEX ix_repair_plans_expiry ON repair_plans(expires_at,repair_plan_id)",
+    """
+    CREATE TRIGGER tr_repair_plans_source_insert BEFORE INSERT ON repair_plans
+    WHEN NOT EXISTS(
+        SELECT 1 FROM jobs JOIN execution_plans ON execution_plans.plan_id=jobs.plan_id
+        WHERE jobs.job_id=NEW.original_job_id AND jobs.owner_id=NEW.owner_id
+          AND jobs.workflow_id=NEW.workflow_id AND jobs.server_id=NEW.server_id
+          AND jobs.plan_id=NEW.pinned_plan_id AND jobs.revision_id=NEW.pinned_revision_id
+          AND jobs.deployment_id=NEW.pinned_deployment_id
+          AND json(json_extract(execution_plans.resolved_inputs_json,'$.arguments'))=json(NEW.original_arguments_json)
+    )
+    BEGIN SELECT RAISE(ABORT,'repair plan original snapshot binding is invalid'); END
+    """,
+    """
+    CREATE TRIGGER tr_repair_plans_diff_insert BEFORE INSERT ON repair_plans
+    WHEN
+      (SELECT count(*) FROM json_each(NEW.diff_json))!=(SELECT count(*) FROM json_each(NEW.normalized_changes_json))
+      OR EXISTS(SELECT 1 FROM json_each(NEW.diff_json) GROUP BY json_extract(value,'$.path') HAVING count(*)!=1)
+      OR EXISTS(
+        SELECT 1 FROM json_each(NEW.normalized_changes_json) AS change
+        LEFT JOIN json_each(NEW.resulting_arguments_json) AS result ON result.key=change.key
+        WHERE result.key IS NULL OR result.type!=change.type OR result.value IS NOT change.value
+      )
+      OR EXISTS(
+        SELECT 1 FROM json_each(NEW.original_arguments_json) AS original
+        LEFT JOIN json_each(NEW.normalized_changes_json) AS change ON change.key=original.key
+        LEFT JOIN json_each(NEW.resulting_arguments_json) AS result ON result.key=original.key
+        WHERE change.key IS NULL AND (result.key IS NULL OR result.type!=original.type OR result.value IS NOT original.value)
+      )
+      OR EXISTS(
+        SELECT 1 FROM json_each(NEW.resulting_arguments_json) AS result
+        LEFT JOIN json_each(NEW.original_arguments_json) AS original ON original.key=result.key
+        LEFT JOIN json_each(NEW.normalized_changes_json) AS change ON change.key=result.key
+        WHERE original.key IS NULL AND change.key IS NULL
+      )
+      OR EXISTS(
+        SELECT 1 FROM json_each(NEW.diff_json) AS item
+        LEFT JOIN json_each(NEW.normalized_changes_json) AS change
+          ON json_extract(item.value,'$.path')='/arguments/'||replace(replace(change.key,'~','~0'),'/','~1')
+        LEFT JOIN json_each(NEW.original_arguments_json) AS original ON original.key=change.key
+        WHERE change.key IS NULL OR json_type(item.value)!='object'
+          OR json_type(item.value,'$.path')!='text' OR json_type(item.value,'$.operation')!='text'
+          OR json_type(item.value,'$.after')!=change.type OR json_extract(item.value,'$.after') IS NOT change.value
+          OR (original.key IS NULL AND (json_extract(item.value,'$.operation')!='add' OR json_type(item.value,'$.before')!='null'))
+          OR (original.key IS NOT NULL AND (json_type(item.value,'$.before')!=original.type OR json_extract(item.value,'$.before') IS NOT original.value
+              OR json_extract(item.value,'$.operation')!=CASE WHEN original.type=change.type AND original.value IS change.value THEN 'unchanged' ELSE 'replace' END))
+      )
+    BEGIN SELECT RAISE(ABORT,'repair plan diff does not exactly describe resulting snapshot'); END
+    """,
+    "CREATE TRIGGER tr_repair_plans_immutable_update BEFORE UPDATE ON repair_plans BEGIN SELECT RAISE(ABORT,'repair plan is immutable'); END",
+    """
+    CREATE TABLE repair_plan_commit_intents (
+        repair_plan_id TEXT NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        plan_digest TEXT NOT NULL,
+        reserved_at TEXT NOT NULL,
+        FOREIGN KEY(repair_plan_id,owner_id,plan_digest) REFERENCES repair_plans(repair_plan_id,owner_id,plan_digest) ON DELETE RESTRICT,
+        UNIQUE(repair_plan_id,owner_id,plan_digest)
+    )
+    """,
+    """
+    CREATE TRIGGER tr_repair_plan_commit_intents_expiry_insert BEFORE INSERT ON repair_plan_commit_intents
+    WHEN NOT EXISTS(
+        SELECT 1 FROM repair_plans WHERE repair_plan_id=NEW.repair_plan_id
+          AND owner_id=NEW.owner_id AND plan_digest=NEW.plan_digest
+          AND julianday(expires_at)>julianday(NEW.reserved_at)
+    ) BEGIN SELECT RAISE(ABORT,'repair plan commit intent is invalid or expired'); END
+    """,
+    "CREATE TRIGGER tr_repair_plan_commit_intents_immutable_update BEFORE UPDATE ON repair_plan_commit_intents BEGIN SELECT RAISE(ABORT,'repair plan commit intent is immutable'); END",
+    "CREATE TRIGGER tr_repair_plan_commit_intents_immutable_delete BEFORE DELETE ON repair_plan_commit_intents BEGIN SELECT RAISE(ABORT,'repair plan commit intent is immutable'); END",
+    """
+    CREATE TABLE repair_plan_commits (
+        repair_plan_id TEXT NOT NULL PRIMARY KEY,
+        owner_id TEXT NOT NULL,
+        plan_digest TEXT NOT NULL,
+        original_job_id TEXT NOT NULL,
+        retry_job_id TEXT NOT NULL UNIQUE,
+        result_job_uri TEXT NOT NULL UNIQUE,
+        committed_at TEXT NOT NULL,
+        FOREIGN KEY(repair_plan_id,owner_id,plan_digest) REFERENCES repair_plans(repair_plan_id,owner_id,plan_digest) ON DELETE RESTRICT,
+        FOREIGN KEY(original_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        FOREIGN KEY(retry_job_id,owner_id) REFERENCES jobs(job_id,owner_id) ON DELETE RESTRICT,
+        CHECK(original_job_id!=retry_job_id),
+        CHECK(result_job_uri='comfyui://jobs/'||retry_job_id),
+        UNIQUE(repair_plan_id,owner_id,plan_digest,retry_job_id)
+    )
+    """,
+    "CREATE INDEX ix_repair_plan_commits_owner_time ON repair_plan_commits(owner_id,committed_at DESC,repair_plan_id DESC)",
+    """
+    CREATE TRIGGER tr_repair_plan_commits_binding_insert BEFORE INSERT ON repair_plan_commits
+    WHEN NOT EXISTS(
+        SELECT 1 FROM repair_plans AS repair
+        JOIN repair_plan_commit_intents AS intent
+          ON intent.repair_plan_id=repair.repair_plan_id AND intent.owner_id=repair.owner_id
+         AND intent.plan_digest=repair.plan_digest
+        JOIN jobs AS retry ON retry.job_id=NEW.retry_job_id AND retry.owner_id=NEW.owner_id
+        JOIN execution_plans AS result_plan ON result_plan.plan_id=retry.plan_id
+        WHERE repair.repair_plan_id=NEW.repair_plan_id AND repair.owner_id=NEW.owner_id
+          AND repair.plan_digest=NEW.plan_digest AND repair.original_job_id=NEW.original_job_id
+          AND julianday(intent.reserved_at)<julianday(repair.expires_at)
+          AND retry.job_id!=repair.original_job_id AND retry.workflow_id=repair.workflow_id
+          AND retry.server_id=repair.server_id AND retry.revision_id=repair.pinned_revision_id
+          AND retry.deployment_id=repair.pinned_deployment_id
+          AND (retry.retry_of IS NULL OR retry.retry_of=repair.original_job_id)
+          AND json(json_extract(result_plan.resolved_inputs_json,'$.arguments'))=json(repair.resulting_arguments_json)
+    )
+    BEGIN SELECT RAISE(ABORT,'repair plan commit aggregate binding is invalid or expired'); END
+    """,
+    "CREATE TRIGGER tr_repair_plan_commits_immutable_update BEFORE UPDATE ON repair_plan_commits BEGIN SELECT RAISE(ABORT,'repair plan commit evidence is immutable'); END",
+    "CREATE TRIGGER tr_repair_plan_commits_immutable_delete BEFORE DELETE ON repair_plan_commits BEGIN SELECT RAISE(ABORT,'repair plan commit evidence is immutable'); END",
+    "DROP TRIGGER tr_jobs_execution_identity_immutable",
+    """
+    CREATE TRIGGER tr_jobs_execution_identity_immutable BEFORE UPDATE OF
+        job_id,workflow_id,plan_id,revision_id,deployment_id,owner_id,
+        created_at,created_at_source,legacy_migrated,execution_origin
+    ON jobs BEGIN SELECT RAISE(ABORT,'job execution identity is immutable'); END
+    """,
+    """
+    CREATE TRIGGER tr_jobs_retry_cycle_insert BEFORE INSERT ON jobs
+    WHEN NEW.retry_of IS NOT NULL AND (NEW.retry_of=NEW.job_id OR EXISTS(
+        WITH RECURSIVE lineage(job_id,retry_of) AS (
+            SELECT job_id,retry_of FROM jobs WHERE job_id=NEW.retry_of AND owner_id=NEW.owner_id
+            UNION ALL SELECT jobs.job_id,jobs.retry_of FROM jobs JOIN lineage ON jobs.job_id=lineage.retry_of WHERE jobs.owner_id=NEW.owner_id
+        ) SELECT 1 FROM lineage WHERE retry_of=NEW.job_id
+    )) BEGIN SELECT RAISE(ABORT,'retry-of cycle is forbidden'); END
+    """,
+    """
+    CREATE TRIGGER tr_jobs_retry_lineage_append BEFORE UPDATE OF retry_of ON jobs
+    WHEN NOT(OLD.retry_of IS NULL AND NEW.retry_of IS NOT NULL AND NEW.retry_of!=NEW.job_id AND EXISTS(
+        SELECT 1 FROM repair_plan_commits AS commits JOIN repair_plans AS repair ON repair.repair_plan_id=commits.repair_plan_id
+        WHERE commits.retry_job_id=NEW.job_id AND commits.owner_id=NEW.owner_id
+          AND commits.original_job_id=NEW.retry_of AND repair.workflow_id=NEW.workflow_id
+          AND repair.server_id=NEW.server_id AND repair.pinned_revision_id=NEW.revision_id
+          AND repair.pinned_deployment_id=NEW.deployment_id
+    ))
+    BEGIN SELECT RAISE(ABORT,'job retry lineage is append-once and commit-bound'); END
+    """,
+)
+
 _PHASE_M_EXPERIMENTS_UP = (
     _PHASE_M_EXPERIMENT_AGGREGATES_UP
     + _PHASE_M_EXPERIMENT_VARIANTS_UP
@@ -1906,6 +2144,13 @@ _MIGRATIONS = (
         _PHASE_M_EXPERIMENTS_UP,
         (),
         feasibility_note="forward-only owner-bound durable Experiment and Variant storage",
+    ),
+    SchemaMigration(
+        8,
+        "phase-n-diagnostic-recovery",
+        _PHASE_N_DIAGNOSTIC_RECOVERY_UP,
+        (),
+        feasibility_note="forward-only owner-bound structured diagnostic and retry recovery storage",
     ),
 )
 

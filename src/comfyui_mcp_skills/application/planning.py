@@ -103,6 +103,7 @@ class ExecutionPlanningService:
         revision_id: str = "",
         deployment_id: str = "",
         content_digest: str = "",
+        retry_of: str = "",
     ) -> ExecutionIdentity:
         input_snapshot = {
             "arguments": arguments,
@@ -220,7 +221,7 @@ class ExecutionPlanningService:
                     owner_id, server_id, status, retry_of, created_at,
                     created_at_source, legacy_migrated, execution_origin, error,
                     outputs_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', NULL, ?, 'runtime', 0,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, 'runtime', 0,
                           'planned', '', '[]')
                 """,
                 (
@@ -231,6 +232,7 @@ class ExecutionPlanningService:
                     deployment_id,
                     owner_id,
                     server_id,
+                    retry_of or None,
                     created_at,
                 ),
             )
@@ -267,6 +269,7 @@ class ExecutionPlanningService:
                 owner_id=owner_id,
                 server_id=server_id,
                 client_id=client_id,
+                retry_of=retry_of,
             )
             connection.commit()
         except BaseException:
@@ -423,17 +426,26 @@ def _verify_identity(
     owner_id: str,
     server_id: str,
     client_id: str,
+    retry_of: str,
 ) -> None:
     row = connection.execute(
         """
         SELECT jobs.plan_id, jobs.revision_id, jobs.deployment_id, jobs.owner_id,
-               jobs.server_id, execution_attempts.client_id
+               jobs.server_id, execution_attempts.client_id, jobs.retry_of
         FROM jobs JOIN execution_attempts ON execution_attempts.job_id = jobs.job_id
         WHERE jobs.job_id = ? AND execution_attempts.attempt = 1
         """,
         (job_id,),
     ).fetchone()
-    expected = (plan_id, revision_id, deployment_id, owner_id, server_id, client_id)
+    expected = (
+        plan_id,
+        revision_id,
+        deployment_id,
+        owner_id,
+        server_id,
+        client_id,
+        retry_of or None,
+    )
     if row is None or tuple(row) != expected:
         raise RuntimeError("canonical execution identity conflicts with existing facts")
 

@@ -70,7 +70,9 @@ async def test_prompt_handlers_list_and_render_bounded_safe_guidance() -> None:
         assert "resolved inputs" in text
 
     assert f"comfyui://jobs/{_JOB_ID}" in rendered["operate-job"].messages[0].content.text
-    assert "comfyui.job.get at most once" in rendered["diagnose-failure"].messages[0].content.text
+    assert (
+        "comfyui.job.diagnose exactly once" in rendered["diagnose-failure"].messages[0].content.text
+    )
     assert (
         f"comfyui://revisions/{_REVISION_ID}"
         in rendered["inspect-dependencies"].messages[0].content.text
@@ -114,11 +116,7 @@ async def test_server_registers_low_level_prompt_handlers(tmp_path: Path) -> Non
         rendered = await client.get_prompt("operate-job", {"job_id": _JOB_ID})
         with pytest.raises(MCPError) as captured:
             await client.get_prompt("unknown")
-
-    assert {prompt.name for prompt in listed.prompts} == {
-        "operate-job",
-        "diagnose-failure",
-    }
+    assert {prompt.name for prompt in listed.prompts} == {"operate-job"}
     assert f"comfyui://jobs/{_JOB_ID}" in rendered.messages[0].content.text
     assert captured.value.code == -32602
 

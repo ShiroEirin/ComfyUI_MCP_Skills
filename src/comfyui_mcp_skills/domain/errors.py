@@ -131,3 +131,19 @@ class ExperimentNotFound(ComfyUISkillsError):
 
 class ExperimentPlanConflict(ComfyUISkillsError):
     code = "EXPERIMENT_PLAN_CONFLICT"
+
+
+class DiagnosticNotFound(ComfyUISkillsError):
+    code = "DIAGNOSTIC_NOT_FOUND"
+
+
+class RepairPlanNotFound(ComfyUISkillsError):
+    code = "REPAIR_PLAN_NOT_FOUND"
+
+
+class RepairPlanConflict(ComfyUISkillsError):
+    code = "REPAIR_PLAN_CONFLICT"
+
+
+class RetryNotAllowed(ComfyUISkillsError):
+    code = "RETRY_NOT_ALLOWED"

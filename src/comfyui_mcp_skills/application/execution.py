@@ -87,6 +87,7 @@ class ExecutionService:
         revision_id: str = "",
         deployment_id: str = "",
         content_digest: str = "",
+        retry_of: str = "",
     ) -> Job:
         if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
             raise ValueError("idempotency_key must be a string up to 256 characters")
@@ -257,6 +258,7 @@ class ExecutionService:
                     revision_id=revision_id,
                     deployment_id=deployment_id,
                     content_digest=content_digest,
+                    retry_of=retry_of,
                 )
             except BaseException:
                 self._runs.release_claim(

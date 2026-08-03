@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -37,6 +38,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     current_owner,
     current_scopes,
     decorate_tool,
+    diagnostic_report_dict,
     experiment_dict,
     fixed_tools,
     job_dict,
@@ -45,8 +47,10 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     phase_h_tools,
     phase_l_tools,
     phase_m_tools,
+    phase_n_tools,
     promotion_dict,
     rating_dict,
+    repair_plan_dict,
     required_object,
     required_string,
     tool_result,
@@ -67,6 +71,8 @@ from comfyui_mcp_skills.application.authorization import (
 from comfyui_mcp_skills.application.capabilities import (
     CAPABILITY_SPECS,
     CapabilityCatalog,
+    CapabilitySpec,
+    RiskLevel,
     ToolInventory,
 )
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
@@ -91,8 +97,12 @@ from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowValidationService,
 )
 from comfyui_mcp_skills.application.workflow_inspection import WorkflowInspectionService
-from comfyui_mcp_skills.domain.control_plane import parse_legacy_resource_uri
+from comfyui_mcp_skills.domain.control_plane import (
+    parse_legacy_resource_uri,
+    validate_control_plane_id,
+)
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
+from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.domain.workflow_semantics import (
@@ -150,6 +160,65 @@ PHASE_M_TOOL_NAMES = frozenset(
         "comfyui.experiment.variant.promote",
     }
 )
+PHASE_N_DIAGNOSTIC_TOOL_NAMES = frozenset({"comfyui.job.diagnose", "comfyui.server.diagnose"})
+PHASE_N_RETRY_TOOL_NAMES = frozenset({"comfyui.job.retry.plan", "comfyui.job.retry.commit"})
+PHASE_N_TOOL_NAMES = PHASE_N_DIAGNOSTIC_TOOL_NAMES | PHASE_N_RETRY_TOOL_NAMES
+PHASE_N_CAPABILITY_SPECS = (
+    CapabilitySpec(
+        "comfyui.job.diagnose",
+        "Diagnose a failed Job",
+        "Generate one owner-bound structured Diagnostic Report.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("diagnose", "failure", "evidence"),
+    ),
+    CapabilitySpec(
+        "comfyui.server.diagnose",
+        "Diagnose a server",
+        "Generate one bounded structured server Diagnostic Report.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("diagnose", "server", "health"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.retry.plan",
+        "Plan a Job retry",
+        "Create an owner-bound digest-bound retry repair plan.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("retry", "repair", "plan", "diff"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.retry.commit",
+        "Commit a Job retry",
+        "Create one new Job from an unexpired digest-bound repair plan.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("retry", "repair", "commit"),
+    ),
+)
+
+
+def _tool_visible(name: str, toolset: Toolset, scopes: frozenset[Scope]) -> bool:
+    if name in PHASE_N_TOOL_NAMES:
+        required = (
+            frozenset({Scope.OBSERVE})
+            if name == "comfyui.server.diagnose"
+            else frozenset({Scope.EXECUTE})
+        )
+        admitted_toolsets = (
+            frozenset({Toolset.OPERATIONS})
+            if name == "comfyui.server.diagnose"
+            else frozenset({Toolset.EXECUTION})
+        )
+        return toolset in admitted_toolsets and bool(scopes & required)
+    return tool_visible(name, toolset, scopes)
+
+
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 logger = logging.getLogger(__name__)
 
@@ -162,6 +231,8 @@ def create_server(
     max_upload_bytes: int = 100 * 1024 * 1024,
     repositories: RepositoryBundle | None = None,
     authorization: AuthorizationContext | None = None,
+    diagnostic_service: Any | None = None,
+    retry_service: Any | None = None,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
@@ -247,24 +318,49 @@ def create_server(
     experiment_service: ExperimentService | None = None
     if experiments_available and experiment_repository is not None:
         experiment_service = ExperimentService(experiment_repository)
+    diagnostic_repository = getattr(repositories, "diagnostics", None)
+    if diagnostic_service is None and diagnostic_repository is not None:
+        from comfyui_mcp_skills.application.diagnostics import DiagnosticService
+
+        diagnostic_service = DiagnosticService(diagnostic_repository)
+    retry_repository = getattr(repositories, "retries", None)
+    if retry_service is None and retry_repository is not None:
+        from comfyui_mcp_skills.application.diagnostics import RetryService
+
+        retry_service = RetryService(retry_repository, execution)
     fixed_surface = [
         *fixed_tools(),
         *phase_h_tools(),
         *(phase_l_tools() if asset_library is not None else []),
         *(phase_m_tools() if experiment_service is not None else []),
+        *[
+            tool
+            for tool in phase_n_tools()
+            if (diagnostic_service is not None and tool.name in PHASE_N_DIAGNOSTIC_TOOL_NAMES)
+            or (retry_service is not None and tool.name in PHASE_N_RETRY_TOOL_NAMES)
+        ],
     ]
+    available_phase_n = {
+        *(PHASE_N_DIAGNOSTIC_TOOL_NAMES if diagnostic_service is not None else frozenset()),
+        *(PHASE_N_RETRY_TOOL_NAMES if retry_service is not None else frozenset()),
+    }
     capability_catalog = CapabilityCatalog(
-        spec
-        for spec in CAPABILITY_SPECS
-        if (repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS)
-        and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
-        and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
+        (
+            *(
+                spec
+                for spec in CAPABILITY_SPECS
+                if (repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS)
+                and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
+                and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
+            ),
+            *(spec for spec in PHASE_N_CAPABILITY_SPECS if spec.name in available_phase_n),
+        )
     )
     tool_inventory = ToolInventory(
         (
             tool
             for tool in fixed_surface
-            if tool_visible(tool.name, authorization.toolset, authorization.scopes)
+            if _tool_visible(tool.name, authorization.toolset, authorization.scopes)
         ),
         max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT,
     )
@@ -399,17 +495,21 @@ def create_server(
         enabled_workflows,
         resource_aliases=resource_aliases,
         require_authorization=enforce_authorization,
+        authorization=authorization,
         workflow_inspection=workflow_inspection,
         asset_library=asset_library,
         asset_library_repository=asset_library_repository,
         experiment_service=experiment_service,
         experiment_variant_reader=experiment_variant_reader,
         experiment_preset_reader=experiment_preset_reader,
+        diagnostic_service=diagnostic_service,
+        retry_service=retry_service,
     )
     prompt_handlers = create_prompt_handlers(
         authorization,
         require_authorization=True,
         experiments_available=experiment_service is not None,
+        diagnostics_available=diagnostic_service is not None,
     )
 
     def current_tools() -> tuple[list[Tool], dict[str, Workflow]]:
@@ -455,7 +555,7 @@ def create_server(
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
-                and tool_visible(tool.name, authorization.toolset, active_scopes)
+                and _tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
                 workflow_map = {}
@@ -465,7 +565,7 @@ def create_server(
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
-                and tool_visible(tool.name, authorization.toolset, authorization.scopes)
+                and _tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
         return tools, workflow_map
 
@@ -481,7 +581,11 @@ def create_server(
         params: CallToolRequestParams,
     ) -> CallToolResult:
         arguments = dict(params.arguments or {})
-        owner_id = current_owner()
+        owner_id = (
+            authorization.principal_id
+            if enforce_authorization and current_scopes() is None
+            else current_owner()
+        )
         tools, workflow_map = current_tools()
         visible_names = {tool.name for tool in tools}
         if params.name not in visible_names:
@@ -581,6 +685,53 @@ def create_server(
                 result["input_schema"] = described_tool.input_schema
                 result["output_schema"] = described_tool.output_schema
                 return tool_result(result)
+            if params.name in PHASE_N_DIAGNOSTIC_TOOL_NAMES:
+                if diagnostic_service is None:
+                    raise ValueError("Diagnostic service is unavailable")
+                if params.name == "comfyui.job.diagnose":
+                    validate_fixed_arguments(arguments, {"job_id"})
+                    job_id = validate_control_plane_id(
+                        "job", required_string(arguments, "job_id", max_length=128)
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        diagnostic_service.diagnose_job, job_id, owner_id
+                    )
+                else:
+                    validate_fixed_arguments(arguments, {"server_id"})
+                    server_id = validate_identifier(
+                        required_string(arguments, "server_id", max_length=128),
+                        field="server_id",
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        diagnostic_service.diagnose_server, server_id, owner_id
+                    )
+                return tool_result(diagnostic_report_dict(result))
+            if params.name in PHASE_N_RETRY_TOOL_NAMES:
+                if retry_service is None:
+                    raise ValueError("Retry service is unavailable")
+                if params.name == "comfyui.job.retry.plan":
+                    validate_fixed_arguments(arguments, {"job_id", "changes"})
+                    job_id = validate_control_plane_id(
+                        "job", required_string(arguments, "job_id", max_length=128)
+                    )
+                    changes = required_object(
+                        arguments, "changes", max_properties=64, max_bytes=256 * 1024
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        retry_service.plan, job_id, owner_id, changes
+                    )
+                else:
+                    validate_fixed_arguments(arguments, {"repair_plan_id", "plan_digest"})
+                    repair_plan_id = required_string(arguments, "repair_plan_id", max_length=128)
+                    plan_digest = required_string(arguments, "plan_digest", max_length=64)
+                    if re.fullmatch(r"repair_plan_[0-9a-f]{64}", repair_plan_id) is None:
+                        raise ValueError("repair_plan_id must be canonical")
+                    if re.fullmatch(r"[0-9a-f]{64}", plan_digest) is None:
+                        raise ValueError("plan_digest must be a SHA-256 digest")
+                    result = await anyio.to_thread.run_sync(
+                        retry_service.commit, repair_plan_id, plan_digest, owner_id
+                    )
+                return tool_result(repair_plan_dict(result))
             if params.name in PHASE_M_TOOL_NAMES:
                 if experiment_service is None:
                     raise ValueError("Experiment service is unavailable")

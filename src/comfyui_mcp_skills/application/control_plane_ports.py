@@ -151,6 +151,7 @@ class ExecutionSubmitter(Protocol):
         revision_id: str = "",
         deployment_id: str = "",
         content_digest: str = "",
+        retry_of: str = "",
     ) -> Job: ...
 
 

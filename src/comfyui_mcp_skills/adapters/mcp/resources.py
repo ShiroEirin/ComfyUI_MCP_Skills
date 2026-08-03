@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import mimetypes
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -29,13 +30,19 @@ from mcp_types import INVALID_PARAMS
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     current_owner,
     current_scopes,
+    diagnostic_report_dict,
     experiment_dict,
     job_dict,
+    repair_plan_dict,
     variant_dict,
 )
 from comfyui_mcp_skills.application.asset_library import AssetLibraryService
 from comfyui_mcp_skills.application.assets import AssetService
-from comfyui_mcp_skills.application.authorization import is_authorized, scopes_for_resource
+from comfyui_mcp_skills.application.authorization import (
+    AuthorizationContext,
+    is_authorized,
+    scopes_for_resource,
+)
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.jobs import JobService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
@@ -69,16 +76,38 @@ _MAX_OUTPUT_BYTES = 25 * 1024 * 1024
 _MAX_JSON_RESOURCE_BYTES = 1024 * 1024
 
 
-def _resource_scope_allowed(kind: str, *, required: bool) -> bool:
-    granted = current_scopes()
+def _resource_scope_allowed(
+    kind: str,
+    *,
+    required: bool,
+    authorization: AuthorizationContext | None = None,
+) -> bool:
+    granted = current_scopes() or (authorization.scopes if authorization is not None else None)
     if granted is None:
         return not required
+    phase_n_scopes = {
+        "diagnostic": frozenset({"comfyui:execute", "comfyui:observe"}),
+        "repair_plan": frozenset({"comfyui:execute"}),
+    }.get(kind)
+    if phase_n_scopes is not None:
+        return bool({scope.value for scope in granted} & phase_n_scopes)
     return is_authorized(granted, scopes_for_resource(kind))
 
 
-def _require_resource_scope(kind: str, *, required: bool) -> None:
-    if not _resource_scope_allowed(kind, required=required):
+def _require_resource_scope(
+    kind: str,
+    *,
+    required: bool,
+    authorization: AuthorizationContext | None = None,
+) -> None:
+    if not _resource_scope_allowed(kind, required=required, authorization=authorization):
         raise MCPError(code=INVALID_PARAMS, message="Resource not found")
+
+
+def _resource_owner(authorization: AuthorizationContext | None) -> str:
+    if current_scopes() is None and authorization is not None:
+        return authorization.principal_id
+    return current_owner()
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,12 +127,15 @@ def create_resource_handlers(
     *,
     resource_aliases: ResourceAliasReader | None = None,
     require_authorization: bool = False,
+    authorization: AuthorizationContext | None = None,
     workflow_inspection: WorkflowInspectionService | None = None,
     asset_library: AssetLibraryService | None = None,
     asset_library_repository: SQLiteAssetLibraryRepository | None = None,
     experiment_service: Any | None = None,
     experiment_variant_reader: ExperimentVariantReader | None = None,
     experiment_preset_reader: ExperimentPresetReader | None = None,
+    diagnostic_service: Any | None = None,
+    retry_service: Any | None = None,
 ) -> ResourceHandlers:
     async def list_templates(
         _ctx: ServerRequestContext[dict[str, object]],
@@ -244,6 +276,34 @@ def create_resource_handlers(
                 if experiment_preset_reader is not None
                 else []
             ),
+            *(
+                [
+                    (
+                        "diagnostic",
+                        ResourceTemplate(
+                            uri_template="comfyui://diagnostics/{diagnostic_id}",
+                            name="Owned bounded Diagnostic Report",
+                            mime_type="application/json",
+                        ),
+                    )
+                ]
+                if diagnostic_service is not None
+                else []
+            ),
+            *(
+                [
+                    (
+                        "repair_plan",
+                        ResourceTemplate(
+                            uri_template="comfyui://plans/{repair_plan_id}",
+                            name="Owned immutable retry repair plan",
+                            mime_type="application/json",
+                        ),
+                    )
+                ]
+                if retry_service is not None
+                else []
+            ),
             (
                 "artifact",
                 ResourceTemplate(
@@ -270,7 +330,9 @@ def create_resource_handlers(
             resource_templates=[
                 template
                 for kind, template in templates
-                if _resource_scope_allowed(kind, required=require_authorization)
+                if _resource_scope_allowed(
+                    kind, required=require_authorization, authorization=authorization
+                )
             ],
             ttl_ms=60_000,
             cache_scope="private",
@@ -280,7 +342,9 @@ def create_resource_handlers(
         _ctx: ServerRequestContext[dict[str, object]],
         _params: PaginatedRequestParams | None,
     ) -> ListResourcesResult:
-        _require_resource_scope("workflow", required=require_authorization)
+        _require_resource_scope(
+            "workflow", required=require_authorization, authorization=authorization
+        )
         resources = [
             Resource(
                 uri=f"comfyui://workflows/{workflow.server_id}/{workflow.workflow_id}",
@@ -292,9 +356,9 @@ def create_resource_handlers(
             for workflow in enabled_workflows()
         ]
         if asset_library is not None and _resource_scope_allowed(
-            "asset", required=require_authorization
+            "asset", required=require_authorization, authorization=authorization
         ):
-            owner_id = current_owner()
+            owner_id = _resource_owner(authorization)
             asset_page = await anyio.to_thread.run_sync(
                 lambda: asset_library.list_assets(owner_id=owner_id, limit=100)
             )
@@ -345,12 +409,15 @@ def create_resource_handlers(
                 gateway_factory=gateway_factory,
                 resource_aliases=resource_aliases,
                 require_authorization=require_authorization,
+                authorization=authorization,
                 workflow_inspection=workflow_inspection,
                 asset_library=asset_library,
                 asset_library_repository=asset_library_repository,
                 experiment_service=experiment_service,
                 experiment_variant_reader=experiment_variant_reader,
                 experiment_preset_reader=experiment_preset_reader,
+                diagnostic_service=diagnostic_service,
+                retry_service=retry_service,
             )
         except MCPError:
             raise
@@ -384,21 +451,43 @@ async def _read_resource(
     gateway_factory: GatewayFactory,
     resource_aliases: ResourceAliasReader | None = None,
     require_authorization: bool = False,
+    authorization: AuthorizationContext | None = None,
     workflow_inspection: WorkflowInspectionService | None = None,
     experiment_service: Any | None = None,
     experiment_variant_reader: ExperimentVariantReader | None = None,
     experiment_preset_reader: ExperimentPresetReader | None = None,
+    diagnostic_service: Any | None = None,
+    retry_service: Any | None = None,
 ) -> ReadResourceResult:
     uri = str(params.uri)
+    owner_id = _resource_owner(authorization)
     parsed = urlsplit(uri)
+    diagnostic_id = _diagnostic_ref(uri)
+    if diagnostic_id is not None:
+        _require_resource_scope(
+            "diagnostic", required=require_authorization, authorization=authorization
+        )
+        if diagnostic_service is None:
+            raise ValueError("Diagnostic Resources are unavailable")
+        document = await anyio.to_thread.run_sync(diagnostic_service.get, diagnostic_id, owner_id)
+        return _json_resource(uri, diagnostic_report_dict(document))
+    repair_plan_id = _repair_plan_ref(uri)
+    if repair_plan_id is not None:
+        _require_resource_scope(
+            "repair_plan", required=require_authorization, authorization=authorization
+        )
+        if retry_service is None:
+            raise ValueError("Repair Plan Resources are unavailable")
+        document = await anyio.to_thread.run_sync(retry_service.get, repair_plan_id, owner_id)
+        return _json_resource(uri, repair_plan_dict(document))
     preset_id = _preset_ref(uri)
     if preset_id is not None:
-        _require_resource_scope("variant", required=require_authorization)
+        _require_resource_scope(
+            "variant", required=require_authorization, authorization=authorization
+        )
         if experiment_preset_reader is None:
             raise ValueError("Experiment Preset Resources are unavailable")
-        document = await anyio.to_thread.run_sync(
-            experiment_preset_reader, preset_id, current_owner()
-        )
+        document = await anyio.to_thread.run_sync(experiment_preset_reader, preset_id, owner_id)
         if document is None:
             raise LookupError("Experiment Preset was not found")
         return _json_resource(uri, document)
@@ -407,11 +496,11 @@ async def _read_resource(
         _require_resource_scope(
             "variant" if experiment_ref[1] else "experiment",
             required=require_authorization,
+            authorization=authorization,
         )
         if experiment_service is None:
             raise ValueError("Experiment Resources are unavailable")
         experiment_id, variant_id = experiment_ref
-        owner_id = current_owner()
         if variant_id:
             if experiment_variant_reader is None:
                 raise ValueError("Variant Resources are unavailable")
@@ -424,7 +513,9 @@ async def _read_resource(
             raise ValueError("Experiment Resource is unavailable")
         return _json_resource(uri, experiment_dict(document))
     if parsed.scheme == "comfyui" and parsed.netloc == "lineage":
-        _require_resource_scope("lineage", required=require_authorization)
+        _require_resource_scope(
+            "lineage", required=require_authorization, authorization=authorization
+        )
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) != 1 or parsed.query or parsed.fragment:
             raise ValueError("Invalid lineage URI")
@@ -432,14 +523,16 @@ async def _read_resource(
         if asset_library_repository is None:
             raise ValueError("Artifact lineage is unavailable")
         lineage = await anyio.to_thread.run_sync(
-            lambda: asset_library_repository.artifact_lineage(artifact_id, current_owner())
+            lambda: asset_library_repository.artifact_lineage(artifact_id, owner_id)
         )
         if lineage is None:
             raise ValueError("Resource not found")
         return _json_resource(uri, lineage)
     semantic_ref = _semantic_workflow_ref(uri)
     if semantic_ref is not None:
-        _require_resource_scope("workflow", required=require_authorization)
+        _require_resource_scope(
+            "workflow", required=require_authorization, authorization=authorization
+        )
         if workflow_inspection is None:
             raise ValueError("Semantic workflow Resources are unavailable")
         workflow_id, view = semantic_ref
@@ -457,8 +550,9 @@ async def _read_resource(
         return _json_resource(uri, document)
     legacy_kind = parse_legacy_resource_uri(uri)
     if legacy_kind is not None:
-        _require_resource_scope(legacy_kind.kind, required=require_authorization)
-    owner_id = current_owner()
+        _require_resource_scope(
+            legacy_kind.kind, required=require_authorization, authorization=authorization
+        )
     legacy = parse_legacy_resource_uri(uri)
     response_uri = uri
     resolved_target = None
@@ -482,7 +576,9 @@ async def _read_resource(
             "input_schema": build_input_schema(workflow.parameters),
         }
     elif resolved_target is not None:
-        _require_resource_scope(resolved_target.kind, required=require_authorization)
+        _require_resource_scope(
+            resolved_target.kind, required=require_authorization, authorization=authorization
+        )
         return await _read_resolved_resource(
             resolved_target,
             servers=servers,
@@ -495,7 +591,9 @@ async def _read_resource(
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) != 1 or parsed.query or parsed.fragment:
             raise ValueError("Invalid Asset URI")
-        _require_resource_scope("asset", required=require_authorization)
+        _require_resource_scope(
+            "asset", required=require_authorization, authorization=authorization
+        )
         asset_id = validate_control_plane_id("asset", parts[0])
         document = assets.get(asset_id, owner_id=owner_id).to_public_dict()
     elif legacy is not None and legacy.kind == "asset":
@@ -530,6 +628,32 @@ async def _read_resource(
         ttl_ms=5_000,
         cache_scope="private",
     )
+
+
+def _diagnostic_ref(uri: str) -> str | None:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "comfyui" or parsed.netloc != "diagnostics":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 1 or parsed.query or parsed.fragment:
+        raise ValueError("Invalid Diagnostic URI")
+    diagnostic_id = validate_identifier(parts[0], field="diagnostic_id")
+    if not re.fullmatch(r"diagnostic_[0-9a-f]{64}", diagnostic_id):
+        raise ValueError("Invalid Diagnostic URI")
+    return diagnostic_id
+
+
+def _repair_plan_ref(uri: str) -> str | None:
+    parsed = urlsplit(uri)
+    if parsed.scheme != "comfyui" or parsed.netloc != "plans":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) != 1 or parsed.query or parsed.fragment:
+        raise ValueError("Invalid Repair Plan URI")
+    repair_plan_id = validate_identifier(parts[0], field="repair_plan_id")
+    if not re.fullmatch(r"repair_plan_[0-9a-f]{64}", repair_plan_id):
+        raise ValueError("Invalid Repair Plan URI")
+    return repair_plan_id
 
 
 def _preset_ref(uri: str) -> str | None:

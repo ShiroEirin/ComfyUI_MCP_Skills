@@ -338,12 +338,167 @@ def promotion_dict(value: dict[str, Any]) -> dict[str, Any]:
     return {name: value[name] for name in fields if name in value}
 
 
+_DIAGNOSTIC_PUBLIC_FIELDS = frozenset(
+    {
+        "diagnostic_id",
+        "registry_version",
+        "subject_uri",
+        "classification",
+        "retryable",
+        "evidence",
+        "safe_actions",
+        "approval_actions",
+        "created_at",
+    }
+)
+_DIAGNOSTIC_ACTION_FIELDS = frozenset({"tool", "name", "required_arguments", "risk"})
+_REPAIR_PLAN_PUBLIC_FIELDS = frozenset(
+    {
+        "repair_plan_id",
+        "plan_digest",
+        "resource_uri",
+        "original_job_id",
+        "workflow_id",
+        "server_id",
+        "pinned_plan_id",
+        "pinned_revision_id",
+        "pinned_deployment_id",
+        "normalized_changes",
+        "diff",
+        "original_arguments_digest",
+        "resulting_arguments_digest",
+        "status",
+        "created_at",
+        "expires_at",
+        "result_job_id",
+        "result_job_uri",
+        "retry_of",
+        "committed_at",
+    }
+)
+
+
+def _bounded_public_string(value: Any, *, maximum: int = 2048) -> str | None:
+    return value if isinstance(value, str) and len(value) <= maximum else None
+
+
+def _diagnostic_action(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    tool = _bounded_public_string(value.get("tool"), maximum=128)
+    name = _bounded_public_string(value.get("name"), maximum=256)
+    required = value.get("required_arguments")
+    risk = value.get("risk")
+    if tool is not None and re.fullmatch(r"comfyui\.[A-Za-z0-9_.-]{1,127}", tool):
+        result["tool"] = tool
+    if name is not None:
+        result["name"] = name
+    if isinstance(required, dict) and len(required) <= 32:
+        result["required_arguments"] = {
+            key: item
+            for key, item in required.items()
+            if isinstance(key, str)
+            and len(key) <= 128
+            and (
+                (isinstance(item, str) and len(item) <= 2048)
+                or isinstance(item, bool)
+                or (isinstance(item, dict) and not item)
+            )
+        }
+    if isinstance(risk, str) and risk in {"safe", "approval_required", "low", "medium", "high"}:
+        result["risk"] = risk
+    return {key: result[key] for key in _DIAGNOSTIC_ACTION_FIELDS if key in result}
+
+
+def _diagnostic_evidence(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, Any] = {}
+    status = value.get("status")
+    if isinstance(status, str):
+        result["status"] = status[:256]
+    failed_node = value.get("failed_node")
+    if isinstance(failed_node, dict):
+        result["failed_node"] = {
+            key: str(failed_node[key])[:256]
+            for key in ("node_id", "class_type", "error_type", "message")
+            if isinstance(failed_node.get(key), str)
+        }
+    events = value.get("events")
+    if isinstance(events, list):
+        result["events"] = [
+            {
+                key: str(item[key])[:256]
+                for key in ("event_type", "occurred_at", "message")
+                if isinstance(item, dict) and isinstance(item.get(key), str)
+            }
+            for item in events[:32]
+            if isinstance(item, dict)
+        ]
+    logs = value.get("log_window")
+    if isinstance(logs, list):
+        result["log_window"] = [str(item)[:2048] for item in logs[:32]]
+    return result
+
+
+def diagnostic_report_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Project one bounded Diagnostic Report without raw errors or commands."""
+    result = {name: value[name] for name in _DIAGNOSTIC_PUBLIC_FIELDS if name in value}
+    result["evidence"] = _diagnostic_evidence(value.get("evidence", {}))
+    for key in ("safe_actions", "approval_actions"):
+        actions = value.get(key, [])
+        result[key] = (
+            [_diagnostic_action(item) for item in actions[:16] if isinstance(item, dict)]
+            if isinstance(actions, list)
+            else []
+        )
+    return result
+
+
+def repair_plan_dict(value: dict[str, Any]) -> dict[str, Any]:
+    """Project a repair plan while retaining no immutable raw argument snapshots."""
+    return {name: value[name] for name in _REPAIR_PLAN_PUBLIC_FIELDS if name in value}
+
+
 def tool_result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
     content: list[ContentBlock] = [
         TextContent(type="text", text=json.dumps(data, ensure_ascii=False))
     ]
     if not error:
         resource_uri = data.get("resource_uri")
+        diagnostic_id = data.get("diagnostic_id")
+        if isinstance(diagnostic_id, str) and re.fullmatch(
+            r"diagnostic_[0-9a-f]{64}",
+            diagnostic_id,
+        ):
+            diagnostic_uri = f"comfyui://diagnostics/{diagnostic_id}"
+            content.append(
+                ResourceLink(
+                    type="resource_link",
+                    uri=diagnostic_uri,
+                    name=diagnostic_id,
+                    mime_type="application/json",
+                )
+            )
+        plan_uri = data.get("resource_uri")
+        if not isinstance(plan_uri, str):
+            plan_id = data.get("repair_plan_id")
+            if isinstance(plan_id, str) and re.fullmatch(
+                r"repair_plan_[A-Za-z0-9_-]{1,119}", plan_id
+            ):
+                plan_uri = f"comfyui://plans/{plan_id}"
+        if isinstance(plan_uri, str) and re.fullmatch(
+            r"comfyui://plans/repair_plan_[A-Za-z0-9_-]{1,119}", plan_uri
+        ):
+            content.append(
+                ResourceLink(
+                    type="resource_link",
+                    uri=plan_uri,
+                    name=plan_uri.rsplit("/", 1)[-1],
+                    mime_type="application/json",
+                )
+            )
         if isinstance(resource_uri, str) and re.fullmatch(
             r"comfyui://experiments/experiment_[A-Za-z0-9_-]{1,117}"
             r"(?:/variants/variant_[A-Za-z0-9_-]{1,120})?",
@@ -1635,3 +1790,195 @@ def phase_m_tools() -> list[Tool]:
         ),
     ]
     return [decorate_tool(tool) for tool in tools]
+
+
+def phase_n_tools() -> list[Tool]:
+    """Return fixed structured diagnostics and safe recovery tools."""
+    job_id = {
+        "type": "string",
+        "minLength": 34,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])job_[A-Za-z0-9_-]{32,119}$",
+    }
+    server_id = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    }
+    diagnostic_id = {
+        "type": "string",
+        "minLength": 75,
+        "maxLength": 75,
+        "pattern": r"^(?!.*[\r\n])diagnostic_[0-9a-f]{64}$",
+    }
+    repair_plan_id = {
+        "type": "string",
+        "minLength": 76,
+        "maxLength": 76,
+        "pattern": r"^(?!.*[\r\n])repair_plan_[0-9a-f]{64}$",
+    }
+    digest = {
+        "type": "string",
+        "minLength": 64,
+        "maxLength": 64,
+        "pattern": r"^[0-9a-f]{64}$",
+    }
+    diagnostic_output = {
+        "type": "object",
+        "properties": {
+            "diagnostic_id": diagnostic_id,
+            "registry_version": {"type": "string", "maxLength": 128},
+            "subject_uri": {"type": "string", "maxLength": 2048},
+            "classification": {"type": "string", "maxLength": 128},
+            "retryable": {"type": "boolean"},
+            "evidence": {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string"},
+                    "failed_node": {"type": "object"},
+                    "events": {"type": "array", "maxItems": 8},
+                    "log_window": {"type": "array", "maxItems": 8},
+                },
+                "required": ["status", "failed_node", "events", "log_window"],
+                "additionalProperties": False,
+            },
+            "safe_actions": {"type": "array", "maxItems": 16, "items": {"type": "object"}},
+            "approval_actions": {"type": "array", "maxItems": 16, "items": {"type": "object"}},
+            "created_at": {"type": "string", "maxLength": 64},
+        },
+        "required": [
+            "diagnostic_id",
+            "registry_version",
+            "subject_uri",
+            "classification",
+            "retryable",
+            "evidence",
+            "safe_actions",
+            "approval_actions",
+            "created_at",
+        ],
+        "additionalProperties": False,
+    }
+    plan_properties: dict[str, Any] = {
+        name: {"type": "object" if name == "normalized_changes" else "string"}
+        for name in _REPAIR_PLAN_PUBLIC_FIELDS
+    }
+    plan_properties["diff"] = {"type": "array"}
+    planned_fields = [
+        "repair_plan_id",
+        "plan_digest",
+        "resource_uri",
+        "original_job_id",
+        "workflow_id",
+        "server_id",
+        "pinned_plan_id",
+        "pinned_revision_id",
+        "pinned_deployment_id",
+        "normalized_changes",
+        "diff",
+        "original_arguments_digest",
+        "resulting_arguments_digest",
+        "status",
+        "created_at",
+        "expires_at",
+    ]
+    plan_output: dict[str, Any] = {
+        "type": "object",
+        "properties": plan_properties,
+        "required": planned_fields,
+        "additionalProperties": False,
+    }
+    committed_plan_output: dict[str, Any] = {
+        **plan_output,
+        "required": [
+            *planned_fields,
+            "result_job_id",
+            "result_job_uri",
+            "retry_of",
+            "committed_at",
+        ],
+    }
+    return [
+        decorate_tool(
+            Tool(
+                name="comfyui.job.diagnose",
+                description=(
+                    "Generate one bounded, redacted structured Diagnostic Report for an owned Job."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {"job_id": job_id},
+                    "required": ["job_id"],
+                    "additionalProperties": False,
+                },
+                output_schema=diagnostic_output,
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+            ),
+            risk="low",
+            toolset="execution",
+        ),
+        decorate_tool(
+            Tool(
+                name="comfyui.server.diagnose",
+                description=(
+                    "Generate one bounded, redacted structured Diagnostic Report "
+                    "for an observed server."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {"server_id": server_id},
+                    "required": ["server_id"],
+                    "additionalProperties": False,
+                },
+                output_schema=diagnostic_output,
+                annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+            ),
+            risk="low",
+            toolset="operations",
+        ),
+        decorate_tool(
+            Tool(
+                name="comfyui.job.retry.plan",
+                description=(
+                    "Create an owner-bound, digest-bound retry plan with an exact change diff."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "job_id": job_id,
+                        "changes": {"type": "object", "maxProperties": 64},
+                    },
+                    "required": ["job_id", "changes"],
+                    "additionalProperties": False,
+                },
+                output_schema=plan_output,
+                annotations=ToolAnnotations(
+                    read_only_hint=False, destructive_hint=False, open_world_hint=False
+                ),
+            ),
+            risk="medium",
+            toolset="execution",
+        ),
+        decorate_tool(
+            Tool(
+                name="comfyui.job.retry.commit",
+                description=(
+                    "Commit one unexpired owner-bound retry plan by exact digest "
+                    "and create a new Job."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {"repair_plan_id": repair_plan_id, "plan_digest": digest},
+                    "required": ["repair_plan_id", "plan_digest"],
+                    "additionalProperties": False,
+                },
+                output_schema=committed_plan_output,
+                annotations=ToolAnnotations(
+                    read_only_hint=False, destructive_hint=False, open_world_hint=False
+                ),
+            ),
+            risk="medium",
+            toolset="execution",
+        ),
+    ]
