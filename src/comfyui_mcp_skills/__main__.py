@@ -11,6 +11,8 @@ from mcp.server.stdio import stdio_server
 from .adapters.mcp.server import create_server
 from .application.auth_context import reset_authorization, set_authorization
 from .application.authorization import authorization_for_stdio
+from .infrastructure.comfyui.manager_gateway import SafeManagerGateway
+from .infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from .observability import configure_logging
 
 
@@ -31,12 +33,36 @@ def _configured_upload_roots(base_dir: Path) -> list[Path]:
     return roots
 
 
+def _configured_manager_hosts() -> set[str]:
+    return {
+        value.strip().lower().rstrip(".")
+        for value in os.environ.get("COMFYUI_MCP_PROVISION_HOSTS", "").split(",")
+        if value.strip()
+    }
+
+
+def _configured_manager_origins() -> set[str]:
+    return {
+        value.strip().rstrip("/")
+        for value in os.environ.get("COMFYUI_MCP_MANAGER_ORIGINS", "").split(",")
+        if value.strip()
+    }
+
+
 async def _run_stdio(base_dir: Path) -> None:
     authorization = authorization_for_stdio(os.environ)
+    data_dir = base_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    SQLiteControlPlaneStore((data_dir / "control-plane.sqlite3").resolve()).initialize()
     server = create_server(
         base_dir,
         upload_roots=_configured_upload_roots(base_dir),
         authorization=authorization,
+        portable_tool_names=os.environ.get("COMFYUI_MCP_PORTABLE_TOOL_NAMES") == "1",
+        manager_gateway=SafeManagerGateway(
+            allowed_source_hosts=_configured_manager_hosts(),
+            allowed_server_origins=_configured_manager_origins(),
+        ),
     )
     token = set_authorization(authorization)
     try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -63,3 +64,28 @@ class ServerRegistry:
         if not isinstance(data, dict):
             raise ServerNotFound("Server configuration is invalid")
         return data
+
+
+class OwnerAwareServerRegistry(ServerRegistry):
+    """Resolve request-owner connections before the legacy deployment registry."""
+
+    def __init__(
+        self,
+        fallback: ServerRegistry,
+        owner_provider: Callable[[], str],
+        connection_provider: Callable[[str, str], dict[str, Any] | None],
+    ) -> None:
+        self._fallback = fallback
+        self._owner_provider = owner_provider
+        self._connection_provider = connection_provider
+
+    def connection(self, server_id: str) -> dict[str, Any]:
+        server_id = validate_identifier(server_id, field="server_id")
+        connection = self._connection_provider(self._owner_provider(), server_id)
+        return self._fallback.connection(server_id) if connection is None else connection
+
+    def default_server_id(self) -> str:
+        return self._fallback.default_server_id()
+
+    def list(self) -> list[Server]:
+        return self._fallback.list()

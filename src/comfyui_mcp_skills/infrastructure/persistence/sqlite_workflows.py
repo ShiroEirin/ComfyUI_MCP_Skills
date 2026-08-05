@@ -6,6 +6,7 @@ import builtins
 import hashlib
 import json
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,23 +19,49 @@ from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteCo
 class SQLiteWorkflowRepository:
     """Read published Workflow deployments and atomically publish revisions."""
 
-    def __init__(self, store: SQLiteControlPlaneStore) -> None:
+    def __init__(
+        self,
+        store: SQLiteControlPlaneStore,
+        *,
+        owner_id: str | None = None,
+        owner_provider: Callable[[], str] | None = None,
+    ) -> None:
         self._store = store
+        self._owner_id_value = owner_id
+        self._owner_provider = owner_provider
+
+    @property
+    def _owner_id(self) -> str | None:
+        return self._owner_provider() if self._owner_provider is not None else self._owner_id_value
 
     def list(self) -> list[Workflow]:
         connection = self._connect()
         try:
-            rows = connection.execute(
-                """
-                SELECT d.server_id, d.workflow_id, d.enabled,
-                       r.graph_json, r.parameter_schema_json
-                FROM workflow_deployments AS d
-                JOIN workflow_revisions AS r
-                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
-                WHERE d.published = 1 AND d.enabled = 1 AND d.validation_status = 'valid'
-                ORDER BY d.server_id, d.workflow_id
-                """
-            ).fetchall()
+            if not self._has_owner_overlay(connection):
+                rows = connection.execute(
+                    """SELECT d.server_id,d.workflow_id,d.enabled,
+                    r.graph_json,r.parameter_schema_json
+                    FROM workflow_deployments AS d JOIN workflow_revisions AS r
+                    ON r.workflow_id=d.workflow_id AND r.revision_id=d.revision_id
+                    WHERE d.published=1 AND d.enabled=1 AND d.validation_status='valid'
+                    ORDER BY d.server_id,d.workflow_id"""
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT d.server_id,d.workflow_id,s.enabled,
+                    r.graph_json,r.parameter_schema_json
+                    FROM config_workflow_deployments AS b
+                    JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                    JOIN workflow_revisions AS r ON r.workflow_id=d.workflow_id
+                    AND r.revision_id=d.revision_id
+                    JOIN config_workflow_states AS s ON s.owner_id=b.owner_id
+                    AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
+                    JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                    AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                    WHERE b.owner_id=? AND s.enabled=1 AND d.enabled=1
+                    AND d.validation_status='valid' ORDER BY d.server_id,d.workflow_id""",
+                    (self._owner_id,),
+                ).fetchall()
         finally:
             connection.close()
         return [self._workflow_from_row(row) for row in rows]
@@ -42,18 +69,32 @@ class SQLiteWorkflowRepository:
     def get(self, server_id: str, workflow_id: str) -> Workflow | None:
         connection = self._connect()
         try:
-            row = connection.execute(
-                """
-                SELECT d.server_id, d.workflow_id, d.enabled,
-                       r.graph_json, r.parameter_schema_json
-                FROM workflow_deployments AS d
-                JOIN workflow_revisions AS r
-                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
-                WHERE d.server_id = ? AND d.workflow_id = ? AND d.published = 1
-                  AND d.enabled = 1 AND d.validation_status = 'valid'
-                """,
-                (server_id, workflow_id),
-            ).fetchone()
+            if not self._has_owner_overlay(connection):
+                row = connection.execute(
+                    """SELECT d.server_id,d.workflow_id,d.enabled,
+                    r.graph_json,r.parameter_schema_json
+                    FROM workflow_deployments AS d JOIN workflow_revisions AS r
+                    ON r.workflow_id=d.workflow_id AND r.revision_id=d.revision_id
+                    WHERE d.server_id=? AND d.workflow_id=? AND d.published=1
+                    AND d.enabled=1 AND d.validation_status='valid'""",
+                    (server_id, workflow_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT d.server_id,d.workflow_id,s.enabled,
+                    r.graph_json,r.parameter_schema_json
+                    FROM config_workflow_deployments AS b
+                    JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                    JOIN workflow_revisions AS r ON r.workflow_id=d.workflow_id
+                    AND r.revision_id=d.revision_id
+                    JOIN config_workflow_states AS s ON s.owner_id=b.owner_id
+                    AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
+                    JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                    AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                    WHERE b.owner_id=? AND b.server_id=? AND b.workflow_id=?
+                    AND s.enabled=1 AND d.enabled=1 AND d.validation_status='valid'""",
+                    (self._owner_id, server_id, workflow_id),
+                ).fetchone()
         finally:
             connection.close()
         return None if row is None else self._workflow_from_row(row)
@@ -61,15 +102,27 @@ class SQLiteWorkflowRepository:
     def list_revisions(self, workflow_id: str) -> builtins.list[dict[str, Any]]:
         connection = self._connect()
         try:
-            rows = connection.execute(
-                """
-                SELECT revision_id, workflow_id, content_digest, created_at
-                FROM workflow_revisions
-                WHERE workflow_id = ?
-                ORDER BY created_at, revision_id
-                """,
-                (workflow_id,),
-            ).fetchall()
+            if not self._has_owner_overlay(connection):
+                rows = connection.execute(
+                    """SELECT revision_id,workflow_id,content_digest,created_at
+                       FROM workflow_revisions WHERE workflow_id=?
+                       ORDER BY created_at,revision_id""",
+                    (workflow_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """SELECT r.revision_id,r.workflow_id,r.content_digest,r.created_at
+                       FROM workflow_revisions AS r WHERE r.workflow_id=? AND (
+                         EXISTS(SELECT 1 FROM config_workflow_deployments AS b
+                           JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                           WHERE b.owner_id=? AND d.workflow_id=r.workflow_id
+                            AND d.revision_id=r.revision_id)
+                         OR EXISTS(SELECT 1 FROM workflow_change_plans AS p
+                           WHERE p.actor=? AND p.workflow_id=r.workflow_id
+                            AND p.committed_revision_id=r.revision_id))
+                       ORDER BY r.created_at,r.revision_id""",
+                    (workflow_id, self._owner_id, self._owner_id),
+                ).fetchall()
         finally:
             connection.close()
         return [
@@ -85,20 +138,32 @@ class SQLiteWorkflowRepository:
     def describe(self, workflow_id: str, server_id: str) -> dict[str, Any]:
         connection = self._connect()
         try:
-            row = connection.execute(
-                """
-                SELECT d.server_id, d.workflow_id, r.parameter_schema_json,
-                       r.revision_id, d.deployment_id, r.content_digest,
-                       d.validation_status, d.published
-                FROM workflow_deployments AS d
-                JOIN workflow_revisions AS r
-                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
-                WHERE d.workflow_id = ? AND d.server_id = ? AND d.published = 1
-                  AND d.enabled = 1 AND d.validation_status = 'valid'
-                LIMIT 1
-                """,
-                (workflow_id, server_id),
-            ).fetchone()
+            if not self._has_owner_overlay(connection):
+                row = connection.execute(
+                    """SELECT d.server_id,d.workflow_id,r.parameter_schema_json,r.revision_id,
+                    d.deployment_id,r.content_digest,d.validation_status,d.published
+                    FROM workflow_deployments AS d JOIN workflow_revisions AS r
+                    ON r.workflow_id=d.workflow_id AND r.revision_id=d.revision_id
+                    WHERE d.workflow_id=? AND d.server_id=? AND d.published=1
+                    AND d.enabled=1 AND d.validation_status='valid' LIMIT 1""",
+                    (workflow_id, server_id),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT d.server_id,d.workflow_id,r.parameter_schema_json,r.revision_id,
+                    d.deployment_id,r.content_digest,d.validation_status,d.published
+                    FROM config_workflow_deployments AS b
+                    JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                    JOIN workflow_revisions AS r ON r.workflow_id=d.workflow_id
+                    AND r.revision_id=d.revision_id
+                    JOIN config_workflow_states AS s ON s.owner_id=b.owner_id
+                    AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
+                    JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                    AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                    WHERE b.owner_id=? AND b.workflow_id=? AND b.server_id=?
+                    AND s.enabled=1 AND d.enabled=1 AND d.validation_status='valid' LIMIT 1""",
+                    (self._owner_id, workflow_id, server_id),
+                ).fetchone()
         finally:
             connection.close()
         if row is None:
@@ -118,15 +183,28 @@ class SQLiteWorkflowRepository:
     def get_revision(self, revision_id: str) -> dict[str, Any]:
         connection = self._connect()
         try:
-            row = connection.execute(
-                """
-                SELECT revision_id, workflow_id, graph_json, parameter_schema_json,
-                       dependency_contract_json, content_digest, created_at
-                FROM workflow_revisions
-                WHERE revision_id = ?
-                """,
-                (revision_id,),
-            ).fetchone()
+            owner_id = self._owner_id
+            if not self._has_owner_overlay(connection):
+                row = connection.execute(
+                    """SELECT revision_id,workflow_id,graph_json,parameter_schema_json,
+                              dependency_contract_json,content_digest,created_at
+                       FROM workflow_revisions WHERE revision_id=?""",
+                    (revision_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT r.revision_id,r.workflow_id,r.graph_json,r.parameter_schema_json,
+                              r.dependency_contract_json,r.content_digest,r.created_at
+                       FROM workflow_revisions AS r WHERE r.revision_id=? AND (
+                         EXISTS(SELECT 1 FROM config_workflow_deployments AS b
+                           JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                           WHERE b.owner_id=? AND d.workflow_id=r.workflow_id
+                            AND d.revision_id=r.revision_id)
+                         OR EXISTS(SELECT 1 FROM workflow_change_plans AS p
+                           WHERE p.actor=? AND p.workflow_id=r.workflow_id
+                            AND p.committed_revision_id=r.revision_id))""",
+                    (revision_id, owner_id, owner_id),
+                ).fetchone()
         finally:
             connection.close()
         if row is None:
@@ -144,19 +222,30 @@ class SQLiteWorkflowRepository:
     def get_published_revision(self, workflow_id: str) -> dict[str, Any]:
         connection = self._connect()
         try:
-            row = connection.execute(
-                """
-                SELECT r.revision_id
-                FROM workflow_deployments AS d
-                JOIN workflow_revisions AS r
-                  ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
-                WHERE d.workflow_id = ? AND d.published = 1 AND d.enabled = 1
-                  AND d.validation_status = 'valid'
-                ORDER BY r.created_at DESC, r.revision_id DESC, d.server_id
-                LIMIT 1
-                """,
-                (workflow_id,),
-            ).fetchone()
+            if not self._has_owner_overlay(connection):
+                row = connection.execute(
+                    """SELECT r.revision_id FROM workflow_deployments AS d
+                    JOIN workflow_revisions AS r ON r.workflow_id=d.workflow_id
+                    AND r.revision_id=d.revision_id WHERE d.workflow_id=? AND d.published=1
+                    AND d.enabled=1 AND d.validation_status='valid'
+                    ORDER BY r.created_at DESC,r.revision_id DESC,d.server_id LIMIT 1""",
+                    (workflow_id,),
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    """SELECT r.revision_id FROM config_workflow_deployments AS b
+                    JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                    JOIN workflow_revisions AS r ON r.workflow_id=d.workflow_id
+                    AND r.revision_id=d.revision_id
+                    JOIN config_workflow_states AS s ON s.owner_id=b.owner_id
+                    AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
+                    JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                    AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                    WHERE b.owner_id=? AND b.workflow_id=? AND s.enabled=1 AND d.enabled=1
+                    AND d.validation_status='valid'
+                    ORDER BY r.created_at DESC,r.revision_id DESC,d.server_id LIMIT 1""",
+                    (self._owner_id, workflow_id),
+                ).fetchone()
         finally:
             connection.close()
         if row is None:
@@ -193,6 +282,16 @@ class SQLiteWorkflowRepository:
         try:
             connection.execute("BEGIN IMMEDIATE")
             transaction_started = True
+            if (
+                self._owner_id is not None
+                and connection.execute(
+                    "SELECT 1 FROM managed_servers WHERE owner_id=? AND server_id=? "
+                    "AND lifecycle_status='active'",
+                    (self._owner_id, server_id),
+                ).fetchone()
+                is None
+            ):
+                raise LookupError(f"active managed Server not found: {server_id}")
             connection.execute(
                 "INSERT OR IGNORE INTO workflows(workflow_id, created_at) VALUES (?, ?)",
                 (workflow_id, created_at),
@@ -280,24 +379,48 @@ class SQLiteWorkflowRepository:
             if row is None:
                 raise LookupError(f"Workflow deployment not found: {deployment_id}")
             workflow_id, server_id = str(row[0]), str(row[1])
-            connection.execute(
-                """
-                UPDATE workflow_deployments
-                SET published = 0
-                WHERE workflow_id = ? AND server_id = ? AND published = 1
-                """,
-                (workflow_id, server_id),
-            )
-            updated = connection.execute(
-                """
-                UPDATE workflow_deployments
-                SET published = 1
-                WHERE deployment_id = ? AND workflow_id = ? AND server_id = ?
-                """,
-                (deployment_id, workflow_id, server_id),
-            ).rowcount
-            if updated != 1:
-                raise RuntimeError("Workflow deployment changed during publish")
+            updated_at = datetime.now(timezone.utc).isoformat()
+            if self._owner_id is None:
+                connection.execute(
+                    """UPDATE workflow_deployments SET published = 0
+                    WHERE workflow_id = ? AND server_id = ? AND published = 1""",
+                    (workflow_id, server_id),
+                )
+                updated = connection.execute(
+                    """UPDATE workflow_deployments SET published = 1
+                    WHERE deployment_id = ? AND workflow_id = ? AND server_id = ?""",
+                    (deployment_id, workflow_id, server_id),
+                ).rowcount
+                if updated != 1:
+                    raise RuntimeError("Workflow deployment changed during publish")
+            else:
+                owns_server = connection.execute(
+                    "SELECT 1 FROM managed_servers WHERE owner_id=? AND server_id=? "
+                    "AND lifecycle_status='active'",
+                    (self._owner_id, server_id),
+                ).fetchone()
+                if owns_server is None:
+                    raise LookupError(f"active managed Server not found: {server_id}")
+                connection.execute(
+                    "INSERT INTO config_workflow_deployments"
+                    "(owner_id,deployment_id,server_id,workflow_id) VALUES(?,?,?,?) "
+                    "ON CONFLICT(owner_id,server_id,workflow_id) DO UPDATE SET "
+                    "deployment_id=excluded.deployment_id",
+                    (self._owner_id, deployment_id, server_id, workflow_id),
+                )
+                connection.execute(
+                    "INSERT INTO config_workflow_snapshots(owner_id,updated_at) VALUES(?,?) "
+                    "ON CONFLICT(owner_id) DO UPDATE SET updated_at=excluded.updated_at",
+                    (self._owner_id, updated_at),
+                )
+                connection.execute(
+                    "INSERT INTO config_workflow_states"
+                    "(owner_id,server_id,workflow_id,enabled,updated_at) "
+                    "VALUES(?,?,?,1,?) ON CONFLICT(owner_id,server_id,workflow_id) DO UPDATE SET "
+                    "enabled=1,updated_at=excluded.updated_at",
+                    (self._owner_id, server_id, workflow_id, updated_at),
+                )
+                _advance_config_state(connection, self._owner_id, updated_at)
             connection.commit()
             transaction_started = False
         except BaseException:
@@ -306,6 +429,16 @@ class SQLiteWorkflowRepository:
             raise
         finally:
             connection.close()
+
+    def _has_owner_overlay(self, connection: sqlite3.Connection) -> bool:
+        return (
+            self._owner_id is not None
+            and connection.execute(
+                "SELECT 1 FROM config_workflow_snapshots WHERE owner_id=?",
+                (self._owner_id,),
+            ).fetchone()
+            is not None
+        )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)
@@ -327,6 +460,43 @@ class SQLiteWorkflowRepository:
             graph=graph,
             enabled=bool(row[2]),
         )
+
+
+def _advance_config_state(connection: sqlite3.Connection, owner_id: str, updated_at: str) -> None:
+    row = connection.execute(
+        "SELECT current_revision FROM config_state WHERE owner_id=?", (owner_id,)
+    ).fetchone()
+    revision = 1 if row is None else int(row[0]) + 1
+    facts = {
+        "servers": [
+            tuple(item)
+            for item in connection.execute(
+                "SELECT server_id,current_revision,current_digest,lifecycle_status "
+                "FROM managed_servers "
+                "WHERE owner_id=? ORDER BY server_id",
+                (owner_id,),
+            ).fetchall()
+        ],
+        "default_server": connection.execute(
+            "SELECT server_id FROM server_defaults WHERE owner_id=?", (owner_id,)
+        ).fetchone(),
+        "workflows": [
+            tuple(item)
+            for item in connection.execute(
+                "SELECT server_id,workflow_id,enabled FROM config_workflow_states "
+                "WHERE owner_id=? ORDER BY server_id,workflow_id",
+                (owner_id,),
+            ).fetchall()
+        ],
+    }
+    digest = hashlib.sha256(_canonical_json(facts).encode("utf-8")).hexdigest()
+    connection.execute(
+        "INSERT INTO config_state"
+        "(owner_id,current_revision,current_digest,updated_at) VALUES(?,?,?,?) "
+        "ON CONFLICT(owner_id) DO UPDATE SET current_revision=excluded.current_revision,"
+        "current_digest=excluded.current_digest,updated_at=excluded.updated_at",
+        (owner_id, revision, digest, updated_at),
+    )
 
 
 def _canonical_json(value: object) -> str:

@@ -73,6 +73,9 @@ class ComfyUIGatewayAdapter:
     def queue_delete(self, prompt_ids: list[str]) -> dict[str, Any]:
         return self._call(self._client.queue_delete, prompt_ids)
 
+    def queue_clear(self) -> dict[str, Any]:
+        return self._call(self._client.queue_clear)
+
     def get_logs(self) -> dict[str, Any]:
         return self._optional_call(self._client.get_logs)
 

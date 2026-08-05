@@ -1,38 +1,21 @@
 {
   "qaMode": "deep",
-  "scope": "Phase N owner-bound deterministic diagnostics, versioned 14-rule registry, redacted evidence, exact-diff one-hour repair plans, durable retry commit intents, atomic retry lineage, private MCP tools/resources/prompts, and cutover-safe SQLite routing",
+  "scope": "ComfyUI MCP migration through Phase Q: owner-aware control-plane routing, workflow authoring isolation, runtime controls, HTTP OAuth and upload hardening, durable routing request/commit idempotency, and forward-only SQLite migration 12",
   "outcome": "pass",
-  "conclusion": "Phase N is complete. Diagnostic evidence is bounded and secret-safe while classification retains private rule-bearing context; repair plans enforce exact JSON diffs and an exact one-hour lifetime; durable pre-submit intents and atomic retry_of materialization make retry commit recoverable across crashes and expiry; MCP schemas and owner-scoped resources match real projections.",
+  "conclusion": "Phase Q code, security, packaging, and live ComfyUI gates pass. Owner-managed server connections remain owner-bound across execution and assets; OAuth introspection is subject/audience-bound and pre-auth limited. A real 30-step workflow completed, produced a verified image, recovered idempotently with the same prompt ID, and left the queue empty.",
   "findings": [],
   "remediatedFindings": [
-    "Quoted JSON secrets and Basic/Bearer Authorization credentials are redacted before persistence or projection.",
-    "JSON-distinct numeric and boolean values produce exact replace diffs.",
-    "Retry commit reserves immutable pre-expiry intent and materializes retry_of atomically before submission.",
-    "Repair-plan persistence enforces parseable UTC timestamps separated by exactly one hour, including fractional precision.",
-    "SQLite diagnostic reads use one snapshot while classification text remains internal and public evidence is redacted.",
-    "Phase N repositories remain hidden until workflow and job aggregates are switched to SQLite.",
-    "Planned and committed MCP outputs have distinct required schemas matching real projections.",
-    "Expired cleanup preserves intent-backed plans required for retry recovery."
-  ],
-  "fileReferences": [
-    "src/comfyui_mcp_skills/application/diagnostics.py",
-    "src/comfyui_mcp_skills/application/retries.py",
-    "src/comfyui_mcp_skills/application/planning.py",
-    "src/comfyui_mcp_skills/domain/diagnostics.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/control_plane.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/sqlite_diagnostics.py",
-    "src/comfyui_mcp_skills/infrastructure/persistence/repository_factory.py",
-    "src/comfyui_mcp_skills/adapters/mcp/server.py",
-    "src/comfyui_mcp_skills/adapters/mcp/resources.py",
-    "src/comfyui_mcp_skills/adapters/mcp/tooling.py",
-    "src/comfyui_mcp_skills/adapters/mcp/prompts.py",
-    "tests/test_phase_n_diagnostics.py",
-    "tests/test_phase_n_diagnostic_persistence.py",
-    "tests/test_phase_n_mcp.py"
+    "Owner-managed endpoint revision and digest are pinned and revalidated for routed execution.",
+    "All MCP services use owner-aware server resolution; owner overlays fail closed instead of falling back to deployment-global endpoints.",
+    "Routing request IDs reject changed caller inputs and routing commit keys are durably one-to-one with plans.",
+    "OAuth introspection requires stable sub and expected aud, closes streamed responses, and runs behind IP rate and concurrency controls.",
+    "Workflow revision list/get/rollback paths enforce owner visibility.",
+    "Remote Admin and Authoring toolsets fail closed; unsafe immediate server.free is hidden.",
+    "Global queue clear and interrupt execute only through the explicitly enabled Operations surface."
   ],
   "commands": [
     {
-      "command": "uv run ruff check src/comfyui_mcp_skills tests comfyui_skills_cli/commands/run.py",
+      "command": "uv run ruff check src/comfyui_mcp_skills tests",
       "result": "passed"
     },
     {
@@ -41,20 +24,40 @@
     },
     {
       "command": "uv run python -m pytest --cov --cov-report=term-missing -q",
-      "result": "739 passed, 1 skipped, 2 subtests passed; coverage 83.94%"
-    },
-    {
-      "command": "uv run pip-audit",
-      "result": "no known vulnerabilities; local project package not on PyPI"
+      "result": "784 passed, 1 skipped, 2 subtests passed; coverage 82.01%"
     },
     {
       "command": "uv build",
       "result": "sdist and wheel built successfully"
+    },
+    {
+      "command": "uvx pip-audit",
+      "result": "no known vulnerabilities"
+    },
+    {
+      "command": "comfyui-skill server status/stats local",
+      "result": "passed: ComfyUI 0.28.3 online at 127.0.0.1:8188"
+    },
+    {
+      "command": "comfyui-skill run local/anima-txt2img-aesthetic-lora --job-id phase-q-live-acceptance-20260803",
+      "result": "passed in 36.66s: prompt_id 16fda559-21fb-4b22-86df-6a8368e89bff; output phase-q-live-acceptance_00001_.png; sha256 666db7559bc8e2e8735ec1fbdfb5b9df162c7fd3ca0637421a6fb9e2048f2d5a"
+    },
+    {
+      "command": "repeat live run with identical job ID",
+      "result": "passed in 0.72s: recovered the same prompt_id without resubmission"
+    },
+    {
+      "command": "decode generated image and comfyui-skill queue list",
+      "result": "passed: 2048x2048 image decoded; running and pending queues empty"
+    },
+    {
+      "command": "comfyui-skill history list --server",
+      "result": "expected compatibility degradation: ComfyUI 0.28.3 does not provide the optional /api/jobs endpoint; local durable history remains available"
     }
   ],
   "independentReview": {
-    "initial": "FAIL with blockers in secret redaction, JSON diff typing, retry failure atomicity, TTL enforcement, snapshot consistency, cutover routing, cleanup, lineage identity, and MCP output schemas",
-    "remediation": "All blockers fixed with focused regressions and full-suite verification",
-    "final": "PASS from code-reviewer, python-reviewer, and security-reviewer; no scoped blocker remains"
+    "initial": "BLOCK with owner-endpoint, OAuth, revision isolation, runtime control, and idempotency findings",
+    "remediation": "All scoped code/security blockers fixed with focused regressions and full-suite verification",
+    "final": "PASS from code-reviewer and security-reviewer; no scoped blocker remains"
   }
 }

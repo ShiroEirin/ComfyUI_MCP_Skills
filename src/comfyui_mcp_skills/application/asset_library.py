@@ -121,12 +121,14 @@ class AssetLibraryService:
         *,
         max_bytes: int = 100 * 1024 * 1024,
         staging_root: Path | None = None,
+        connection_provider: Callable[[str, str], dict[str, Any] | None] | None = None,
     ) -> None:
         if max_bytes <= 0:
             raise ValueError("max_bytes must be positive")
         self._repository = repository
         self._servers = servers
         self._gateway_factory = gateway_factory
+        self._connection_provider = connection_provider
         self._max_bytes = max_bytes
         self._staging_root = (
             staging_root.resolve()
@@ -221,7 +223,7 @@ class AssetLibraryService:
         except OSError as exc:
             raise AssetMetadataUnavailable("PNG metadata could not be staged") from exc
         try:
-            gateway = self._gateway(asset.server_id)
+            gateway = self._gateway(asset.server_id, owner_id)
             receipt = gateway.download_output_to(
                 asset.name,
                 staged,
@@ -268,7 +270,7 @@ class AssetLibraryService:
     ) -> dict[str, Any]:
         self._owner(owner_id)
         artifact = self._owned_artifact(artifact_id, owner_id)
-        self._connection(target_server_id)
+        self._connection(target_server_id, owner_id)
         binding = self._repository.published_parameter_binding(
             workflow_id, target_server_id, parameter_name
         )
@@ -381,7 +383,7 @@ class AssetLibraryService:
     ) -> dict[str, Any]:
         self._owner(owner_id)
         artifact = self._owned_artifact(artifact_id, owner_id)
-        self._connection(target_server_id)
+        self._connection(target_server_id, owner_id)
         return self._plan_transfer(
             artifact, target_server_id, owner_id=owner_id, operation="transfer"
         )
@@ -399,7 +401,7 @@ class AssetLibraryService:
         staged: Path | None = None
         try:
             staged, size_bytes, sha256, mime_type = self._download_artifact(
-                execution.artifact, upload_name=execution.target_name
+                execution.artifact, execution.owner_id, upload_name=execution.target_name
             )
             if (size_bytes, sha256, mime_type) != (
                 execution.planned_size_bytes,
@@ -551,7 +553,7 @@ class AssetLibraryService:
         raise ArtifactTransferConflict(message, details={"reason": reason})
 
     def _upload_and_verify(self, execution: _TransferExecution, staged: Path) -> tuple[str, str]:
-        target = self._gateway(execution.target_server_id)
+        target = self._gateway(execution.target_server_id, execution.owner_id)
         uploaded = target.upload_file(
             str(staged), purpose=execution.artifact.media_type, original_ref=""
         )
@@ -640,7 +642,7 @@ class AssetLibraryService:
     ) -> dict[str, Any]:
         staged: Path | None = None
         try:
-            staged, size_bytes, sha256, mime_type = self._download_artifact(artifact)
+            staged, size_bytes, sha256, mime_type = self._download_artifact(artifact, owner_id)
             if artifact.completeness == "verified" and (
                 artifact.size_bytes != size_bytes
                 or artifact.sha256 != sha256
@@ -710,7 +712,7 @@ class AssetLibraryService:
         return self._repository.save_transfer_plan(plan)
 
     def _download_artifact(
-        self, artifact: Artifact, *, upload_name: str = ""
+        self, artifact: Artifact, owner_id: str, *, upload_name: str = ""
     ) -> tuple[Path, int, str, str]:
         try:
             staged = (
@@ -721,7 +723,7 @@ class AssetLibraryService:
         except (OSError, ValueError) as exc:
             raise UploadFailed("Artifact content could not be staged") from exc
         try:
-            receipt = self._gateway(artifact.server_id).download_output_to(
+            receipt = self._gateway(artifact.server_id, owner_id).download_output_to(
                 artifact.filename,
                 staged,
                 artifact.subfolder,
@@ -796,16 +798,21 @@ class AssetLibraryService:
             raise ArtifactNotFound("Artifact was not found", details={"artifact_id": artifact_id})
         return artifact
 
-    def _connection(self, server_id: str) -> dict[str, Any]:
+    def _connection(self, server_id: str, owner_id: str) -> dict[str, Any]:
         try:
-            return self._servers.connection(server_id)
+            connection = (
+                self._connection_provider(owner_id, server_id)
+                if self._connection_provider is not None
+                else None
+            )
+            return self._servers.connection(server_id) if connection is None else connection
         except ComfyUISkillsError:
             raise
         except (TypeError, ValueError) as exc:
             raise AssetLibraryInvalidRequest("target_server_id is invalid") from exc
 
-    def _gateway(self, server_id: str) -> AssetLibraryGateway:
-        return self._gateway_factory(self._connection(server_id))
+    def _gateway(self, server_id: str, owner_id: str) -> AssetLibraryGateway:
+        return self._gateway_factory(self._connection(server_id, owner_id))
 
     def _temporary_path(self, prefix: str, suffix: str) -> Path:
         safe_suffix = suffix.lower() if suffix and len(suffix) <= 16 else ""

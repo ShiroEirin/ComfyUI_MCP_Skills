@@ -15,6 +15,7 @@ from starlette.responses import PlainTextResponse, StreamingResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
 
+from comfyui_mcp_skills.adapters.http.auth import IntrospectionTokenVerifier
 from comfyui_mcp_skills.adapters.http.security import SafeHTTPSDownloader
 from comfyui_mcp_skills.adapters.http.server import (
     RequestControlMiddleware,
@@ -322,20 +323,21 @@ def test_http_2026_is_stateless_and_rejects_missing_version_header(tmp_path: Pat
     assert "mcp-session-id" not in missing_version.headers
 
 
-def test_multi_worker_deployment_requires_external_global_limits() -> None:
-    with pytest.raises(ValueError, match="external global rate limiting"):
+def test_multi_worker_deployment_requires_shared_limit_backend() -> None:
+    with pytest.raises(ValueError, match="shared rate-limit backend"):
         _validate_worker_limits(2, "process")
+    with pytest.raises(ValueError, match="shared rate-limit backend"):
+        _validate_worker_limits(2, "external")
 
-    _validate_worker_limits(2, "external")
 
-
-def test_multi_worker_main_uses_uvicorn_import_factory() -> None:
+def test_multi_worker_main_uses_uvicorn_import_factory(tmp_path: Path) -> None:
     environment = {
         "COMFYUI_MCP_TOKENS": (
             '{"secret":{"principal_id":"test-principal","scopes":["comfyui:execute"]}}'
         ),
         "COMFYUI_MCP_WORKERS": "2",
         "COMFYUI_MCP_LIMIT_MODE": "external",
+        "COMFYUI_MCP_DIR": str(tmp_path),
     }
 
     with (
@@ -343,16 +345,10 @@ def test_multi_worker_main_uses_uvicorn_import_factory() -> None:
         patch("comfyui_mcp_skills.http_main.configure_logging"),
         patch("comfyui_mcp_skills.http_main.uvicorn.run") as run,
     ):
-        http_main()
+        with pytest.raises(ValueError, match="shared rate-limit backend"):
+            http_main()
 
-    run.assert_called_once_with(
-        "comfyui_mcp_skills.http_main:create_app",
-        host="127.0.0.1",
-        port=8765,
-        log_level="info",
-        workers=2,
-        factory=True,
-    )
+    run.assert_not_called()
 
 
 def test_token_rotation_preserves_principal_owner_id() -> None:
@@ -432,9 +428,9 @@ def test_http_rejects_invalid_static_token_configuration(tmp_path: Path, tokens:
         )
 
 
-def test_http_rejects_unimplemented_auth_modes(tmp_path: Path) -> None:
+def test_http_rejects_unknown_auth_modes(tmp_path: Path) -> None:
     _project(tmp_path)
-    with pytest.raises(ValueError, match="Only static bearer-token authentication"):
+    with pytest.raises(ValueError, match="auth_mode must be static or introspection"):
         create_http_app(
             tmp_path,
             host="127.0.0.1",
@@ -443,6 +439,66 @@ def test_http_rejects_unimplemented_auth_modes(tmp_path: Path) -> None:
             tokens=_tokens(),
             upload_root=tmp_path / "uploads",
             auth_mode="oauth",
+        )
+
+
+@pytest.mark.parametrize("toolset", ["authoring", "admin"])
+def test_http_rejects_isolated_local_toolsets(tmp_path: Path, toolset: str) -> None:
+    _project(tmp_path)
+    with pytest.raises(ValueError, match="isolated local servers"):
+        create_http_app(
+            tmp_path,
+            host="127.0.0.1",
+            allowed_hosts=["testserver"],
+            allowed_origins=["https://agent.example"],
+            tokens=_tokens(),
+            upload_root=tmp_path / "uploads",
+            toolset=toolset,
+            enable_high_risk=True,
+        )
+
+
+def test_oauth_introspection_accepts_rotating_active_tokens_without_caching() -> None:
+    response = MagicMock(status_code=200)
+    response.iter_content.return_value = [
+        b'{"active":true,"sub":"principal-a","aud":"comfyui-mcp",'
+        b'"scope":"comfyui:execute unknown:scope"}'
+    ]
+    request = MagicMock(return_value=response)
+    verifier = IntrospectionTokenVerifier(
+        "https://identity.example/oauth/introspect",
+        client_id="mcp-resource",
+        client_secret="secret",
+        expected_audience="comfyui-mcp",
+        request=request,
+    )
+
+    access = anyio.run(verifier.verify_token, "rotating-token")
+    assert access is not None
+    assert access.client_id == "principal-a"
+    assert access.scopes == ["comfyui:execute"]
+    assert request.call_args.kwargs["allow_redirects"] is False
+    assert request.call_args.kwargs["auth"] == ("mcp-resource", "secret")
+    response.close.assert_called_once_with()
+    missing_binding = MagicMock(status_code=200)
+    missing_binding.iter_content.return_value = [
+        b'{"active":true,"client_id":"shared-client","scope":"comfyui:execute"}'
+    ]
+    rejected = IntrospectionTokenVerifier(
+        "https://identity.example/oauth/introspect",
+        client_id="mcp-resource",
+        client_secret="secret",
+        expected_audience="comfyui-mcp",
+        request=MagicMock(return_value=missing_binding),
+    )
+    assert anyio.run(rejected.verify_token, "rotating-token") is None
+    missing_binding.close.assert_called_once_with()
+    with pytest.raises(ValueError, match="HTTPS"):
+        IntrospectionTokenVerifier(
+            "http://identity.example/introspect",
+            client_id="mcp-resource",
+            client_secret="secret",
+            expected_audience="comfyui-mcp",
         )
 
 
@@ -547,6 +603,32 @@ def test_missing_version_requests_are_rate_limited(tmp_path: Path) -> None:
 
     assert first.status_code == 400
     assert second.status_code == 429
+
+
+def test_pre_auth_rate_limit_precedes_token_introspection() -> None:
+    class Verifier:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def verify_token(self, _token: str):
+            self.calls += 1
+            return None
+
+    verifier = Verifier()
+    app = Starlette(routes=[Route("/", lambda _request: PlainTextResponse("ok"))])
+    app.add_middleware(
+        RequestControlMiddleware,
+        requests_per_minute=1,
+        max_concurrent_requests=1,
+        bearer_tokens=(),
+        token_verifier=verifier,
+    )
+    with TestClient(app) as client:
+        first = client.get("/", headers={"authorization": "Bearer first-token"})
+        second = client.get("/", headers={"authorization": "Bearer second-token"})
+    assert first.status_code == 200
+    assert second.status_code == 429
+    assert verifier.calls == 1
 
 
 def test_request_concurrency_saturation_fails_fast() -> None:

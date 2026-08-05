@@ -482,6 +482,123 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         RiskLevel.MEDIUM,
         ("audit", "recovery"),
     ),
+    *tuple(
+        CapabilitySpec(
+            name,
+            name.rsplit(".", 1)[-1].replace("_", " ").title(),
+            "Owner-bound Phase O admin control-plane operation with bounded projections.",
+            frozenset({Toolset.ADMIN}),
+            frozenset(
+                {Scope.PROVISION}
+                if "dependency" in name or "approval" in name or "provisioning" in name
+                else {Scope.CONFIGURE}
+            ),
+            RiskLevel.HIGH
+            if name
+            in {
+                "comfyui.admin.server.upsert",
+                "comfyui.admin.server.set_enabled",
+                "comfyui.admin.server.set_default",
+                "comfyui.admin.server.delete",
+                "comfyui.admin.config.import",
+                "comfyui.admin.dependency.install",
+                "comfyui.admin.provisioning.cancel",
+            }
+            or name.endswith("commit")
+            else RiskLevel.LOW,
+            ("server", "config", "dependency", "approval", "provisioning"),
+        )
+        for name in (
+            "comfyui.admin.server.list",
+            "comfyui.admin.server.inspect",
+            "comfyui.admin.server.upsert",
+            "comfyui.admin.server.set_enabled",
+            "comfyui.admin.server.set_default",
+            "comfyui.admin.server.delete",
+            "comfyui.admin.config.export",
+            "comfyui.admin.config.import",
+            "comfyui.admin.dependency.inspect",
+            "comfyui.admin.dependency.plan",
+            "comfyui.admin.dependency.install",
+            "comfyui.admin.approval.get",
+            "comfyui.admin.approval.decision.plan",
+            "comfyui.admin.approval.decision.commit",
+            "comfyui.admin.provisioning.get",
+            "comfyui.admin.provisioning.cancel",
+        )
+    ),
+    CapabilitySpec(
+        "comfyui.execution.plan",
+        "Plan multi-server execution",
+        "Select one compatible Deployment and persist an immutable routing plan.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("route", "plan", "server", "policy"),
+    ),
+    CapabilitySpec(
+        "comfyui.execution.commit",
+        "Commit planned execution",
+        "Submit exactly the Deployment pinned by a digest-bound routing plan.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("route", "commit", "job", "digest"),
+    ),
+    CapabilitySpec(
+        "comfyui.route.explain",
+        "Explain a routing plan",
+        "Read the owner-bound candidate set, exclusions, score, and selection reason.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("route", "explain", "candidate", "score"),
+    ),
+    CapabilitySpec(
+        "comfyui.policy.evaluate",
+        "Evaluate execution policy",
+        "Evaluate arguments against bounded execution policy without submitting work.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("policy", "evaluate", "allow", "deny"),
+    ),
+    CapabilitySpec(
+        "comfyui.queue.remove",
+        "Remove queued Jobs",
+        "Preview or remove an explicit owner-safe set of queued Jobs.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.MEDIUM,
+        ("queue", "remove", "cancel"),
+    ),
+    CapabilitySpec(
+        "comfyui.queue.clear",
+        "Clear a server queue",
+        "Preview affected Jobs before an explicit global queue clear.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("queue", "clear", "global"),
+    ),
+    CapabilitySpec(
+        "comfyui.server.interrupt",
+        "Interrupt a server",
+        "Preview running Jobs before an explicit global ComfyUI interrupt.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("server", "interrupt", "global"),
+    ),
+    CapabilitySpec(
+        "comfyui.runtime.restart.plan",
+        "Plan a runtime restart",
+        "Return restart impact, approval requirements, and controller availability.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("runtime", "restart", "approval", "impact"),
+    ),
 )
 
 CAPABILITY_BY_NAME = {spec.name: spec for spec in CAPABILITY_SPECS}
@@ -495,7 +612,7 @@ class ToolInventory:
     """Validate and bound one endpoint's stable active Tool surface."""
 
     DEFAULT_FIXED_LIMIT = 16
-    HARD_FIXED_LIMIT = 24
+    HARD_FIXED_LIMIT = 32
     DYNAMIC_LIMIT = 8
 
     def __init__(
@@ -505,7 +622,7 @@ class ToolInventory:
         max_fixed_limit: int = DEFAULT_FIXED_LIMIT,
     ) -> None:
         if type(max_fixed_limit) is not int or not 1 <= max_fixed_limit <= self.HARD_FIXED_LIMIT:
-            raise ValueError("max_fixed_limit must be between 1 and 24")
+            raise ValueError("max_fixed_limit must be between 1 and 32")
         names = tuple(tool.name for tool in fixed)
         if len(names) != len(set(names)):
             raise ValueError("fixed Tool names must be unique")

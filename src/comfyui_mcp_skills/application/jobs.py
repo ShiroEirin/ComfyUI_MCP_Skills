@@ -70,11 +70,13 @@ class JobService:
         runs: RunRepository,
         gateway_factory: Callable[[dict[str, Any]], ComfyUIGateway],
         artifacts: ArtifactRepository | None = None,
+        connection_provider: Callable[[str, str], dict[str, Any] | None] | None = None,
     ) -> None:
         self._servers = servers
         self._runs = runs
         self._gateway_factory = gateway_factory
         self._artifacts = artifacts
+        self._connection_provider = connection_provider
 
     def list(
         self,
@@ -191,7 +193,7 @@ class JobService:
         self._authorize_owner(saved, prompt_id, owner_id)
         if saved is not None and saved.status == "lost":
             return saved
-        gateway = self._gateway_factory(self._servers.connection(server_id))
+        gateway = self._gateway_factory(self._connection(owner_id, server_id))
         if deadline is None:
             history = gateway.get_history(prompt_id)
         else:
@@ -275,7 +277,7 @@ class JobService:
         deadline = time.monotonic() + max(timeout_seconds, 0)
         saved = self._runs.get(server_id, prompt_id)
         self._authorize_owner(saved, prompt_id, owner_id)
-        gateway = self._gateway_factory(self._servers.connection(server_id))
+        gateway = self._gateway_factory(self._connection(owner_id, server_id))
         if cancel_check is not None:
             cancel_check()
         if saved and saved.client_id and time.monotonic() < deadline:
@@ -337,7 +339,7 @@ class JobService:
         current = self.get(server_id, prompt_id, owner_id=owner_id)
         if current.status in _TERMINAL_STATUSES:
             return current
-        gateway = self._gateway_factory(self._servers.connection(server_id))
+        gateway = self._gateway_factory(self._connection(owner_id, server_id))
         if current.status == "running":
             raise UnsafeCancel(
                 "Safe targeted cancellation is unavailable for a running ComfyUI job"
@@ -354,6 +356,14 @@ class JobService:
         job = self._copy(current, server_id, prompt_id, "cancelled", owner_id=owner_id)
         self._runs.save(job)
         return job
+
+    def _connection(self, owner_id: str, server_id: str) -> dict[str, Any]:
+        connection = (
+            self._connection_provider(owner_id, server_id)
+            if self._connection_provider is not None
+            else None
+        )
+        return self._servers.connection(server_id) if connection is None else connection
 
     def _persisted_or_raise(self, fallback: Job | None, prompt_id: str) -> Job:
         persisted = self._runs.get(fallback.server_id, prompt_id) if fallback is not None else None

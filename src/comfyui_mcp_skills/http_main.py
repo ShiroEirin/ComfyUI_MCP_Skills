@@ -11,6 +11,7 @@ import uvicorn
 
 from comfyui_mcp_skills.adapters.http.app import create_http_app
 from comfyui_mcp_skills.adapters.http.auth import _validate_tokens
+from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.observability import configure_logging
 
 _APP_FACTORY = "comfyui_mcp_skills.http_main:create_app"
@@ -20,6 +21,7 @@ def create_app():
     """Build an HTTP app from the current process environment for Uvicorn workers."""
     configure_logging(os.environ.get("COMFYUI_MCP_LOG_LEVEL", "INFO"))
     _host, _port, app_options = _http_environment()
+    _initialize_control_plane(app_options["base_dir"])
     return create_http_app(**app_options)
 
 
@@ -29,6 +31,7 @@ def main() -> None:
     limit_mode = os.environ.get("COMFYUI_MCP_LIMIT_MODE", "process").strip().lower()
     _validate_worker_limits(workers, limit_mode)
     host, port, app_options = _http_environment()
+    _initialize_control_plane(app_options["base_dir"])
     if workers > 1:
         uvicorn.run(
             _APP_FACTORY,
@@ -55,7 +58,9 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
     tokens = json.loads(os.environ.get("COMFYUI_MCP_TOKENS", "{}"))
     if not isinstance(tokens, dict):
         raise ValueError("COMFYUI_MCP_TOKENS must be a JSON object")
-    _validate_tokens(tokens)
+    auth_mode = os.environ.get("COMFYUI_MCP_AUTH_MODE", "static").strip().lower()
+    if auth_mode == "static":
+        _validate_tokens(tokens)
     allowed_hosts = _csv(
         os.environ.get(
             "COMFYUI_MCP_ALLOWED_HOSTS",
@@ -77,6 +82,14 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
         "allowed_hosts": allowed_hosts,
         "allowed_origins": allowed_origins,
         "tokens": tokens,
+        "introspection_url": os.environ.get("COMFYUI_MCP_INTROSPECTION_URL", "").strip(),
+        "introspection_client_id": os.environ.get(
+            "COMFYUI_MCP_INTROSPECTION_CLIENT_ID", ""
+        ).strip(),
+        "introspection_client_secret": os.environ.get(
+            "COMFYUI_MCP_INTROSPECTION_CLIENT_SECRET", ""
+        ),
+        "introspection_audience": os.environ.get("COMFYUI_MCP_INTROSPECTION_AUDIENCE", ""),
         "upload_root": Path(os.environ.get("COMFYUI_MCP_UPLOAD_ROOT", base_dir / ".mcp-uploads")),
         "max_upload_bytes": int(
             os.environ.get("COMFYUI_MCP_MAX_UPLOAD_BYTES", str(25 * 1024 * 1024))
@@ -94,12 +107,20 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
             os.environ.get("COMFYUI_MCP_MAX_SUBSCRIPTIONS_PER_PRINCIPAL", "2")
         ),
         "public_mcp_url": public_mcp_url,
-        "auth_mode": os.environ.get("COMFYUI_MCP_AUTH_MODE", "static").strip().lower(),
+        "auth_mode": auth_mode,
         "remote_fetch_hosts": _csv(os.environ.get("COMFYUI_MCP_FETCH_HOSTS", "")),
+        "manager_source_hosts": _csv(os.environ.get("COMFYUI_MCP_PROVISION_HOSTS", "")),
+        "manager_server_origins": _csv(os.environ.get("COMFYUI_MCP_MANAGER_ORIGINS", "")),
         "toolset": os.environ.get("COMFYUI_MCP_TOOLSET", "execution").strip().lower(),
         "enable_high_risk": os.environ.get("COMFYUI_MCP_ENABLE_HIGH_RISK", "") == "1",
     }
     return host, port, app_options
+
+
+def _initialize_control_plane(base_dir: Path) -> None:
+    data_dir = base_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    SQLiteControlPlaneStore((data_dir / "control-plane.sqlite3").resolve()).initialize()
 
 
 def _validate_worker_limits(workers: int, limit_mode: str) -> None:
@@ -107,8 +128,8 @@ def _validate_worker_limits(workers: int, limit_mode: str) -> None:
         raise ValueError("COMFYUI_MCP_WORKERS must be positive")
     if limit_mode not in {"process", "external"}:
         raise ValueError("COMFYUI_MCP_LIMIT_MODE must be process or external")
-    if workers > 1 and limit_mode != "external":
-        raise ValueError("Multiple workers require external global rate limiting")
+    if workers > 1:
+        raise ValueError("Multiple workers require a configured shared rate-limit backend")
 
 
 def _default_allowed_hosts(host: str, port: int) -> list[str]:

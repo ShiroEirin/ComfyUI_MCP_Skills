@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +14,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
-from comfyui_mcp_skills.adapters.http.auth import (
-    StaticTokenVerifier,
-    authorize,
-    request_owner,
-)
+from comfyui_mcp_skills.adapters.http.auth import TokenVerifier, authorize, request_owner
 from comfyui_mcp_skills.adapters.http.security import SafeHTTPSDownloader
 from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.servers import ServerRegistry
@@ -25,12 +23,16 @@ from comfyui_mcp_skills.domain.errors import (
     PayloadTooLarge,
     ServerNotFound,
 )
+from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
+
+_SAFE_FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,254}\Z")
+_PURPOSES = frozenset({"image", "mask", "audio", "video"})
 
 
 def create_asset_routes(
     *,
-    verifier: StaticTokenVerifier,
+    verifier: TokenVerifier,
     servers: ServerRegistry,
     assets: AssetService,
     downloader: SafeHTTPSDownloader,
@@ -39,6 +41,7 @@ def create_asset_routes(
     allowed_origins: list[str],
     max_upload_bytes: int,
     max_fetch_body_bytes: int,
+    server_connection: Callable[[str, str], dict[str, Any] | None] | None = None,
 ) -> list[Route]:
     async def upload(request: Request) -> Response:
         denied = await authorize(request, verifier, "comfyui:execute")
@@ -51,7 +54,16 @@ def create_asset_routes(
         server_id = request.query_params.get("server_id", "")
         purpose = request.query_params.get("purpose", "image")
         filename = request.query_params.get("filename", "")
-        if not server_id or not filename or Path(filename).name != filename:
+        try:
+            server_id = validate_identifier(server_id, field="server_id")
+        except ValueError:
+            return JSONResponse({"code": "INVALID_ARGUMENTS"}, status_code=400)
+        if (
+            not filename
+            or Path(filename).name != filename
+            or _SAFE_FILENAME.fullmatch(filename) is None
+            or purpose not in _PURPOSES
+        ):
             return JSONResponse({"code": "INVALID_ARGUMENTS"}, status_code=400)
         destination = upload_root / f"upload-{uuid.uuid4().hex}-{filename}"
         size = 0
@@ -62,7 +74,10 @@ def create_asset_routes(
                     if size > max_upload_bytes:
                         raise PayloadTooLarge(f"Upload exceeds {max_upload_bytes} bytes")
                     handle.write(chunk)
-            gateway = create_gateway(servers.connection(server_id))
+            connection = server_connection(owner_id, server_id) if server_connection else None
+            gateway = create_gateway(
+                servers.connection(server_id) if connection is None else connection
+            )
             asset = await anyio.to_thread.run_sync(
                 lambda: assets.upload_local(
                     gateway,
@@ -95,17 +110,19 @@ def create_asset_routes(
             server_id = body.get("server_id")
             url = body.get("url")
             purpose = body.get("purpose", "image")
-            if not isinstance(server_id, str) or not server_id:
-                raise TypeError("server_id must be a non-empty string")
-            if not isinstance(url, str) or not url:
-                raise TypeError("url must be a non-empty string")
-            if not isinstance(purpose, str):
-                raise TypeError("purpose must be a string")
+            server_id = validate_identifier(server_id, field="server_id")
+            if not isinstance(url, str) or not url or len(url) > 4096:
+                raise TypeError("url must be a non-empty string up to 4096 characters")
+            if not isinstance(purpose, str) or purpose not in _PURPOSES:
+                raise TypeError("purpose must be image, mask, audio, or video")
             downloaded = await anyio.to_thread.run_sync(
                 lambda: downloader.download(url, upload_root)
             )
             try:
-                gateway = create_gateway(servers.connection(server_id))
+                connection = server_connection(owner_id, server_id) if server_connection else None
+                gateway = create_gateway(
+                    servers.connection(server_id) if connection is None else connection
+                )
                 asset = await anyio.to_thread.run_sync(
                     lambda: assets.upload_local(
                         gateway,

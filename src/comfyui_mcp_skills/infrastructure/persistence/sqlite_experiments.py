@@ -249,24 +249,40 @@ class SQLiteExperimentRepository:
             ) <= _parse_time(committed_at, field="Experiment commit time"):
                 raise ValueError("Experiment plan has expired")
             publication = connection.execute(
-                """
-                SELECT 1
-                FROM workflow_deployments AS deployments
+                """SELECT 1 FROM workflow_deployments AS deployments
                 JOIN workflow_revisions AS revisions
                   ON revisions.workflow_id=deployments.workflow_id
                  AND revisions.revision_id=deployments.revision_id
                 WHERE deployments.deployment_id=? AND deployments.workflow_id=?
                   AND deployments.revision_id=? AND deployments.server_id=?
-                  AND deployments.enabled=1 AND deployments.published=1
-                  AND deployments.validation_status='valid'
+                  AND deployments.enabled=1 AND deployments.validation_status='valid'
                   AND revisions.content_digest=?
-                """,
+                  AND (
+                    (NOT EXISTS (SELECT 1 FROM config_workflow_snapshots WHERE owner_id=?)
+                     AND deployments.published=1)
+                    OR EXISTS (
+                        SELECT 1 FROM config_workflow_deployments AS bindings
+                        JOIN config_workflow_states AS states ON states.owner_id=bindings.owner_id
+                         AND states.server_id=bindings.server_id
+                         AND states.workflow_id=bindings.workflow_id
+                        JOIN managed_servers AS servers ON servers.owner_id=bindings.owner_id
+                         AND servers.server_id=bindings.server_id
+                         AND servers.lifecycle_status='active'
+                        WHERE bindings.owner_id=?
+                         AND bindings.server_id=deployments.server_id
+                         AND bindings.workflow_id=deployments.workflow_id
+                         AND bindings.deployment_id=deployments.deployment_id
+                         AND states.enabled=1
+                    )
+                  )""",
                 (
                     plan["pinned_deployment_id"],
                     plan["workflow_id"],
                     plan["pinned_revision_id"],
                     plan["server_id"],
                     plan["pinned_content_digest"],
+                    owner_id,
+                    owner_id,
                 ),
             ).fetchone()
             if publication is None:
@@ -2387,7 +2403,6 @@ def _ensure_published_context(
     expected_deployment_id: object = None,
     expected_content_digest: object = None,
 ) -> dict[str, Any]:
-    del owner_id
     expected = (expected_revision_id, expected_deployment_id, expected_content_digest)
     if any(value is not None for value in expected) and not all(
         value is not None for value in expected
@@ -2400,9 +2415,9 @@ def _ensure_published_context(
             "AND revisions.revision_id=? AND deployments.deployment_id=? "
             "AND revisions.content_digest=?"
         )
-        parameters = (workflow_id, server_id, *expected)
+        parameters = (workflow_id, server_id, *expected, owner_id, owner_id)
     else:
-        parameters = (workflow_id, server_id)
+        parameters = (workflow_id, server_id, owner_id, owner_id)
     row = connection.execute(
         f"""
         SELECT revisions.revision_id,deployments.deployment_id,revisions.content_digest,
@@ -2413,8 +2428,25 @@ def _ensure_published_context(
           ON revisions.workflow_id=deployments.workflow_id
          AND revisions.revision_id=deployments.revision_id
         WHERE deployments.workflow_id=? AND deployments.server_id=?
-          AND deployments.enabled=1 AND deployments.published=1
-          AND deployments.validation_status='valid' {pin_filter}
+          AND deployments.enabled=1 AND deployments.validation_status='valid' {pin_filter}
+          AND (
+            (NOT EXISTS (SELECT 1 FROM config_workflow_snapshots WHERE owner_id=?)
+             AND deployments.published=1)
+            OR EXISTS (
+                SELECT 1 FROM config_workflow_deployments AS bindings
+                JOIN config_workflow_states AS states ON states.owner_id=bindings.owner_id
+                 AND states.server_id=bindings.server_id
+                 AND states.workflow_id=bindings.workflow_id
+                JOIN managed_servers AS servers ON servers.owner_id=bindings.owner_id
+                 AND servers.server_id=bindings.server_id
+                 AND servers.lifecycle_status='active'
+                WHERE bindings.owner_id=?
+                 AND bindings.server_id=deployments.server_id
+                 AND bindings.workflow_id=deployments.workflow_id
+                 AND bindings.deployment_id=deployments.deployment_id
+                 AND states.enabled=1
+            )
+          )
         """,
         parameters,
     ).fetchone()

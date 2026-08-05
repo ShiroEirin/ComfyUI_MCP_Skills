@@ -50,7 +50,7 @@ def test_phase_m_migration_creates_owner_bound_experiment_schema(tmp_path: Path)
             ).fetchall()
         }
 
-    assert version == 8
+    assert version == 12
     assert {
         "experiment_plans",
         "experiments",
@@ -143,7 +143,7 @@ def _plan(
 ) -> tuple[dict[str, object], list[dict[str, object]]]:
     digest = "a" * 64
     experiment_id = "experiment_" + "b" * 64
-    created_at = "2026-08-03T00:00:00+00:00"
+    created_at = datetime.now(timezone.utc).isoformat()
     plan: dict[str, object] = {
         "plan_id": "experiment_plan_" + digest,
         "plan_digest": digest,
@@ -453,12 +453,12 @@ def test_cancelled_plan_holds_owner_quota_until_maintenance_prunes_payload(
 
     with pytest.raises(ValueError, match="owner live Experiment plan quota exceeded"):
         repository.save_plan(second_plan, second_variants)
-
-    before_grace = repository.apply_retention(now=datetime(2026, 8, 4, tzinfo=timezone.utc))
+    retention_now = datetime.now(timezone.utc)
+    before_grace = repository.apply_retention(now=retention_now + timedelta(days=6))
     assert before_grace["terminal_plans_pruned"] == 0
     with pytest.raises(ValueError, match="owner live Experiment plan quota exceeded"):
         repository.save_plan(second_plan, second_variants)
-    retention = repository.apply_retention(now=datetime(2026, 8, 11, tzinfo=timezone.utc))
+    retention = repository.apply_retention(now=retention_now + timedelta(days=8))
     assert retention["terminal_plans_pruned"] == 1
     repository.save_plan(second_plan, second_variants)
     with sqlite3.connect(store.path) as connection:
@@ -771,7 +771,7 @@ def test_fresh_and_v6_upgrade_apply_phase_migration_seven(
     monkeypatch.setattr(control_plane_module, "_MIGRATIONS", old_migrations)
     store.initialize()
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (8,)
+        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (12,)
         assert connection.execute("SELECT count(*) FROM experiment_plans").fetchone() == (0,)
 
 

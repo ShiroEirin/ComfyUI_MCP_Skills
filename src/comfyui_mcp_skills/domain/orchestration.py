@@ -16,6 +16,7 @@ ReconcileState = Literal[
     "cancelled",
     "interrupted",
 ]
+PROVISIONING_WORK_TYPE = "provisioning.execute"
 
 
 @dataclass(frozen=True, slots=True)

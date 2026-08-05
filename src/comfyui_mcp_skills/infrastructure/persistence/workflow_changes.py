@@ -14,15 +14,19 @@ from comfyui_mcp_skills.domain.errors import (
     WorkflowChangeNotFound,
 )
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
-from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import (
+    SQLiteWorkflowRepository,
+    _advance_config_state,
+)
 
 
 class SQLiteWorkflowChangeRepository:
     """Persist prepared changes and commit them against one published base Revision."""
 
-    def __init__(self, store: SQLiteControlPlaneStore) -> None:
+    def __init__(self, store: SQLiteControlPlaneStore, *, owner_id: str | None = None) -> None:
         self._store = store
-        self._workflows = SQLiteWorkflowRepository(store)
+        self._owner_id = owner_id
+        self._workflows = SQLiteWorkflowRepository(store, owner_id=owner_id)
 
     def describe(self, workflow_id: str, server_id: str) -> dict[str, Any]:
         return self._workflows.describe(workflow_id, server_id)
@@ -133,7 +137,7 @@ class SQLiteWorkflowChangeRepository:
         finally:
             connection.close()
 
-    def commit_change_plan(self, plan_id: str, plan_digest: str) -> dict[str, Any]:
+    def commit_change_plan(self, plan_id: str, plan_digest: str, actor: str) -> dict[str, Any]:
         if not plan_id.startswith("plan_") or not plan_digest:
             raise ValueError("plan_id and plan_digest are required")
         connection = self._connect()
@@ -144,9 +148,9 @@ class SQLiteWorkflowChangeRepository:
                 SELECT workflow_id, server_id, base_revision_id, graph_json,
                        parameter_schema_json, dependency_contract_json, content_digest,
                        plan_digest, expires_at, committed_revision_id
-                FROM workflow_change_plans WHERE plan_id = ?
+                FROM workflow_change_plans WHERE plan_id = ? AND actor = ?
                 """,
-                (plan_id,),
+                (plan_id, actor),
             ).fetchone()
             if row is None:
                 raise WorkflowChangeNotFound(
@@ -168,14 +172,7 @@ class SQLiteWorkflowChangeRepository:
                     "Workflow change plan expired",
                     details={"plan_id": plan_id, "reason": "expired"},
                 )
-            published = connection.execute(
-                """
-                SELECT revision_id FROM workflow_deployments
-                WHERE workflow_id = ? AND server_id = ? AND published = 1
-                  AND enabled = 1 AND validation_status = 'valid'
-                """,
-                (workflow_id, server_id),
-            ).fetchone()
+            published = self._published_revision(connection, workflow_id, server_id)
             if published is None or str(published[0]) != base_revision_id:
                 raise WorkflowChangeConflict(
                     "Workflow base Revision changed before commit",
@@ -185,6 +182,11 @@ class SQLiteWorkflowChangeRepository:
             schema_json = str(row[4])
             dependency_json = str(row[5])
             content_digest = str(row[6])
+            if _stored_revision_digest(graph_json, schema_json, dependency_json) != content_digest:
+                raise WorkflowChangeConflict(
+                    "Workflow change plan payload digest does not match",
+                    details={"plan_id": plan_id, "reason": "payload_mismatch"},
+                )
             existing = connection.execute(
                 """
                 SELECT revision_id, graph_json, parameter_schema_json,
@@ -317,26 +319,25 @@ class SQLiteWorkflowChangeRepository:
                     "replaced_revision_id": str(prior[2]),
                 }
             target = connection.execute(
-                """
-                SELECT graph_json, parameter_schema_json, dependency_contract_json
-                FROM workflow_revisions
-                WHERE workflow_id = ? AND revision_id = ?
-                """,
-                (workflow_id, target_revision_id),
+                """SELECT r.graph_json,r.parameter_schema_json,r.dependency_contract_json
+                   FROM workflow_revisions AS r
+                   WHERE r.workflow_id=? AND r.revision_id=? AND (
+                     NOT EXISTS(SELECT 1 FROM config_workflow_snapshots WHERE owner_id=?)
+                     OR EXISTS(SELECT 1 FROM config_workflow_deployments AS b
+                       JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+                       WHERE b.owner_id=? AND d.workflow_id=r.workflow_id
+                        AND d.revision_id=r.revision_id)
+                     OR EXISTS(SELECT 1 FROM workflow_change_plans AS p
+                       WHERE p.actor=? AND p.workflow_id=r.workflow_id
+                        AND p.committed_revision_id=r.revision_id))""",
+                (workflow_id, target_revision_id, actor, actor, actor),
             ).fetchone()
             if target is None:
                 raise WorkflowChangeNotFound(
                     "Rollback target Revision was not found",
                     details={"target_revision_id": target_revision_id},
                 )
-            current = connection.execute(
-                """
-                SELECT revision_id FROM workflow_deployments
-                WHERE workflow_id = ? AND server_id = ? AND published = 1
-                  AND enabled = 1 AND validation_status = 'valid'
-                """,
-                (workflow_id, server_id),
-            ).fetchone()
+            current = self._published_revision(connection, workflow_id, server_id)
             if current is None:
                 raise WorkflowChangeNotFound(
                     "Published Workflow Deployment was not found",
@@ -398,17 +399,44 @@ class SQLiteWorkflowChangeRepository:
                 """,
                 (deployment_id, workflow_id, revision_id, server_id, created_at),
             )
-            connection.execute(
-                """
-                UPDATE workflow_deployments SET published = 0
-                WHERE workflow_id = ? AND server_id = ? AND published = 1
-                """,
-                (workflow_id, server_id),
-            )
-            connection.execute(
-                "UPDATE workflow_deployments SET published = 1 WHERE deployment_id = ?",
-                (deployment_id,),
-            )
+            if self._owner_id is None:
+                connection.execute(
+                    """UPDATE workflow_deployments SET published = 0
+                    WHERE workflow_id = ? AND server_id = ? AND published = 1""",
+                    (workflow_id, server_id),
+                )
+                connection.execute(
+                    "UPDATE workflow_deployments SET published = 1 WHERE deployment_id = ?",
+                    (deployment_id,),
+                )
+            else:
+                owns_server = connection.execute(
+                    "SELECT 1 FROM managed_servers WHERE owner_id=? AND server_id=? "
+                    "AND lifecycle_status='active'",
+                    (self._owner_id, server_id),
+                ).fetchone()
+                if owns_server is None:
+                    raise LookupError(f"active managed Server not found: {server_id}")
+                connection.execute(
+                    "INSERT INTO config_workflow_deployments"
+                    "(owner_id,deployment_id,server_id,workflow_id) VALUES(?,?,?,?) "
+                    "ON CONFLICT(owner_id,server_id,workflow_id) DO UPDATE SET "
+                    "deployment_id=excluded.deployment_id",
+                    (self._owner_id, deployment_id, server_id, workflow_id),
+                )
+                connection.execute(
+                    "INSERT INTO config_workflow_states"
+                    "(owner_id,server_id,workflow_id,enabled,updated_at) VALUES(?,?,?,1,?) "
+                    "ON CONFLICT(owner_id,server_id,workflow_id) DO UPDATE SET "
+                    "enabled=1,updated_at=excluded.updated_at",
+                    (self._owner_id, server_id, workflow_id, created_at),
+                )
+                connection.execute(
+                    "INSERT INTO config_workflow_snapshots(owner_id,updated_at) VALUES(?,?) "
+                    "ON CONFLICT(owner_id) DO UPDATE SET updated_at=excluded.updated_at",
+                    (self._owner_id, created_at),
+                )
+                _advance_config_state(connection, self._owner_id, created_at)
             connection.execute(
                 """
                 INSERT INTO workflow_rollback_requests(
@@ -446,6 +474,28 @@ class SQLiteWorkflowChangeRepository:
             raise
         finally:
             connection.close()
+
+    def _published_revision(
+        self, connection: sqlite3.Connection, workflow_id: str, server_id: str
+    ) -> sqlite3.Row | tuple[object, ...] | None:
+        if self._owner_id is None:
+            return connection.execute(
+                """SELECT revision_id FROM workflow_deployments
+                WHERE workflow_id=? AND server_id=? AND published=1
+                AND enabled=1 AND validation_status='valid'""",
+                (workflow_id, server_id),
+            ).fetchone()
+        return connection.execute(
+            """SELECT d.revision_id FROM config_workflow_deployments AS b
+            JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
+            JOIN config_workflow_states AS s ON s.owner_id=b.owner_id
+             AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
+            JOIN managed_servers AS m ON m.owner_id=b.owner_id
+             AND m.server_id=b.server_id AND m.lifecycle_status='active'
+            WHERE b.owner_id=? AND b.workflow_id=? AND b.server_id=?
+             AND s.enabled=1 AND d.enabled=1 AND d.validation_status='valid'""",
+            (self._owner_id, workflow_id, server_id),
+        ).fetchone()
 
     @staticmethod
     def _committed_result(
@@ -514,3 +564,29 @@ def _revision_digest(
 
 def _sha256(value: object) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _stored_revision_digest(graph_json: str, schema_json: str, dependency_json: str) -> str:
+    graph = json.loads(graph_json)
+    schema = json.loads(schema_json)
+    dependencies = json.loads(dependency_json)
+    if (
+        not isinstance(graph, dict)
+        or not isinstance(schema, dict)
+        or not isinstance(dependencies, dict)
+    ):
+        raise ValueError("Workflow change plan payload is invalid")
+    value = {
+        "identity_version": 2,
+        "graph": graph,
+        "parameters": schema.get("parameters", {}),
+        "dependencies": dependencies,
+        "output_contract": schema.get("_output_contract"),
+    }
+    metadata = schema.get("_revision")
+    if isinstance(metadata, dict) and metadata:
+        value["revision_metadata"] = metadata
+    encoded = json.dumps(
+        value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()

@@ -17,7 +17,7 @@ from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowValidationService,
 )
 from comfyui_mcp_skills.application.workflow_import import WorkflowImportService
-from comfyui_mcp_skills.domain.errors import WorkflowChangeConflict
+from comfyui_mcp_skills.domain.errors import WorkflowChangeConflict, WorkflowChangeNotFound
 from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
@@ -118,6 +118,133 @@ def test_replanning_same_change_creates_fresh_expiring_plan(tmp_path: Path) -> N
 
     assert first["plan_id"] != second["plan_id"]
     assert first["expires_at"] != second["expires_at"]
+
+
+def test_change_plan_supports_node_lifecycle_operations(tmp_path: Path) -> None:
+    changes, _workflows = _services(tmp_path)
+
+    added = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "add_node", "node_id": "5", "class_type": "Text", "inputs": {"text": "new"}}],
+        object_info=OBJECT_INFO,
+    )
+    assert added["diff"]["nodes_added"] == ["5"]
+
+    replaced = changes.plan(
+        "portrait",
+        "local",
+        [
+            {
+                "op": "replace_node",
+                "node_id": "4",
+                "class_type": "Text",
+                "inputs": {"text": "replacement"},
+            }
+        ],
+        object_info=OBJECT_INFO,
+    )
+    assert replaced["diff"]["input_changes"]
+
+    removed = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "remove_node", "node_id": "4"}],
+        object_info=OBJECT_INFO,
+    )
+    assert removed["diff"]["nodes_removed"] == ["4"]
+    with pytest.raises(ValueError, match="still connected"):
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "remove_node", "node_id": "2"}],
+            object_info=OBJECT_INFO,
+        )
+
+
+def test_change_plan_supports_bounded_subgraphs_and_registered_recipes(tmp_path: Path) -> None:
+    changes, _workflows = _services(tmp_path)
+
+    inserted = changes.plan(
+        "portrait",
+        "local",
+        [
+            {
+                "op": "insert_subgraph",
+                "id_prefix": "sg",
+                "nodes": {
+                    "a": {"class_type": "Image", "inputs": {}},
+                    "b": {
+                        "class_type": "SaveImage",
+                        "inputs": {"images": ["a", 0], "filename_prefix": "subgraph"},
+                    },
+                },
+            }
+        ],
+        object_info=OBJECT_INFO,
+    )
+    assert inserted["diff"]["nodes_added"] == ["sg_a", "sg_b"]
+
+    extracted = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "extract_subgraph", "name": "base_output", "node_ids": ["2", "3"]}],
+        object_info=OBJECT_INFO,
+    )
+    assert extracted["diff"]["parameter_schema_changed"] is True
+
+    recipe = changes.plan(
+        "portrait",
+        "local",
+        [
+            {
+                "op": "apply_recipe",
+                "recipe_id": "set_scalar_input.v1",
+                "arguments": {"node_id": "1", "field": "text", "value": "recipe"},
+            }
+        ],
+        object_info=OBJECT_INFO,
+    )
+    assert recipe["diff"]["input_changes"][0]["after"] == "recipe"
+    with pytest.raises(ValueError, match="not registered"):
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "apply_recipe", "recipe_id": "unknown.v1", "arguments": {}}],
+            object_info=OBJECT_INFO,
+        )
+
+
+def test_change_plan_commit_is_actor_bound_and_operations_are_bounded(tmp_path: Path) -> None:
+    changes, _workflows = _services(tmp_path)
+    plan = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "set_input", "node_id": "1", "field": "text", "value": "owned"}],
+        object_info=OBJECT_INFO,
+    )
+    other = WorkflowChangeService(
+        changes._repository,  # type: ignore[attr-defined]
+        changes._graphs,  # type: ignore[attr-defined]
+        changes._validation,  # type: ignore[attr-defined]
+        actor="other-actor",
+    )
+    with pytest.raises(WorkflowChangeNotFound, match="not found"):
+        other.commit(plan["plan_id"], plan["plan_digest"])
+    with pytest.raises(ValueError, match="1 MiB"):
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "set_input",
+                    "node_id": "1",
+                    "field": "text",
+                    "value": "x" * (1024 * 1024),
+                }
+            ],
+            object_info=OBJECT_INFO,
+        )
 
 
 def test_change_plan_rejects_graph_cycle(tmp_path: Path) -> None:

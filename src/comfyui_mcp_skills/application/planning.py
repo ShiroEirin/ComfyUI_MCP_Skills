@@ -54,6 +54,7 @@ class ExecutionPlanningService:
         revision_id: str,
         deployment_id: str,
         content_digest: str,
+        owner_id: str = "",
     ) -> Workflow:
         connection = _connect(self._store)
         try:
@@ -68,8 +69,26 @@ class ExecutionPlanningService:
                   AND d.revision_id = ? AND d.deployment_id = ?
                   AND d.enabled = 1 AND d.validation_status = 'valid'
                   AND r.content_digest = ?
+                  AND (
+                    NOT EXISTS (SELECT 1 FROM config_workflow_snapshots WHERE owner_id = ?)
+                    OR EXISTS (
+                        SELECT 1 FROM config_workflow_deployments AS b
+                        JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                         AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                        WHERE b.owner_id = ? AND b.server_id = d.server_id
+                          AND b.workflow_id = d.workflow_id AND b.deployment_id = d.deployment_id
+                    )
+                  )
                 """,
-                (server_id, workflow_id, revision_id, deployment_id, content_digest),
+                (
+                    server_id,
+                    workflow_id,
+                    revision_id,
+                    deployment_id,
+                    content_digest,
+                    owner_id,
+                    owner_id,
+                ),
             ).fetchone()
         finally:
             connection.close()
@@ -136,8 +155,26 @@ class ExecutionPlanningService:
                       AND d.revision_id = ? AND d.deployment_id = ?
                       AND d.enabled = 1 AND d.validation_status = 'valid'
                       AND r.content_digest = ?
+                      AND (
+                        NOT EXISTS (SELECT 1 FROM config_workflow_snapshots WHERE owner_id = ?)
+                        OR EXISTS (
+                            SELECT 1 FROM config_workflow_deployments AS b
+                            JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                             AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                            WHERE b.owner_id=? AND b.server_id=d.server_id
+                              AND b.workflow_id=d.workflow_id AND b.deployment_id=d.deployment_id
+                        )
+                      )
                     """,
-                    (server_id, workflow_id, revision_id, deployment_id, content_digest),
+                    (
+                        server_id,
+                        workflow_id,
+                        revision_id,
+                        deployment_id,
+                        content_digest,
+                        owner_id,
+                        owner_id,
+                    ),
                 ).fetchone()
             else:
                 published = connection.execute(
@@ -147,10 +184,24 @@ class ExecutionPlanningService:
                     FROM workflow_deployments AS d
                     JOIN workflow_revisions AS r
                       ON r.workflow_id = d.workflow_id AND r.revision_id = d.revision_id
-                    WHERE d.server_id = ? AND d.workflow_id = ? AND d.published = 1
-                      AND d.enabled = 1 AND d.validation_status = 'valid'
+                    WHERE d.server_id = ? AND d.workflow_id = ? AND d.enabled = 1
+                      AND d.validation_status = 'valid'
+                      AND (
+                        (NOT EXISTS (SELECT 1 FROM config_workflow_snapshots WHERE owner_id = ?)
+                         AND d.published = 1)
+                        OR EXISTS (
+                            SELECT 1 FROM config_workflow_deployments AS b
+                            JOIN config_workflow_states AS s ON s.owner_id=b.owner_id
+                             AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
+                            JOIN managed_servers AS m ON m.owner_id=b.owner_id
+                             AND m.server_id=b.server_id AND m.lifecycle_status='active'
+                            WHERE b.owner_id=? AND b.server_id=d.server_id
+                              AND b.workflow_id=d.workflow_id AND b.deployment_id=d.deployment_id
+                              AND s.enabled=1
+                        )
+                      )
                     """,
-                    (server_id, workflow_id),
+                    (server_id, workflow_id, owner_id, owner_id),
                 ).fetchone()
             if published is None:
                 raise LookupError(f"published Workflow not found: {workflow_id}")

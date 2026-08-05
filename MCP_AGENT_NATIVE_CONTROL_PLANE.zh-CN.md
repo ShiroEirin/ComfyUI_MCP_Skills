@@ -1,9 +1,9 @@
 # ComfyUI MCP Skills：Agent 原生超级控制平面设计与开发路线
 
-> 状态：架构蓝图已审查，G0–G6 与 H 纵向切片已验收
+> 状态：G0–G6、H–J、L–O 纵向切片已验收；K、P、Q 与 J 的扩展编辑范围待实施
 > 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 本地工作区
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
-> 更新日期：2026-07-31
+> 更新日期：2026-08-03
 
 ## 目录
 
@@ -45,7 +45,7 @@ MCP 完整能力
   + CLI 难以表达的图、资产与执行智能
 ```
 
-当前实现已经完成可靠执行链与阶段 H 观察面：动态工作流 Tool、媒体上传、持久化 Job、幂等与恢复、Resource 更新、所有者绑定 Job 分页、队列、脱敏日志、模板/子图摘要、可选 API 能力矩阵、canonical Resources 和首批 MCP Prompts。它仍是超级控制平面的执行与观察内核，不是最终产品。
+当前实现已经完成 G0–G6、H–J、L–O：可靠执行与观察内核、语义导入和图级变更、资产血缘、Experiment、结构化诊断，以及服务器/配置/依赖供应链闭环。阶段 K 的高级 Policy 与多服务器路由、阶段 P 的高级运行时控制、阶段 Q 的生产级宿主适配仍未完成，因此尚不能宣称达到最终“超级控制平面”产品形态。
 
 后续开发不能再以“一条 CLI 命令对应一个 MCP Tool”为主线，也不能把 CLI 没有的能力视为非必要范围。应从 Agent 完成目标所需的信息、决策和闭环出发设计能力。
 
@@ -1601,6 +1601,8 @@ Published Revision + arguments + Asset URI
 - 节点增删替换、subgraph 与高层 recipe 必须在最小闭环稳定后分批加入，不属于阶段 J 首次验收。
 
 ### 阶段 K：高级 Policy 与多服务器路由（P1）
+> 实施状态：待实施。当前只有 G4 单服务器最小 Plan，以及 O 阶段的供应链 Policy/Approval；尚无多 Deployment 自动路由、通用 `execution.plan/commit` 或 `route.explain`。
+
 
 阶段 G4 已交付单服务器最小 `ExecutionPlanningService`，并保证切换后的新 Job 具有非空 `plan_id`。本阶段只扩展计划能力，不再次迁移 Job 基本形态；`legacy_migrated=true` 的历史兼容记录继续保持可解释的可空绑定。
 
@@ -1651,6 +1653,8 @@ Published Revision + arguments + Asset URI
 - history 仅返回 `video` 键时也能生成类型、MIME 和 Resource URI 正确的 Artifact。
 
 ### 阶段 M：Experiment、批量与参数扫描（P1）
+> 实施状态：2026-08-03 已完成。已交付持久化 Experiment 计划、批量 Variant、预算与执行槽控制、worker 恢复、评分、preset/Revision 固化及 MCP 投影。
+
 
 交付：
 
@@ -1676,6 +1680,8 @@ Published Revision + arguments + Asset URI
 - ComfyUI 重启导致 Variant Job `lost` 时停止该 Variant 自动推进；只有失败策略和显式 retry plan 允许创建新 Job。
 
 ### 阶段 N：结构化诊断与安全恢复（P1）
+> 实施状态：2026-08-03 已完成。已交付结构化 Job/Server 诊断、持久化修复计划、受 pin 约束的安全重试、稳定规则注册表及 MCP Prompt/Resources。
+
 
 交付：
 
@@ -1699,6 +1705,8 @@ Published Revision + arguments + Asset URI
 - Diagnostic 结果不包含 `comfyui-skill ...` 文本指令，而是可执行的 Tool 名、参数要求和风险分类。
 
 ### 阶段 O：服务器、配置与依赖供应链（P1/P2）
+> 实施状态：2026-08-03 已完成。已交付 owner-bound Server/Config/Workflow 状态、依赖计划与审批、版本化 Manager secure-fetch 契约、Provisioning worker 恢复和 Resource 订阅。
+
 
 先完成只读检查和 dry-run，再开放写入和安装。
 
@@ -1724,6 +1732,8 @@ Published Revision + arguments + Asset URI
 - SSRF、恶意重定向、浮动 Git 来源、超大模型和未知校验和都有拒绝策略。
 
 ### 阶段 P：高级运行时控制与宿主适配器（P2）
+> 实施状态：待实施。
+
 
 交付：
 
@@ -1742,6 +1752,8 @@ Published Revision + arguments + Asset URI
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）
+> 实施状态：待实施。
+
 
 交付：
 

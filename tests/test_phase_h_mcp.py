@@ -288,8 +288,8 @@ async def test_operations_tools_dispatch_redacted_bounded_results_without_list_m
     async with Client(server) as client:
         before = await client.list_tools()
         names = {tool.name for tool in before.tools}
-        assert PHASE_H_NAMES - {"comfyui.job.list"} <= names
-        assert "comfyui.job.list" not in names
+        assert PHASE_H_NAMES - {"comfyui.job.list", "comfyui.server.free"} <= names
+        assert {"comfyui.job.list", "comfyui.server.free"}.isdisjoint(names)
 
         queue = await client.call_tool("comfyui.queue.list", {"server_id": "local", "limit": 1})
         logs = await client.call_tool("comfyui.log.read", {"server_id": "local", "limit": 1})
@@ -303,11 +303,6 @@ async def test_operations_tools_dispatch_redacted_bounded_results_without_list_m
         subgraph = await client.call_tool(
             "comfyui.subgraph.get", {"server_id": "local", "subgraph_id": "subgraph-1"}
         )
-        freed = await client.call_tool(
-            "comfyui.server.free",
-            {"server_id": "local", "unload_models": True, "free_memory": False},
-        )
-        invalid_free = await client.call_tool("comfyui.server.free", {"server_id": "local"})
         after = await client.list_tools()
 
     assert queue.structured_content["items"] == [
@@ -329,10 +324,6 @@ async def test_operations_tools_dispatch_redacted_bounded_results_without_list_m
     assert "data" not in subgraphs.structured_content["items"][0]
     assert subgraph.structured_content["subgraph"]["node_count"] == 1
     assert subgraph.structured_content["subgraph"]["link_count"] == 1
-    assert freed.structured_content["impact"] == ["loaded_models"]
-    assert freed.structured_content["audit_status"] == "not_configured"
-    assert invalid_free.is_error is True
-    assert gateway.free_calls == [(True, False)]
     assert [tool.name for tool in before.tools] == [tool.name for tool in after.tools]
 
 

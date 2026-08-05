@@ -88,6 +88,7 @@ class ExecutionService:
         deployment_id: str = "",
         content_digest: str = "",
         retry_of: str = "",
+        server_connection: dict[str, Any] | None = None,
     ) -> Job:
         if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
             raise ValueError("idempotency_key must be a string up to 256 characters")
@@ -115,6 +116,7 @@ class ExecutionService:
                 revision_id=revision_id,
                 deployment_id=deployment_id,
                 content_digest=content_digest,
+                owner_id=owner_id,
             )
         else:
             workflow = self._catalog.get(server_id, workflow_id)
@@ -124,7 +126,10 @@ class ExecutionService:
         )
         request_digest = self._runs.request_digest(workflow_id, arguments)
         client_id = client_id or uuid.uuid4().hex
-        gateway = self._gateway_factory(self._servers.connection(server_id))
+        connection = (
+            self._servers.connection(server_id) if server_connection is None else server_connection
+        )
+        gateway = self._gateway_factory(connection)
         lease_token = ""
         if idempotency_key:
             claimed = self._runs.claim(

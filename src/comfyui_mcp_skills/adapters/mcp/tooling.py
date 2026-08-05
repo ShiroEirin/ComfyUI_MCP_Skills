@@ -883,7 +883,103 @@ def fixed_tools() -> list[Tool]:
     return [decorate_tool(tool) for tool in tools]
 
 
-def phase_h_tools() -> list[Tool]:
+def phase_k_tools() -> list[Tool]:
+    """Return digest-bound multi-server planning and policy tools."""
+
+    identifier = {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    }
+    plan_id = {
+        "type": "string",
+        "minLength": 77,
+        "maxLength": 77,
+        "pattern": r"^routing_plan_[0-9a-f]{64}$",
+    }
+    digest = {"type": "string", "pattern": r"^[0-9a-f]{64}$"}
+    arguments = {"type": "object", "maxProperties": 256}
+    policy = {
+        "type": "object",
+        "properties": {
+            name: {"type": "integer", "minimum": 0}
+            for name in ("max_steps", "max_queue_depth", "max_pixels", "max_outputs")
+        },
+        "additionalProperties": False,
+    }
+    tools = [
+        Tool(
+            name="comfyui.execution.plan",
+            description=(
+                "Select a compatible server and persist an immutable, digest-bound execution plan."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": identifier,
+                    "arguments": arguments,
+                    "server_id": identifier,
+                    "policy": policy,
+                    "submission_window": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 10_000,
+                        "default": 0,
+                    },
+                    "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                },
+                "required": ["workflow_id", "arguments"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=False, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.execution.commit",
+            description="Commit exactly one reviewed routing plan to a canonical Job.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan_id": plan_id,
+                    "plan_digest": digest,
+                    "idempotency_key": {"type": "string", "minLength": 1, "maxLength": 256},
+                },
+                "required": ["plan_id", "plan_digest", "idempotency_key"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=False, open_world_hint=True),
+        ),
+        Tool(
+            name="comfyui.route.explain",
+            description="Read the owner-bound candidate set and selection explanation for a plan.",
+            input_schema={
+                "type": "object",
+                "properties": {"plan_id": plan_id},
+                "required": ["plan_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.policy.evaluate",
+            description="Evaluate workflow arguments against a bounded execution policy.",
+            input_schema={
+                "type": "object",
+                "properties": {"arguments": arguments, "policy": policy},
+                "required": ["arguments", "policy"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+    ]
+    return [decorate_tool(tool) for tool in tools]
+
+
+def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
     """Return the stable Phase H observability and operations Tool surface."""
 
     server_identifier = {
@@ -1264,7 +1360,85 @@ def phase_h_tools() -> list[Tool]:
                 open_world_hint=True,
             ),
         ),
+        Tool(
+            name="comfyui.queue.remove",
+            description="Preview or remove explicit queued Jobs without invoking global interrupt.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": server_identifier,
+                    "prompt_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "uniqueItems": True,
+                        "items": {"type": "string", "minLength": 1, "maxLength": 256},
+                    },
+                    "execute": {"type": "boolean", "default": False},
+                },
+                "required": ["server_id", "prompt_ids"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False, destructive_hint=True, open_world_hint=True
+            ),
+        ),
+        Tool(
+            name="comfyui.queue.clear",
+            description="Preview or explicitly clear the queue after owner-bound impact analysis.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": server_identifier,
+                    "execute": {"type": "boolean", "default": False},
+                },
+                "required": ["server_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False, destructive_hint=True, open_world_hint=True
+            ),
+        ),
+        Tool(
+            name="comfyui.server.interrupt",
+            description="Preview or explicitly perform a global interrupt of running Jobs.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": server_identifier,
+                    "execute": {"type": "boolean", "default": False},
+                },
+                "required": ["server_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False, destructive_hint=True, open_world_hint=True
+            ),
+        ),
+        Tool(
+            name="comfyui.runtime.restart.plan",
+            description="Plan runtime restart impact and return approval/controller requirements.",
+            input_schema={
+                "type": "object",
+                "properties": {"server_id": server_identifier},
+                "required": ["server_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
     ]
+    if not include_phase_p:
+        phase_p_names = {
+            "comfyui.queue.remove",
+            "comfyui.queue.clear",
+            "comfyui.server.interrupt",
+            "comfyui.runtime.restart.plan",
+        }
+        tools = [tool for tool in tools if tool.name not in phase_p_names]
     return [decorate_tool(tool) for tool in tools]
 
 

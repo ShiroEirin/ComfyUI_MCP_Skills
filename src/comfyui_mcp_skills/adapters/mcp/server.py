@@ -14,11 +14,18 @@ from urllib.parse import urlsplit
 
 import anyio
 from mcp.server import Server, ServerRequestContext
-from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
+from mcp.server.subscriptions import (
+    InMemorySubscriptionBus,
+    ListenHandler,
+    SubscriptionBus,
+)
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
     CallToolRequestParams,
     CallToolResult,
+    CompleteRequestParams,
+    CompleteResult,
+    Completion,
     ListToolsResult,
     PaginatedRequestParams,
     Tool,
@@ -45,6 +52,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     optional_boolean,
     optional_string,
     phase_h_tools,
+    phase_k_tools,
     phase_l_tools,
     phase_m_tools,
     phase_n_tools,
@@ -90,7 +98,11 @@ from comfyui_mcp_skills.application.orchestration import (
 )
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
-from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.provisioning import ProvisioningWorkHandler
+from comfyui_mcp_skills.application.provisioning_ports import ManagerGateway
+from comfyui_mcp_skills.application.routing import RoutingService
+from comfyui_mcp_skills.application.runtime_control import RuntimeControlService
+from comfyui_mcp_skills.application.servers import OwnerAwareServerRegistry, ServerRegistry
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -104,6 +116,7 @@ from comfyui_mcp_skills.domain.control_plane import (
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
+from comfyui_mcp_skills.domain.orchestration import PROVISIONING_WORK_TYPE
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
@@ -123,6 +136,8 @@ from comfyui_mcp_skills.infrastructure.persistence.resource_aliases import (
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
     SQLiteAssetLibraryRepository,
 )
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_routing import SQLiteRoutingRepository
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
 from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
     SQLiteWorkflowChangeRepository,
 )
@@ -163,6 +178,14 @@ PHASE_M_TOOL_NAMES = frozenset(
 PHASE_N_DIAGNOSTIC_TOOL_NAMES = frozenset({"comfyui.job.diagnose", "comfyui.server.diagnose"})
 PHASE_N_RETRY_TOOL_NAMES = frozenset({"comfyui.job.retry.plan", "comfyui.job.retry.commit"})
 PHASE_N_TOOL_NAMES = PHASE_N_DIAGNOSTIC_TOOL_NAMES | PHASE_N_RETRY_TOOL_NAMES
+PHASE_K_TOOL_NAMES = frozenset(
+    {
+        "comfyui.execution.plan",
+        "comfyui.execution.commit",
+        "comfyui.route.explain",
+        "comfyui.policy.evaluate",
+    }
+)
 PHASE_N_CAPABILITY_SPECS = (
     CapabilitySpec(
         "comfyui.job.diagnose",
@@ -220,6 +243,12 @@ def _tool_visible(name: str, toolset: Toolset, scopes: frozenset[Scope]) -> bool
 
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+
+def _portable_tool_name(name: str) -> str:
+    """Project one canonical MCP tool name into provider-safe ASCII."""
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name)
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -227,25 +256,64 @@ def create_server(
     base_dir: Path,
     *,
     gateway_factory: GatewayFactory = create_gateway,
+    manager_gateway: ManagerGateway | None = None,
     upload_roots: list[Path] | None = None,
     max_upload_bytes: int = 100 * 1024 * 1024,
     repositories: RepositoryBundle | None = None,
     authorization: AuthorizationContext | None = None,
     diagnostic_service: Any | None = None,
+    subscription_bus: SubscriptionBus | None = None,
     retry_service: Any | None = None,
+    owner_provider: Callable[[], str] | None = None,
+    portable_tool_names: bool = False,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
     repositories = repositories or create_repository_bundle(base_dir)
-    workflow_repository = repositories.workflows
-    catalog = WorkflowCatalog(workflow_repository)
-    servers = ServerRegistry(base_dir)
     enforce_authorization = authorization is not None
     authorization = authorization or AuthorizationContext(
         "local-stdio", frozenset({Scope.EXECUTE}), Toolset.EXECUTION
     )
+    workflow_repository = repositories.workflows
+    if isinstance(workflow_repository, SQLiteWorkflowRepository) and repositories.store is not None:
+        workflow_repository = SQLiteWorkflowRepository(
+            repositories.store,
+            owner_id=authorization.principal_id if owner_provider is None else None,
+            owner_provider=owner_provider,
+        )
+    catalog = WorkflowCatalog(workflow_repository)
+    global_servers = ServerRegistry(base_dir)
     run_repository = repositories.runs
     asset_repository = repositories.assets
+    routing_repository = (
+        SQLiteRoutingRepository(repositories.store)
+        if repositories.store is not None
+        and repositories.workflow_store == "sqlite"
+        and repositories.run_store == "sqlite"
+        else None
+    )
+
+    def request_owner_id() -> str:
+        return owner_provider() if owner_provider is not None else authorization.principal_id
+
+    def owner_server_connection(owner_id: str, server_id: str) -> dict[str, Any]:
+        connection = (
+            routing_repository.current_server_connection(owner_id, server_id)
+            if routing_repository is not None
+            else None
+        )
+        return global_servers.connection(server_id) if connection is None else connection
+
+    servers = (
+        OwnerAwareServerRegistry(
+            global_servers,
+            request_owner_id,
+            routing_repository.current_server_connection,
+        )
+        if routing_repository is not None
+        else global_servers
+    )
+
     asset_library_repository = (
         (
             asset_repository
@@ -262,6 +330,11 @@ def create_server(
             gateway_factory,
             max_bytes=max_upload_bytes,
             staging_root=base_dir / "data" / "asset-staging",
+            connection_provider=(
+                routing_repository.current_server_connection
+                if routing_repository is not None
+                else None
+            ),
         )
         if asset_library_repository is not None and repositories.asset_store == "sqlite"
         else None
@@ -287,7 +360,61 @@ def create_server(
         planning=planning,
         artifacts=asset_library_repository,
     )
-    jobs = JobService(servers, run_repository, gateway_factory, artifacts=asset_library_repository)
+    jobs = JobService(
+        servers,
+        run_repository,
+        gateway_factory,
+        artifacts=asset_library_repository,
+        connection_provider=(
+            routing_repository.current_server_connection if routing_repository is not None else None
+        ),
+    )
+
+    def probe_routing_context(context: dict[str, Any]) -> dict[str, Any]:
+        snapshot = dict(context)
+        try:
+            connection = (
+                routing_repository.resolve_server_connection(
+                    str(context["owner_id"]),
+                    str(context["server_id"]),
+                    int(context["server_revision"]),
+                    str(context["server_config_digest"]),
+                )
+                if routing_repository is not None
+                else None
+            )
+            gateway = gateway_factory(
+                servers.connection(str(context["server_id"])) if connection is None else connection
+            )
+            queue = gateway.get_queue()
+            running = queue.get("queue_running", [])
+            pending = queue.get("queue_pending", [])
+            if not isinstance(running, list) or not isinstance(pending, list):
+                raise ValueError("ComfyUI queue response is invalid")
+            snapshot["queue_depth"] = len(running) + len(pending)
+            statistics = gateway.get_system_stats()
+            devices = statistics.get("devices", [])
+            if isinstance(devices, list):
+                free_values = [
+                    value
+                    for device in devices
+                    if isinstance(device, dict)
+                    for value in (device.get("vram_free", device.get("free_memory")),)
+                    if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+                ]
+                if free_values:
+                    snapshot["available_vram_bytes"] = max(free_values)
+            snapshot["health_available"] = True
+        except (ComfyUISkillsError, OSError, TypeError, ValueError):
+            snapshot["health_available"] = False
+        return snapshot
+
+    routing = (
+        RoutingService(routing_repository, execution, probe=probe_routing_context)
+        if routing_repository is not None
+        else None
+    )
+    runtime_controls = RuntimeControlService(servers, run_repository, gateway_factory)
     discovery = DiscoveryService(servers, gateway_factory)
     observation = ObservationService(servers, gateway_factory)
     workflow_graphs = WorkflowGraphService(
@@ -330,8 +457,13 @@ def create_server(
         retry_service = RetryService(retry_repository, execution)
     fixed_surface = [
         *fixed_tools(),
-        *phase_h_tools(),
+        *(
+            tool
+            for tool in phase_h_tools(include_phase_p=True)
+            if tool.name != "comfyui.server.free"
+        ),
         *(phase_l_tools() if asset_library is not None else []),
+        *(phase_k_tools() if routing is not None else []),
         *(phase_m_tools() if experiment_service is not None else []),
         *[
             tool
@@ -352,6 +484,8 @@ def create_server(
                 if (repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS)
                 and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
                 and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
+                and spec.name != "comfyui.server.free"
+                and (routing is not None or spec.name not in PHASE_K_TOOL_NAMES)
             ),
             *(spec for spec in PHASE_N_CAPABILITY_SPECS if spec.name in available_phase_n),
         )
@@ -365,38 +499,48 @@ def create_server(
         max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT,
     )
 
-    subscription_bus = InMemorySubscriptionBus()
+    subscription_bus = subscription_bus or InMemorySubscriptionBus()
     listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
     change_monitor = WorkflowChangeMonitor(base_dir, subscription_bus)
     orchestration_runtime: OrchestrationRuntime | None = None
     orchestration_repository: SQLiteOrchestrationRepository | None = None
-    if repositories.store is not None and repositories.run_store == "sqlite":
+    if repositories.store is not None:
         orchestration_repository = SQLiteOrchestrationRepository(repositories.store)
-        reconciler = JobReconciler(
-            orchestration_repository,
-            ComfyUIReconcileProbe(servers, gateway_factory),
-        )
-        handlers: dict[str, WorkHandler] = {"job.reconcile": reconciler}
-        if experiment_repository is not None:
-            handlers["experiment.advance"] = ExperimentAdvanceHandler(
-                experiment_repository,
-                run_repository,
-                execution,
-                jobs,
+        handlers: dict[str, WorkHandler] = {}
+        provisioning_repository = getattr(repositories, "provisioning", None)
+        if repositories.run_store == "sqlite":
+            handlers["job.reconcile"] = JobReconciler(
+                orchestration_repository,
+                ComfyUIReconcileProbe(servers, gateway_factory),
+            )
+            if experiment_repository is not None:
+                handlers["experiment.advance"] = ExperimentAdvanceHandler(
+                    experiment_repository,
+                    run_repository,
+                    execution,
+                    jobs,
+                )
+        if provisioning_repository is not None and manager_gateway is not None:
+            handlers[PROVISIONING_WORK_TYPE] = ProvisioningWorkHandler(
+                provisioning_repository,
+                manager_gateway,
             )
 
         def resource_owner_for_uri(uri: str) -> str | None:
             if urlsplit(uri).netloc == "experiments" and experiment_repository is not None:
                 return experiment_repository.resource_owner_for_uri(uri)
+            if urlsplit(uri).netloc == "provisioning" and provisioning_repository is not None:
+                return provisioning_repository.owner_for_uri(uri)
             return orchestration_repository.job_owner_for_uri(uri)
 
-        orchestration_runtime = OrchestrationRuntime(
-            OperationOrchestrator(orchestration_repository, handlers),
-            orchestration_repository,
-            subscription_bus,
-            worker_id=f"mcp-{uuid.uuid4().hex}",
-            owner_for_uri=resource_owner_for_uri,
-        )
+        if handlers:
+            orchestration_runtime = OrchestrationRuntime(
+                OperationOrchestrator(orchestration_repository, handlers),
+                orchestration_repository,
+                subscription_bus,
+                worker_id=f"mcp-{uuid.uuid4().hex}",
+                owner_for_uri=resource_owner_for_uri,
+            )
 
     async def authorized_listen(ctx: Any, params: Any) -> Any:
         active_scopes = current_scopes() or authorization.scopes
@@ -456,7 +600,7 @@ def create_server(
         result: list[Workflow] = []
         for workflow in catalog.list_enabled():
             try:
-                servers.connection(workflow.server_id)
+                owner_server_connection(request_owner_id(), workflow.server_id)
             except ServerNotFound:
                 continue
             result.append(workflow)
@@ -512,7 +656,7 @@ def create_server(
         diagnostics_available=diagnostic_service is not None,
     )
 
-    def current_tools() -> tuple[list[Tool], dict[str, Workflow]]:
+    def current_tools() -> tuple[list[Tool], dict[str, Workflow], dict[str, str]]:
         granted_scopes = current_scopes() if enforce_authorization else None
         active_scopes = granted_scopes or authorization.scopes
         g3_tools_enabled = repositories.workflow_store == "sqlite"
@@ -521,13 +665,13 @@ def create_server(
         )
         all_workflows = workflow_tool_names(enabled_workflows()) if include_dynamic else {}
         selected_dynamic = tool_inventory.select_dynamic(all_workflows)
-        workflow_map = {name: all_workflows[name] for name in selected_dynamic}
-        tools: list[Tool] = []
-        for name in sorted(workflow_map):
-            workflow = workflow_map[name]
+        canonical_workflow_map = {name: all_workflows[name] for name in selected_dynamic}
+        canonical_tools: list[Tool] = []
+        for name in sorted(canonical_workflow_map):
+            workflow = canonical_workflow_map[name]
             schema = build_input_schema(workflow.parameters)
             schema["properties"]["_execution"] = EXECUTION_PROPERTY
-            tools.append(
+            canonical_tools.append(
                 decorate_tool(
                     Tool(
                         name=name,
@@ -550,7 +694,7 @@ def create_server(
                 )
             )
         if enforce_authorization or granted_scopes is not None:
-            tools.extend(
+            canonical_tools.extend(
                 tool
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
@@ -558,23 +702,72 @@ def create_server(
                 and _tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
-                workflow_map = {}
+                canonical_workflow_map = {}
         else:
-            tools.extend(
+            canonical_tools.extend(
                 tool
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
                 and _tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
-        return tools, workflow_map
+        if not portable_tool_names:
+            return (
+                canonical_tools,
+                canonical_workflow_map,
+                {tool.name: tool.name for tool in canonical_tools},
+            )
+        tools: list[Tool] = []
+        canonical_by_external: dict[str, str] = {}
+        for tool in canonical_tools:
+            external_name = _portable_tool_name(tool.name)
+            prior = canonical_by_external.get(external_name)
+            if prior is not None and prior != tool.name:
+                raise RuntimeError(f"Portable tool name collision: {external_name}")
+            canonical_by_external[external_name] = tool.name
+            tools.append(tool.model_copy(update={"name": external_name}))
+        workflow_map = {
+            _portable_tool_name(name): workflow
+            for name, workflow in canonical_workflow_map.items()
+        }
+        return tools, workflow_map, canonical_by_external
 
     async def list_tools(
         _ctx: ServerRequestContext[dict[str, object]],
         _params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
-        tools, _mapping = current_tools()
+        tools, _mapping, _canonical_names = current_tools()
         return ListToolsResult(tools=tools, ttl_ms=5_000, cache_scope="private")
+
+    async def complete_reference(
+        _ctx: ServerRequestContext[dict[str, object]],
+        params: CompleteRequestParams,
+    ) -> CompleteResult:
+        name = params.argument.name
+        prefix = params.argument.value
+        if len(prefix) > 256:
+            raise MCPError(code=INVALID_PARAMS, message="Completion prefix is too long")
+        values: list[str] = []
+        if name == "server_id":
+            values = [server.server_id for server in servers.list()]
+        elif name == "workflow_id":
+            values = sorted({workflow.workflow_id for workflow in catalog.list_enabled()})
+        elif name == "revision_id":
+            context = params.context.arguments if params.context is not None else None
+            workflow_id = context.get("workflow_id", "") if context else ""
+            if workflow_id:
+                values = [
+                    str(item.get("revision_id", ""))
+                    for item in workflow_repository.list_revisions(workflow_id)
+                ]
+        matches = sorted(value for value in values if value and value.startswith(prefix))
+        return CompleteResult(
+            completion=Completion(
+                values=matches[:100],
+                total=len(matches),
+                has_more=len(matches) > 100,
+            )
+        )
 
     async def call_tool(
         ctx: ServerRequestContext[dict[str, object]],
@@ -586,13 +779,14 @@ def create_server(
             if enforce_authorization and current_scopes() is None
             else current_owner()
         )
-        tools, workflow_map = current_tools()
+        tools, workflow_map, canonical_by_external = current_tools()
+        requested_name = params.name
         visible_names = {tool.name for tool in tools}
-        if params.name not in visible_names:
-            raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {params.name}")
+        if requested_name not in visible_names:
+            raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {requested_name}")
         try:
-            if params.name in workflow_map:
-                workflow = workflow_map[params.name]
+            if requested_name in workflow_map:
+                workflow = workflow_map[requested_name]
                 execution_options = arguments.pop("_execution", {})
                 if not isinstance(execution_options, dict):
                     raise TypeError("_execution must be an object")
@@ -627,6 +821,7 @@ def create_server(
                         arguments,
                         idempotency_key=idempotency_key,
                         owner_id=owner_id,
+                        server_connection=owner_server_connection(owner_id, workflow.server_id),
                     )
                 )
                 await ctx.session.report_progress(2, None, "Workflow submitted")
@@ -659,31 +854,127 @@ def create_server(
                         abandon_on_cancel=True,
                     )
                 return tool_result(job_dict(job))
+            params = params.model_copy(update={"name": canonical_by_external[requested_name]})
             request_authorization = AuthorizationContext(
                 owner_id,
                 current_scopes() or authorization.scopes,
                 authorization.toolset,
             )
+            external_by_canonical = {
+                canonical: external
+                for external, canonical in canonical_by_external.items()
+            }
             if params.name == "comfyui.capability.search":
                 validate_fixed_arguments(arguments, {"query", "limit"})
                 query = optional_string(arguments, "query", "")
                 limit = arguments.get("limit", 10)
                 result = capability_catalog.search(query, request_authorization, limit=limit)
+                if portable_tool_names:
+                    result["items"] = [
+                        {**item, "name": external_by_canonical[str(item["name"])]}
+                        for item in result["items"]
+                        if str(item.get("name", "")) in external_by_canonical
+                    ]
+                    result["total"] = len(result["items"])
                 return tool_result(result)
             if params.name == "comfyui.capability.describe":
                 validate_fixed_arguments(arguments, {"name"})
-                capability_name = required_string(arguments, "name")
+                requested_capability_name = required_string(arguments, "name")
+                capability_name = canonical_by_external.get(
+                    requested_capability_name,
+                    requested_capability_name,
+                )
                 result = capability_catalog.describe(
                     capability_name,
                     request_authorization,
                 )
+                if portable_tool_names:
+                    result["name"] = external_by_canonical[capability_name]
+
                 described_tool = next(
-                    (tool for tool in tools if tool.name == capability_name), None
+                    (
+                        tool
+                        for tool in tools
+                        if canonical_by_external[tool.name] == capability_name
+                    ),
+                    None,
                 )
                 if described_tool is None:
                     raise PermissionError("capability is unavailable")
                 result["input_schema"] = described_tool.input_schema
                 result["output_schema"] = described_tool.output_schema
+                return tool_result(result)
+            if params.name in PHASE_K_TOOL_NAMES:
+                if routing is None:
+                    raise ValueError("Routing service is unavailable")
+                if params.name == "comfyui.execution.plan":
+                    validate_fixed_arguments(
+                        arguments,
+                        {
+                            "workflow_id",
+                            "arguments",
+                            "server_id",
+                            "policy",
+                            "submission_window",
+                            "request_id",
+                        },
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: routing.plan(
+                            owner_id,
+                            validate_identifier(
+                                required_string(arguments, "workflow_id", max_length=128),
+                                field="workflow_id",
+                            ),
+                            required_object(
+                                arguments, "arguments", max_properties=256, max_bytes=1024 * 1024
+                            ),
+                            server_id=optional_string(arguments, "server_id", "", max_length=128),
+                            policy=required_object(
+                                {"policy": arguments.get("policy", {})},
+                                "policy",
+                                max_properties=4,
+                                max_bytes=4096,
+                            ),
+                            submission_window=bounded_integer(
+                                arguments,
+                                "submission_window",
+                                0,
+                                minimum=0,
+                                maximum=10_000,
+                            ),
+                            request_id=optional_string(arguments, "request_id", "", max_length=256),
+                        )
+                    )
+                elif params.name == "comfyui.execution.commit":
+                    validate_fixed_arguments(
+                        arguments, {"plan_id", "plan_digest", "idempotency_key"}
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: routing.commit(
+                            required_string(arguments, "plan_id", max_length=128),
+                            required_string(arguments, "plan_digest", max_length=64),
+                            owner_id,
+                            idempotency_key=required_string(
+                                arguments, "idempotency_key", max_length=256
+                            ),
+                        )
+                    )
+                elif params.name == "comfyui.route.explain":
+                    validate_fixed_arguments(arguments, {"plan_id"})
+                    result = await anyio.to_thread.run_sync(
+                        routing.explain,
+                        required_string(arguments, "plan_id", max_length=128),
+                        owner_id,
+                    )
+                else:
+                    validate_fixed_arguments(arguments, {"arguments", "policy"})
+                    result = routing.evaluate_policy(
+                        required_object(
+                            arguments, "arguments", max_properties=256, max_bytes=1024 * 1024
+                        ),
+                        required_object(arguments, "policy", max_properties=4, max_bytes=4096),
+                    )
                 return tool_result(result)
             if params.name in PHASE_N_DIAGNOSTIC_TOOL_NAMES:
                 if diagnostic_service is None:
@@ -1066,6 +1357,50 @@ def create_server(
                     lambda: observation.queue(server_id, limit=limit, cursor=cursor)
                 )
                 return tool_result(result)
+            if params.name == "comfyui.queue.remove":
+                validate_fixed_arguments(arguments, {"server_id", "prompt_ids", "execute"})
+                prompt_ids = arguments.get("prompt_ids")
+                if not isinstance(prompt_ids, list):
+                    raise TypeError("prompt_ids must be an array")
+                result = await anyio.to_thread.run_sync(
+                    lambda: runtime_controls.queue_remove(
+                        required_string(arguments, "server_id", max_length=128),
+                        prompt_ids,
+                        owner_id,
+                        execute=optional_boolean(arguments, "execute", False),
+                    )
+                )
+                return tool_result(result)
+            if params.name == "comfyui.queue.clear":
+                validate_fixed_arguments(arguments, {"server_id", "execute"})
+                result = await anyio.to_thread.run_sync(
+                    lambda: runtime_controls.queue_clear(
+                        required_string(arguments, "server_id", max_length=128),
+                        owner_id,
+                        execute=optional_boolean(arguments, "execute", False),
+                        allow_cross_owner=True,
+                    )
+                )
+                return tool_result(result)
+            if params.name == "comfyui.server.interrupt":
+                validate_fixed_arguments(arguments, {"server_id", "execute"})
+                result = await anyio.to_thread.run_sync(
+                    lambda: runtime_controls.interrupt(
+                        required_string(arguments, "server_id", max_length=128),
+                        owner_id,
+                        execute=optional_boolean(arguments, "execute", False),
+                        allow_cross_owner=True,
+                    )
+                )
+                return tool_result(result)
+            if params.name == "comfyui.runtime.restart.plan":
+                validate_fixed_arguments(arguments, {"server_id"})
+                result = await anyio.to_thread.run_sync(
+                    runtime_controls.restart_plan,
+                    required_string(arguments, "server_id", max_length=128),
+                    owner_id,
+                )
+                return tool_result(result)
             if params.name == "comfyui.log.read":
                 validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
                 server_id = required_string(arguments, "server_id", max_length=128)
@@ -1167,7 +1502,7 @@ def create_server(
                 local_path = required_string(arguments, "local_path")
                 purpose = optional_string(arguments, "purpose", "image")
                 original_asset_id = optional_string(arguments, "original_asset_id", "")
-                gateway = gateway_factory(servers.connection(server_id))
+                gateway = gateway_factory(owner_server_connection(owner_id, server_id))
                 asset = await anyio.to_thread.run_sync(
                     lambda: assets.upload_local(
                         gateway,
@@ -1218,6 +1553,7 @@ def create_server(
         on_read_resource=resource_handlers.read_resource,
         on_list_prompts=prompt_handlers.list_prompts,
         on_get_prompt=prompt_handlers.get_prompt,
+        on_completion=complete_reference,
         lifespan=lifespan,
         on_subscriptions_listen=authorized_listen,
     )

@@ -38,7 +38,7 @@ class WorkflowChangeRepository(Protocol):
         content_digest: str,
     ) -> dict[str, Any]: ...
     def save_change_plan(self, plan: dict[str, Any]) -> dict[str, Any]: ...
-    def commit_change_plan(self, plan_id: str, plan_digest: str) -> dict[str, Any]: ...
+    def commit_change_plan(self, plan_id: str, plan_digest: str, actor: str) -> dict[str, Any]: ...
     def publish(self, deployment_id: str) -> None: ...
     def rollback(
         self,
@@ -122,6 +122,15 @@ class WorkflowChangeService:
         if not 1 <= len(operations) <= _MAX_OPERATIONS:
             raise ValueError("operations must contain between 1 and 100 items")
         try:
+            encoded_operations = json.dumps(
+                operations, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            ).encode()
+        except (TypeError, ValueError) as exc:
+            raise ValueError("operations must contain finite JSON") from exc
+        if len(encoded_operations) > 1024 * 1024:
+            raise ValueError("operations exceed 1 MiB")
+        _validate_json_depth(operations, maximum=32)
+        try:
             deployment = self._repository.describe(workflow_id, server_id)
         except LookupError as exc:
             raise WorkflowChangeNotFound(
@@ -146,7 +155,18 @@ class WorkflowChangeService:
         generated_parameters = after_semantic["parameters"]
         explicit = parameter_schema.get("parameters")
         explicit = explicit if isinstance(explicit, dict) else {}
-        parameters = {**generated_parameters, **explicit}
+        explicit_targets = {
+            (str(metadata.get("node_id", "")), str(metadata.get("field", "")))
+            for metadata in explicit.values()
+            if isinstance(metadata, dict)
+        }
+        parameters = {
+            name: metadata
+            for name, metadata in generated_parameters.items()
+            if (str(metadata.get("node_id", "")), str(metadata.get("field", "")))
+            not in explicit_targets
+        }
+        parameters.update(explicit)
         _apply_exposures(parameters, normalized_operations, graph, object_info)
         parameter_schema["parameters"] = normalize_parameters({"parameters": parameters})
         validate_parameter_targets(parameter_schema["parameters"], graph)
@@ -219,7 +239,7 @@ class WorkflowChangeService:
         }
 
     def commit(self, plan_id: str, plan_digest: str) -> dict[str, Any]:
-        return self._repository.commit_change_plan(plan_id, plan_digest)
+        return self._repository.commit_change_plan(plan_id, plan_digest, self._actor)
 
     def diff(self, from_revision_id: str, to_revision_id: str) -> dict[str, Any]:
         try:
@@ -294,20 +314,81 @@ def _apply_operation(
         raise TypeError(f"operations[{index}] must be an object")
     copied = _json_copy(operation, f"operations[{index}]")
     kind = copied.get("op")
-    if kind not in {"set_input", "connect", "disconnect", "expose_parameter"}:
-        raise ValueError(f"operations[{index}].op is unsupported")
-    allowed = {
+    allowed_by_kind = {
+        "add_node": {"op", "node_id", "class_type", "inputs"},
+        "remove_node": {"op", "node_id"},
+        "replace_node": {"op", "node_id", "class_type", "inputs"},
         "set_input": {"op", "node_id", "field", "value"},
         "connect": {"op", "source_node_id", "source_output", "target_node_id", "target_input"},
         "disconnect": {"op", "node_id", "field"},
         "expose_parameter": {"op", "node_id", "field", "name", "required"},
-    }[str(kind)]
-    unexpected = set(copied) - allowed
+        "insert_subgraph": {"op", "id_prefix", "nodes"},
+        "extract_subgraph": {"op", "name", "node_ids"},
+        "apply_recipe": {"op", "recipe_id", "arguments"},
+    }
+    if kind not in allowed_by_kind:
+        raise ValueError(f"operations[{index}].op is unsupported")
+    unexpected = set(copied) - allowed_by_kind[str(kind)]
     if unexpected:
         raise ValueError(
             f"operations[{index}] has unexpected fields: {', '.join(sorted(unexpected))}"
         )
-    if kind == "connect":
+    if kind == "add_node":
+        node_id = _operation_string(copied, "node_id", index)
+        if node_id in graph:
+            raise ValueError(f"operations[{index}] node {node_id} already exists")
+        graph[node_id] = _operation_node(copied, index)
+    elif kind == "remove_node":
+        node_id = _operation_string(copied, "node_id", index)
+        _inputs(graph, node_id, index)
+        for other_id, node in graph.items():
+            if other_id != node_id and _node_references(node, node_id):
+                raise ValueError(f"operations[{index}] node {node_id} is still connected")
+        del graph[node_id]
+        _remove_node_parameters(parameter_schema, node_id)
+    elif kind == "replace_node":
+        node_id = _operation_string(copied, "node_id", index)
+        _inputs(graph, node_id, index)
+        graph[node_id] = _operation_node(copied, index)
+        _remove_node_parameters(parameter_schema, node_id)
+    elif kind == "insert_subgraph":
+        _insert_subgraph(graph, copied, index)
+    elif kind == "extract_subgraph":
+        name = validate_identifier(_operation_string(copied, "name", index), field="subgraph_name")
+        node_ids = copied.get("node_ids")
+        if not isinstance(node_ids, list) or not node_ids or len(node_ids) > 100:
+            raise ValueError(f"operations[{index}].node_ids must contain between 1 and 100 IDs")
+        if any(not isinstance(node_id, str) or node_id not in graph for node_id in node_ids):
+            raise ValueError(f"operations[{index}].node_ids references a missing node")
+        revision_metadata = parameter_schema.setdefault("_revision", {})
+        if not isinstance(revision_metadata, dict):
+            raise ValueError("stored revision metadata is invalid")
+        subgraphs = revision_metadata.setdefault("extracted_subgraphs", {})
+        if not isinstance(subgraphs, dict):
+            raise ValueError("stored subgraph catalog is invalid")
+        if name in subgraphs:
+            raise ValueError(f"operations[{index}] subgraph {name} already exists")
+        subgraphs[name] = {
+            node_id: _json_copy(graph[node_id], "subgraph node") for node_id in node_ids
+        }
+    elif kind == "apply_recipe":
+        recipe_id = _operation_string(copied, "recipe_id", index)
+        recipe_arguments = copied.get("arguments")
+        if recipe_id != "set_scalar_input.v1":
+            raise ValueError(f"operations[{index}].recipe_id is not registered")
+        if not isinstance(recipe_arguments, dict) or set(recipe_arguments) != {
+            "node_id",
+            "field",
+            "value",
+        }:
+            raise ValueError(f"operations[{index}].arguments is invalid for {recipe_id}")
+        node_id = _operation_string(recipe_arguments, "node_id", index)
+        field = _operation_string(recipe_arguments, "field", index)
+        value = recipe_arguments.get("value")
+        if _is_connection(value):
+            raise ValueError(f"operations[{index}].arguments.value must be scalar")
+        _inputs(graph, node_id, index)[field] = value
+    elif kind == "connect":
         source_id = _operation_string(copied, "source_node_id", index)
         target_id = _operation_string(copied, "target_node_id", index)
         target_field = _operation_string(copied, "target_input", index)
@@ -327,7 +408,7 @@ def _apply_operation(
         inputs = _inputs(graph, node_id, index)
         if kind == "set_input":
             value = copied.get("value")
-            if isinstance(value, list):
+            if _is_connection(value):
                 raise ValueError(f"operations[{index}].value cannot encode a connection")
             inputs[field] = value
         elif kind == "disconnect":
@@ -344,6 +425,63 @@ def _apply_operation(
             if not isinstance(required, bool):
                 raise TypeError(f"operations[{index}].required must be a boolean")
     return copied
+
+
+def _operation_node(operation: dict[str, Any], index: int) -> dict[str, Any]:
+    class_type = validate_identifier(
+        _operation_string(operation, "class_type", index), field="class_type"
+    )
+    inputs = operation.get("inputs")
+    if not isinstance(inputs, dict) or len(inputs) > 256:
+        raise ValueError(f"operations[{index}].inputs must be a bounded object")
+    return {"class_type": class_type, "inputs": _json_copy(inputs, "node inputs")}
+
+
+def _node_references(node: object, source_id: str) -> bool:
+    if not isinstance(node, dict) or not isinstance(node.get("inputs"), dict):
+        return False
+    return any(
+        _is_connection(value) and str(value[0]) == source_id for value in node["inputs"].values()
+    )
+
+
+def _remove_node_parameters(schema: dict[str, Any], node_id: str) -> None:
+    parameters = schema.get("parameters")
+    if not isinstance(parameters, dict):
+        return
+    for name in list(parameters):
+        metadata = parameters[name]
+        if isinstance(metadata, dict) and str(metadata.get("node_id", "")) == node_id:
+            del parameters[name]
+
+
+def _insert_subgraph(graph: dict[str, Any], operation: dict[str, Any], index: int) -> None:
+    prefix = validate_identifier(
+        _operation_string(operation, "id_prefix", index), field="subgraph_prefix"
+    )
+    nodes = operation.get("nodes")
+    if not isinstance(nodes, dict) or not nodes or len(nodes) > 100:
+        raise ValueError(f"operations[{index}].nodes must contain between 1 and 100 nodes")
+    mapping = {
+        str(node_id): validate_identifier(f"{prefix}_{node_id}", field="subgraph_node_id")
+        for node_id in nodes
+    }
+    if any(node_id in graph for node_id in mapping.values()):
+        raise ValueError(f"operations[{index}] subgraph node ID collides with the graph")
+    for source_id, raw_node in nodes.items():
+        if not isinstance(raw_node, dict):
+            raise ValueError(f"operations[{index}].nodes contains an invalid node")
+        node = _operation_node(
+            {
+                "class_type": raw_node.get("class_type"),
+                "inputs": raw_node.get("inputs"),
+            },
+            index,
+        )
+        for field, value in list(node["inputs"].items()):
+            if _is_connection(value) and str(value[0]) in mapping:
+                node["inputs"][field] = [mapping[str(value[0])], value[1]]
+        graph[mapping[str(source_id)]] = node
 
 
 def _inputs(graph: dict[str, Any], node_id: str, index: int) -> dict[str, Any]:
@@ -626,6 +764,24 @@ def _required_string(value: dict[str, Any], field: str) -> str:
     if not isinstance(result, str) or not result:
         raise ValueError(f"{field} is missing")
     return result
+
+
+def _validate_json_depth(value: object, *, maximum: int) -> None:
+    stack = [(value, 0)]
+    while stack:
+        current, depth = stack.pop()
+        if depth > maximum:
+            raise ValueError(f"operations JSON depth exceeds {maximum}")
+        if isinstance(current, dict):
+            if len(current) > 1024:
+                raise ValueError("operations object exceeds 1024 fields")
+            stack.extend((item, depth + 1) for item in current.values())
+        elif isinstance(current, list):
+            if len(current) > 10_000:
+                raise ValueError("operations array exceeds 10000 items")
+            stack.extend((item, depth + 1) for item in current)
+        elif isinstance(current, str) and len(current) > 256 * 1024:
+            raise ValueError("operations string exceeds 256 KiB")
 
 
 def _json_copy(value: object, field: str) -> dict[str, Any]:

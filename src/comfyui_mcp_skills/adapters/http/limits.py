@@ -15,7 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from comfyui_mcp_skills.adapters.http.auth import bearer_token
+from comfyui_mcp_skills.adapters.http.auth import TokenVerifier, bearer_token
 from comfyui_mcp_skills.observability import REQUEST_METRICS
 
 logger = logging.getLogger(__name__)
@@ -50,6 +50,7 @@ class RequestControlMiddleware:
         max_concurrent_requests: int,
         bearer_tokens: tuple[str, ...],
         bearer_principals: dict[str, str] | None = None,
+        token_verifier: TokenVerifier | None = None,
         max_subscription_streams: int = 8,
         max_subscriptions_per_principal: int = 2,
     ) -> None:
@@ -59,7 +60,9 @@ class RequestControlMiddleware:
         self._max_clients = 4096
         self._bearer_tokens = bearer_tokens
         self._bearer_principals = bearer_principals or {}
+        self._token_verifier = token_verifier
         self._concurrency = anyio.Semaphore(max_concurrent_requests)
+        self._introspection_concurrency = anyio.Semaphore(max_concurrent_requests)
         self._subscription_concurrency = anyio.Semaphore(max_subscription_streams)
         self._max_subscriptions_per_principal = max_subscriptions_per_principal
         self._active_subscriptions: dict[str, int] = {}
@@ -73,14 +76,6 @@ class RequestControlMiddleware:
         started_at = time.monotonic()
         request_id = _request_id(request.headers.get("x-request-id", ""))
         client = request.client.host if request.client else "unknown"
-        authorization = request.headers.get("authorization", "")
-        candidate = bearer_token(authorization)
-        if candidate:
-            for configured in self._bearer_tokens:
-                if hmac.compare_digest(candidate, configured):
-                    principal_id = self._bearer_principals.get(configured, "authenticated")
-                    client = f"principal:{principal_id}"
-                    break
         now = time.monotonic()
         if client not in self._requests and len(self._requests) >= self._max_clients:
             for key, entries in list(self._requests.items()):
@@ -110,6 +105,20 @@ class RequestControlMiddleware:
             await response(scope, receive, send)
             return
         recent.append(now)
+        authorization = request.headers.get("authorization", "")
+        candidate = bearer_token(authorization)
+        if candidate:
+            for configured in self._bearer_tokens:
+                if hmac.compare_digest(candidate, configured):
+                    principal_id = self._bearer_principals.get(configured, "authenticated")
+                    client = f"principal:{principal_id}"
+                    break
+            if self._token_verifier is not None:
+                async with self._introspection_concurrency:
+                    access = await self._token_verifier.verify_token(candidate)
+                if access is not None:
+                    client = f"principal:{access.client_id}"
+                    scope.setdefault("state", {})["access_token"] = access
 
         is_subscription = (
             request.method == "POST"

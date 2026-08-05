@@ -7,7 +7,12 @@ from pathlib import Path
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.transport_security import TransportSecuritySettings
 
-from comfyui_mcp_skills.adapters.http.auth import StaticTokenVerifier, _validate_tokens
+from comfyui_mcp_skills.adapters.http.auth import (
+    IntrospectionTokenVerifier,
+    StaticTokenVerifier,
+    TokenVerifier,
+    _validate_tokens,
+)
 from comfyui_mcp_skills.adapters.http.limits import (
     RequestControlMiddleware,
     StrictMCP2026Middleware,
@@ -15,6 +20,7 @@ from comfyui_mcp_skills.adapters.http.limits import (
 from comfyui_mcp_skills.adapters.http.security import SafeHTTPSDownloader
 from comfyui_mcp_skills.adapters.http.uploads import create_asset_routes
 from comfyui_mcp_skills.adapters.mcp.server import create_server
+from comfyui_mcp_skills.adapters.mcp.tooling import current_owner
 from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.authorization import (
     AuthorizationContext,
@@ -23,9 +29,11 @@ from comfyui_mcp_skills.application.authorization import (
     admitted_scopes,
 )
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.infrastructure.comfyui.manager_gateway import SafeManagerGateway
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     create_repository_bundle,
 )
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_routing import SQLiteRoutingRepository
 
 
 def create_http_app(
@@ -45,23 +53,45 @@ def create_http_app(
     max_subscriptions_per_principal: int = 2,
     public_mcp_url: str | None = None,
     auth_mode: str = "static",
+    introspection_url: str = "",
+    introspection_client_id: str = "",
+    introspection_client_secret: str = "",
+    introspection_audience: str = "",
     remote_fetch_hosts: list[str] | None = None,
+    manager_source_hosts: list[str] | None = None,
+    manager_server_origins: list[str] | None = None,
     toolset: str = "execution",
     enable_high_risk: bool = False,
 ):
     """Build the remote MCP app; remote mode refuses anonymous operation."""
-    if auth_mode != "static":
-        raise ValueError("Only static bearer-token authentication is currently implemented")
-    normalized_tokens = _validate_tokens(tokens)
     try:
         selected_toolset = Toolset(toolset)
     except ValueError as exc:
         raise ValueError("unknown MCP toolset") from exc
+    if selected_toolset in {Toolset.ADMIN, Toolset.AUTHORING}:
+        raise ValueError(
+            "admin and authoring Toolsets are available only through isolated local servers"
+        )
+    verifier: TokenVerifier
+    if auth_mode == "static":
+        normalized_tokens = _validate_tokens(tokens)
+        configured_scopes = frozenset(
+            Scope(scope) for _principal, scopes in normalized_tokens.values() for scope in scopes
+        )
+        verifier = StaticTokenVerifier(tokens)
+    elif auth_mode == "introspection":
+        normalized_tokens = {}
+        configured_scopes = admitted_scopes(selected_toolset)
+        verifier = IntrospectionTokenVerifier(
+            introspection_url,
+            client_id=introspection_client_id,
+            client_secret=introspection_client_secret,
+            expected_audience=introspection_audience,
+        )
+    else:
+        raise ValueError("auth_mode must be static or introspection")
     if selected_toolset is not Toolset.EXECUTION and not enable_high_risk:
         raise PermissionError("high-risk HTTP Toolset requires explicit enablement")
-    configured_scopes = frozenset(
-        Scope(scope) for _principal, scopes in normalized_tokens.values() for scope in scopes
-    )
     if not configured_scopes <= admitted_scopes(selected_toolset):
         raise PermissionError("configured token scope does not admit the selected Toolset")
     if requests_per_minute <= 0:
@@ -75,9 +105,11 @@ def create_http_app(
     base_dir = base_dir.resolve()
     upload_root = upload_root.resolve()
     upload_root.mkdir(parents=True, exist_ok=True)
-    verifier = StaticTokenVerifier(tokens)
     servers = ServerRegistry(base_dir)
     repositories = create_repository_bundle(base_dir)
+    server_connections = (
+        SQLiteRoutingRepository(repositories.store) if repositories.store is not None else None
+    )
     assets = AssetService(
         repositories.assets,
         upload_roots=[upload_root],
@@ -96,6 +128,11 @@ def create_http_app(
         upload_roots=[upload_root],
         repositories=repositories,
         authorization=AuthorizationContext("remote", configured_scopes, selected_toolset),
+        manager_gateway=SafeManagerGateway(
+            allowed_source_hosts=set(manager_source_hosts or []),
+            allowed_server_origins=set(manager_server_origins or []),
+        ),
+        owner_provider=current_owner,
     )
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
@@ -125,6 +162,11 @@ def create_http_app(
             allowed_origins=allowed_origins,
             max_upload_bytes=max_upload_bytes,
             max_fetch_body_bytes=max_fetch_body_bytes,
+            server_connection=(
+                server_connections.current_server_connection
+                if server_connections is not None
+                else None
+            ),
         ),
     )
     app.add_middleware(StrictMCP2026Middleware)
@@ -135,6 +177,7 @@ def create_http_app(
         max_subscription_streams=max_subscription_streams,
         max_subscriptions_per_principal=max_subscriptions_per_principal,
         bearer_tokens=tuple(normalized_tokens),
+        token_verifier=verifier,
         bearer_principals={
             token: principal_id for token, (principal_id, _scopes) in normalized_tokens.items()
         },

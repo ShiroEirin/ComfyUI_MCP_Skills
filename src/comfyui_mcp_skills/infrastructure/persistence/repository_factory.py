@@ -21,6 +21,9 @@ from comfyui_mcp_skills.infrastructure.persistence.sqlite_diagnostics import (
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_experiments import (
     SQLiteExperimentRepository,
 )
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_provisioning import (
+    SQLiteProvisioningRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
 from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
@@ -51,6 +54,7 @@ class RepositoryBundle:
     experiments: SQLiteExperimentRepository | None = None
     diagnostics: SQLiteDiagnosticRetryRepository | None = None
     retries: SQLiteDiagnosticRetryRepository | None = None
+    provisioning: SQLiteProvisioningRepository | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +87,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
             experiments=None,
             diagnostics=None,
             retries=None,
+            provisioning=None,
         )
 
     store = SQLiteControlPlaneStore(database_path)
@@ -113,6 +118,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
     else:
         assets = FileAssetRepository(project_root)
     experiments = SQLiteExperimentRepository(store)
+    provisioning = SQLiteProvisioningRepository(store)
     diagnostics = (
         SQLiteDiagnosticRetryRepository(store)
         if run_store == "sqlite" and workflow_store == "sqlite"
@@ -129,6 +135,7 @@ def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
         experiments=experiments,
         diagnostics=diagnostics,
         retries=diagnostics,
+        provisioning=provisioning,
     )
 
 

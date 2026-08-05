@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 import hmac
+import json
 import re
+from collections.abc import Callable
+from typing import Any, Protocol
+from urllib.parse import urlsplit
 
+import anyio
+import requests
 from mcp.server.auth.provider import AccessToken
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -16,6 +22,10 @@ _ALLOWED_SCOPES = all_scope_values()
 _BEARER_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._~+/-]+={0,}$")
 _MAX_BEARER_TOKEN_LENGTH = 4096
 _MAX_PRINCIPAL_ID_LENGTH = 128
+
+
+class TokenVerifier(Protocol):
+    async def verify_token(self, token: str) -> AccessToken | None: ...
 
 
 def _validate_tokens(tokens: object) -> dict[str, tuple[str, tuple[str, ...]]]:
@@ -76,25 +86,128 @@ class StaticTokenVerifier:
         return None
 
 
+class IntrospectionTokenVerifier:
+    """Validate rotating OAuth access tokens against an RFC 7662 endpoint."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        *,
+        client_id: str,
+        client_secret: str,
+        expected_audience: str,
+        request: Callable[..., requests.Response] = requests.post,
+    ) -> None:
+        parsed = urlsplit(endpoint)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise ValueError("OAuth introspection endpoint must be an HTTPS origin URL")
+        if parsed.fragment:
+            raise ValueError("OAuth introspection endpoint must not contain a fragment")
+        if not client_id or len(client_id) > 256 or not client_secret or len(client_secret) > 4096:
+            raise ValueError("OAuth introspection client credentials are invalid")
+        if not expected_audience or len(expected_audience) > 512:
+            raise ValueError("OAuth introspection audience is required")
+        self._endpoint = endpoint
+        self._client_id = client_id
+        self._client_secret = client_secret
+        self._expected_audience = expected_audience
+        self._request = request
+
+    async def verify_token(self, token: str) -> AccessToken | None:
+        if (
+            not isinstance(token, str)
+            or not token
+            or len(token) > _MAX_BEARER_TOKEN_LENGTH
+            or _BEARER_TOKEN_PATTERN.fullmatch(token) is None
+        ):
+            return None
+        response = await anyio.to_thread.run_sync(self._introspect, token)
+        if response is None:
+            return None
+        principal = response.get("sub")
+        if (
+            not isinstance(principal, str)
+            or not principal
+            or len(principal) > _MAX_PRINCIPAL_ID_LENGTH
+            or _PRINCIPAL_ID_PATTERN.fullmatch(principal) is None
+        ):
+            return None
+        audience = response.get("aud")
+        audiences = [audience] if isinstance(audience, str) else audience
+        if not isinstance(audiences, list) or self._expected_audience not in audiences:
+            return None
+        raw_scopes = response.get("scope", [])
+        scopes = raw_scopes.split() if isinstance(raw_scopes, str) else raw_scopes
+        if not isinstance(scopes, list):
+            return None
+        if (
+            not isinstance(scopes, list)
+            or len(scopes) > 64
+            or any(not isinstance(scope, str) or len(scope) > 128 for scope in scopes)
+        ):
+            return None
+        admitted = [scope for scope in scopes if scope in _ALLOWED_SCOPES]
+        if not admitted:
+            return None
+        return AccessToken(token=token, client_id=principal, scopes=admitted)
+
+    def _introspect(self, token: str) -> dict[str, Any] | None:
+        response: requests.Response | None = None
+        try:
+            response = self._request(
+                self._endpoint,
+                data={"token": token, "token_type_hint": "access_token"},
+                auth=(self._client_id, self._client_secret),
+                headers={"Accept": "application/json"},
+                timeout=(3.05, 5.0),
+                allow_redirects=False,
+                stream=True,
+            )
+            if response.status_code != 200:
+                return None
+            chunks: list[bytes] = []
+            size = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                size += len(chunk)
+                if size > 64 * 1024:
+                    return None
+                chunks.append(chunk)
+            data = json.loads(b"".join(chunks))
+        except (requests.RequestException, ValueError, TypeError):
+            return None
+        finally:
+            if response is not None:
+                response.close()
+        if not isinstance(data, dict) or data.get("active") is not True:
+            return None
+        return data
+
+
 async def authorize(
-    request: Request, verifier: StaticTokenVerifier, required_scope: str
+    request: Request, verifier: TokenVerifier, required_scope: str
 ) -> Response | None:
     token = bearer_token(request.headers.get("authorization", ""))
     if not token:
         return JSONResponse({"code": "UNAUTHORIZED"}, status_code=401)
-    access = await verifier.verify_token(token)
+    access = getattr(request.state, "access_token", None)
+    if not isinstance(access, AccessToken):
+        access = await verifier.verify_token(token)
     if access is None:
         return JSONResponse({"code": "UNAUTHORIZED"}, status_code=401)
     if required_scope not in access.scopes:
         return JSONResponse({"code": "FORBIDDEN"}, status_code=403)
+    request.state.access_token = access
     return None
 
 
-async def request_owner(request: Request, verifier: StaticTokenVerifier) -> str:
-    token = bearer_token(request.headers["authorization"])
-    access = await verifier.verify_token(token)
-    if access is None:
-        raise PermissionError("Authenticated token context is missing")
+async def request_owner(request: Request, verifier: TokenVerifier) -> str:
+    access = getattr(request.state, "access_token", None)
+    if not isinstance(access, AccessToken):
+        token = bearer_token(request.headers["authorization"])
+        access = await verifier.verify_token(token)
+        if access is None:
+            raise PermissionError("Authenticated token context is missing")
+        request.state.access_token = access
     return access.client_id
 
 

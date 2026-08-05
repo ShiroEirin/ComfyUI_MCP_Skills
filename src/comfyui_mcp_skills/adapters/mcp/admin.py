@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import anyio
 from mcp.server import Server, ServerRequestContext
+from mcp.server.subscriptions import InMemorySubscriptionBus, ListenHandler
 from mcp.shared.exceptions import MCPError
 from mcp.types import (
     CallToolRequestParams,
@@ -23,8 +25,31 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
+from comfyui_mcp_skills.adapters.mcp.admin_control import (
+    PHASE_O_TOOL_NAMES,
+    AdminOutboxRuntime,
+    _resource_ref,
+    approval_dict,
+    config_bundle_dict,
+    create_admin_resource_handlers,
+    dependency_plan_dict,
+    dependency_report_dict,
+    phase_o_tools,
+    plan_dict,
+    provisioning_job_dict,
+    server_dict,
+    server_page_dict,
+)
 from comfyui_mcp_skills.adapters.mcp.tooling import decorate_tool
 from comfyui_mcp_skills.application.admin import MAX_ADMIN_REQUEST_ID_LENGTH, WorkflowAdmin
+from comfyui_mcp_skills.application.authorization import (
+    AuthorizationContext,
+    Scope,
+    Toolset,
+    is_authorized,
+    scopes_for_resource,
+    scopes_for_tool,
+)
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
@@ -43,17 +68,16 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     RepositoryBundle,
     create_repository_bundle,
 )
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import (
+    SQLiteWorkflowRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
     SQLiteWorkflowChangeRepository,
 )
-from comfyui_mcp_skills.infrastructure.persistence.workflows import (
-    FileWorkflowRepository,
-)
-
-logger = logging.getLogger(__name__)
-
+from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+logger = logging.getLogger(__name__)
 
 
 def create_admin_server(
@@ -63,38 +87,86 @@ def create_admin_server(
     actor: str = "stdio-admin",
     repositories: RepositoryBundle | None = None,
     gateway_factory: GatewayFactory = create_gateway,
+    authorization: AuthorizationContext | None = None,
+    server_control: Any = None,
+    config_bundles: Any = None,
+    dependency_provisioning: Any = None,
+    provisioning_repository: Any = None,
 ) -> Server[dict[str, object]]:
     if not enabled:
         raise PermissionError("Admin MCP requires an explicit enabled=True configuration")
     base_dir = base_dir.resolve()
+    authorization = authorization or AuthorizationContext(
+        actor, frozenset({Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}), Toolset.ADMIN
+    )
+    owner_id = authorization.principal_id
     admin = WorkflowAdmin(
         base_dir,
         FileWorkflowRepository(base_dir),
         actor=actor,
     )
     repositories = repositories or create_repository_bundle(base_dir)
+    provisioning_repository = provisioning_repository or getattr(repositories, "provisioning", None)
+    phase_o_surface = phase_o_tools(
+        servers_available=server_control is not None,
+        config_available=config_bundles is not None,
+        dependencies_available=dependency_provisioning is not None,
+    )
+    phase_o_surface = [
+        tool
+        for tool in phase_o_surface
+        if is_authorized(authorization.scopes, scopes_for_tool(tool.name))
+    ]
+    phase_o_resources = (
+        create_admin_resource_handlers(
+            provisioning_repository,
+            owner_id,
+            authorization.scopes,
+        )
+        if provisioning_repository is not None
+        else None
+    )
+    subscription_bus = InMemorySubscriptionBus()
+    listen_handler = ListenHandler(subscription_bus, max_subscriptions=64, max_buffered_events=256)
+    phase_o_runtime = (
+        AdminOutboxRuntime(
+            provisioning_repository,
+            subscription_bus,
+            owner_id=owner_id,
+        )
+        if provisioning_repository is not None
+        and all(
+            hasattr(provisioning_repository, method)
+            for method in ("pending_outbox", "mark_outbox_delivered")
+        )
+        and {Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT} <= authorization.scopes
+        else None
+    )
     servers = ServerRegistry(base_dir)
+    store = repositories.store
+    workflow_owner_id = owner_id if provisioning_repository is not None else None
+    workflow_actor = owner_id if provisioning_repository is not None else actor
     workflow_import = None
-    if repositories.workflow_store == "sqlite":
+    if repositories.workflow_store == "sqlite" and store is not None:
         workflow_import = WorkflowImportService(
             WorkflowGraphService(
                 ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
             ),
             WorkflowValidationService(),
-            repositories.workflows,
+            SQLiteWorkflowRepository(store, owner_id=workflow_owner_id),
             runtime_estimator=lambda server_id, _graph: float(
                 servers.connection(server_id).get("experiment_trusted_seconds_per_run", 300.0)
             ),
         )
     workflow_changes = None
-    if repositories.store is not None and repositories.workflow_store == "sqlite":
+    if store is not None and repositories.workflow_store == "sqlite":
         workflow_changes = WorkflowChangeService(
-            SQLiteWorkflowChangeRepository(repositories.store),
+            SQLiteWorkflowChangeRepository(store, owner_id=workflow_owner_id),
             WorkflowGraphService(
                 ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
             ),
             WorkflowValidationService(),
-            actor=actor,
+            actor=workflow_actor,
         )
 
     async def list_tools(
@@ -340,7 +412,9 @@ def create_admin_server(
                             open_world_hint=False,
                         ),
                     ),
+                    *phase_o_surface,
                 ]
+                if is_authorized(authorization.scopes, scopes_for_tool(tool.name))
             ],
             cache_scope="private",
         )
@@ -350,6 +424,8 @@ def create_admin_server(
     ) -> CallToolResult:
         arguments = dict(params.arguments or {})
         context_request_id = "" if ctx.request_id is None else str(ctx.request_id)
+        if not is_authorized(authorization.scopes, scopes_for_tool(params.name)):
+            raise MCPError(code=INVALID_PARAMS, message="Tool unavailable")
         try:
             if params.name == "comfyui.admin.workflow.import":
                 if workflow_import is None:
@@ -498,6 +574,220 @@ def create_admin_server(
                 _validate_keys(arguments, {"request_id"})
                 request_id = _required_string(arguments, "request_id")
                 result = await anyio.to_thread.run_sync(lambda: admin.retry_audit(request_id))
+            elif params.name in PHASE_O_TOOL_NAMES:
+                if not is_authorized(authorization.scopes, scopes_for_tool(params.name)):
+                    raise MCPError(code=INVALID_PARAMS, message="Tool unavailable")
+                if params.name.startswith("comfyui.admin.server."):
+                    if server_control is None:
+                        raise MCPError(code=INVALID_PARAMS, message="Server control unavailable")
+                elif params.name.startswith("comfyui.admin.config."):
+                    if config_bundles is None:
+                        raise MCPError(code=INVALID_PARAMS, message="Config bundles unavailable")
+                elif dependency_provisioning is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS, message="Dependency provisioning unavailable"
+                    )
+                if params.name == "comfyui.admin.server.list":
+                    _validate_keys(arguments, {"limit", "cursor"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: server_page_dict(
+                            server_control.list(
+                                owner_id,
+                                limit=arguments.get("limit", 50),
+                                cursor=arguments.get("cursor", ""),
+                            )
+                        )
+                    )
+                elif params.name == "comfyui.admin.server.inspect":
+                    _validate_keys(arguments, {"server_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: server_dict(
+                            server_control.inspect(
+                                _required_string(arguments, "server_id"), owner_id
+                            )
+                        )
+                    )
+                elif params.name in {
+                    "comfyui.admin.server.upsert",
+                    "comfyui.admin.server.set_enabled",
+                    "comfyui.admin.server.set_default",
+                    "comfyui.admin.server.delete",
+                }:
+                    operation = params.name.rsplit(".", 1)[1]
+                    phase = _required_string(arguments, "phase")
+                    if phase == "plan":
+                        _validate_keys(
+                            arguments,
+                            {"phase", "server_id", "changes", "expected_revision"},
+                        )
+                        changes = dict(arguments.get("changes", {}))
+                        if "expected_revision" in arguments:
+                            changes["expected_revision"] = arguments["expected_revision"]
+                        result = await anyio.to_thread.run_sync(
+                            lambda: plan_dict(
+                                server_control.plan(
+                                    operation,
+                                    _required_string(arguments, "server_id"),
+                                    owner_id,
+                                    changes,
+                                )
+                            )
+                        )
+                    elif phase == "commit":
+                        _validate_keys(arguments, {"phase", "plan_id", "plan_digest"})
+                        result = await anyio.to_thread.run_sync(
+                            lambda: server_dict(
+                                server_control.commit(
+                                    _required_string(arguments, "plan_id"),
+                                    _required_string(arguments, "plan_digest"),
+                                    owner_id,
+                                )
+                            )
+                        )
+                    else:
+                        raise ValueError("phase must be plan or commit")
+                elif params.name == "comfyui.admin.config.export":
+                    _validate_keys(arguments, {"revision"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: config_bundle_dict(
+                            config_bundles.export(owner_id, arguments.get("revision", ""))
+                        )
+                    )
+                elif params.name == "comfyui.admin.config.import":
+                    phase = _required_string(arguments, "phase")
+                    if phase == "plan":
+                        _validate_keys(arguments, {"phase", "bundle", "expected_revision"})
+                        result = await anyio.to_thread.run_sync(
+                            lambda: plan_dict(
+                                config_bundles.plan_import(
+                                    arguments["bundle"], arguments["expected_revision"], owner_id
+                                )
+                            )
+                        )
+                    elif phase == "commit":
+                        _validate_keys(arguments, {"phase", "plan_id", "plan_digest"})
+                        result = await anyio.to_thread.run_sync(
+                            lambda: config_bundle_dict(
+                                config_bundles.commit_import(
+                                    _required_string(arguments, "plan_id"),
+                                    _required_string(arguments, "plan_digest"),
+                                    owner_id,
+                                )
+                            )
+                        )
+                    else:
+                        raise ValueError("phase must be plan or commit")
+                elif params.name == "comfyui.admin.dependency.inspect":
+                    _validate_keys(
+                        arguments,
+                        {"server_id", "requirements", "workflow_id", "revision_id"},
+                    )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: dependency_report_dict(
+                            dependency_provisioning.inspect(
+                                _required_string(arguments, "server_id"),
+                                owner_id,
+                                arguments.get("requirements"),
+                                workflow_id=arguments.get("workflow_id", ""),
+                                revision_id=arguments.get("revision_id", ""),
+                            )
+                        )
+                    )
+                elif params.name == "comfyui.admin.dependency.plan":
+                    _validate_keys(arguments, {"server_id", "requirements"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: dependency_plan_dict(
+                            dependency_provisioning.plan(
+                                _required_string(arguments, "server_id"),
+                                owner_id,
+                                arguments["requirements"],
+                            )
+                        )
+                    )
+                elif params.name == "comfyui.admin.dependency.install":
+                    _validate_keys(
+                        arguments,
+                        {"plan_id", "plan_digest", "approval_id", "request_id", "confirmation"},
+                    )
+                    if arguments.get("confirmation") != "INSTALL APPROVED DEPENDENCIES":
+                        raise ValueError("Invalid installation confirmation")
+                    result = await anyio.to_thread.run_sync(
+                        lambda: provisioning_job_dict(
+                            dependency_provisioning.commit(
+                                _required_string(arguments, "plan_id"),
+                                _required_string(arguments, "plan_digest"),
+                                _required_string(arguments, "approval_id"),
+                                owner_id,
+                                _required_string(arguments, "request_id"),
+                                arguments["confirmation"],
+                            )
+                        )
+                    )
+                elif params.name == "comfyui.admin.provisioning.cancel":
+                    phase = _required_string(arguments, "phase")
+                    if phase == "plan":
+                        _validate_keys(arguments, {"phase", "job_id"})
+                        result = await anyio.to_thread.run_sync(
+                            lambda: plan_dict(
+                                dependency_provisioning.plan_cancel(
+                                    _required_string(arguments, "job_id"), owner_id
+                                )
+                            )
+                        )
+                    elif phase == "commit":
+                        _validate_keys(arguments, {"phase", "plan_id", "plan_digest"})
+                        result = await anyio.to_thread.run_sync(
+                            lambda: provisioning_job_dict(
+                                dependency_provisioning.commit_cancel(
+                                    _required_string(arguments, "plan_id"),
+                                    _required_string(arguments, "plan_digest"),
+                                    owner_id,
+                                )
+                            )
+                        )
+                    else:
+                        raise ValueError("phase must be plan or commit")
+                elif params.name == "comfyui.admin.approval.get":
+                    _validate_keys(arguments, {"approval_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: approval_dict(
+                            dependency_provisioning.get_approval(
+                                _required_string(arguments, "approval_id"), owner_id
+                            )
+                        )
+                    )
+                elif params.name == "comfyui.admin.approval.decision.plan":
+                    _validate_keys(arguments, {"approval_id", "decision", "reason"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: plan_dict(
+                            dependency_provisioning.plan_approval(
+                                _required_string(arguments, "approval_id"),
+                                arguments["decision"],
+                                owner_id,
+                                arguments.get("reason", ""),
+                            )
+                        )
+                    )
+                elif params.name == "comfyui.admin.approval.decision.commit":
+                    _validate_keys(arguments, {"plan_id", "plan_digest"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: approval_dict(
+                            dependency_provisioning.commit_approval(
+                                _required_string(arguments, "plan_id"),
+                                _required_string(arguments, "plan_digest"),
+                                owner_id,
+                            )
+                        )
+                    )
+                else:
+                    _validate_keys(arguments, {"job_id"})
+                    result = await anyio.to_thread.run_sync(
+                        lambda: provisioning_job_dict(
+                            dependency_provisioning.get_job(
+                                _required_string(arguments, "job_id"), owner_id
+                            )
+                        )
+                    )
             else:
                 raise MCPError(
                     code=INVALID_PARAMS,
@@ -506,11 +796,14 @@ def create_admin_server(
             return _result(result)
         except MCPError:
             raise
-        except (ComfyUISkillsError, KeyError, TypeError, ValueError) as exc:
+        except (ComfyUISkillsError, KeyError, TypeError, ValueError, LookupError) as exc:
             error = (
                 exc.as_dict()
                 if isinstance(exc, ComfyUISkillsError)
-                else {"code": "INVALID_ARGUMENTS", "message": str(exc)}
+                else {
+                    "code": "NOT_FOUND" if isinstance(exc, LookupError) else "INVALID_ARGUMENTS",
+                    "message": "Resource not found" if isinstance(exc, LookupError) else str(exc),
+                }
             )
             return _result(error, error=True)
         except Exception:
@@ -525,11 +818,64 @@ def create_admin_server(
                 error=True,
             )
 
+    async def authorized_listen(ctx: Any, params: Any) -> Any:
+        if provisioning_repository is None:
+            raise MCPError(code=INVALID_PARAMS, message="Resource unavailable")
+        for value in params.notifications.resource_subscriptions or ():
+            try:
+                kind, identity = _resource_ref(str(value))
+                resource_kind = {
+                    "server": "admin_server",
+                    "bundle": "admin_bundle",
+                    "plan": "admin_plan",
+                    "approval": "admin_approval",
+                    "job": "admin_provisioning",
+                }[kind]
+                if not is_authorized(authorization.scopes, scopes_for_resource(resource_kind)):
+                    raise LookupError("resource unavailable")
+                getter = {
+                    "server": provisioning_repository.get_server,
+                    "bundle": provisioning_repository.get_bundle,
+                    "plan": provisioning_repository.get_plan,
+                    "approval": provisioning_repository.get_approval,
+                    "job": provisioning_repository.get_job,
+                }[kind]
+                resource = await anyio.to_thread.run_sync(getter, identity, owner_id)
+                if resource is None:
+                    raise LookupError("resource unavailable")
+            except Exception as exc:
+                raise MCPError(code=INVALID_PARAMS, message="Resource unavailable") from exc
+        return await listen_handler(ctx, params)
+
+    @asynccontextmanager
+    async def lifespan(_server: Server[dict[str, object]]) -> Any:
+        async with anyio.create_task_group() as task_group:
+            if phase_o_runtime is not None:
+                task_group.start_soon(phase_o_runtime.run)
+            try:
+                yield {}
+            finally:
+                listen_handler.close()
+                task_group.cancel_scope.cancel()
+
+    resource_kwargs: dict[str, Any] = {}
+    if phase_o_resources is not None:
+        resource_kwargs = {
+            "on_list_resources": phase_o_resources.list_resources,
+            "on_list_resource_templates": phase_o_resources.list_templates,
+            "on_read_resource": phase_o_resources.read_resource,
+        }
+    else:
+        resource_kwargs = {}
+
     return Server(
         "ComfyUI MCP Skills Admin",
         version=__version__,
         on_list_tools=list_tools,
         on_call_tool=call_tool,
+        lifespan=lifespan,
+        on_subscriptions_listen=authorized_listen,
+        **resource_kwargs,
     )
 
 

@@ -5,11 +5,11 @@
 ## 能力
 
 - 每个启用的工作流动态生成带 JSON Schema 的 MCP Tool；目录变化后发送 `notifications/tools/list_changed` 和 `notifications/resources/list_changed`。
-- 固定工具覆盖资产上传、作业查询/取消/分页、队列、脱敏日志、可选 API 能力矩阵、模板、子图摘要和显存释放。
+- 固定工具覆盖资产上传、作业查询/取消/分页、队列、脱敏日志、可选 API 能力矩阵、模板、子图摘要和经过影响预览的运行时控制。
 - MCP Resources 同时提供旧服务器绑定 URI 与 Workflow、Revision、Deployment、Asset、Job、Artifact canonical URI；MCP Prompts 提供有界的作业操作、失败诊断和依赖观察流程。
-- Phase I 提供 API/Editor 工作流的损失感知导入预览、不可变 Revision 提交、语义 graph/nodes/edges/parameters/outputs Resources，以及确定性参数角色与依赖覆盖报告。
-- Phase M 提供持久化 Experiment plan/commit/get/cancel、matrix/zip/sample/explicit 参数扫描、预算与全局执行槽控制、Variant 评分，以及 preset/Revision 固化。
-- 支持 stdio 和带静态 Bearer Token 的 Streamable HTTP。
+- Phase I–L 提供损失感知工作流导入、不可变 Revision、actor-bound 变更、owner-aware 多服务器路由，以及持久化 Asset/Artifact 管理与传输。
+- Phase M–Q 提供 Experiment、确定性诊断与修复、配置和供应编排、运行时控制、OAuth introspection 及 owner-bound 生产加固。
+- 支持 stdio，以及采用静态 Bearer Token 或受众绑定 RFC 7662 Token Introspection 的 Streamable HTTP。
 - 上传、路径、下载大小、Host、Origin、请求体、并发和速率均受边界校验。
 - 危险的工作流修改与删除位于独立、默认关闭的管理进程。
 - 版本 `1.1.x` 的产品成熟度为 Beta；协议目标为 MCP `2026-07-28`，SDK 为 Python SDK v2。
@@ -183,10 +183,10 @@ comfyui-skill info local/txt2img --json
 
 ```bash
 uv sync --locked --extra dev
-uv run ruff check src/comfyui_mcp_skills
+uv run ruff check src/comfyui_mcp_skills tests
 uv run mypy src/comfyui_mcp_skills
 uv run python -m pytest --cov --cov-report=term-missing -q
-uv run pip-audit
+uvx pip-audit
 uv build
 ```
 
@@ -197,3 +197,5 @@ uv run comfyui-mcp-eval-deepseek evals/g6-tool-selection.json --output artifacts
 ```
 
 CI 在 Ubuntu 与 Windows 上覆盖 Python 3.10–3.13，并验证构建后的 wheel 可独立导入及版本一致。
+
+当前发布基线为 784 个测试通过、1 个跳过、覆盖率 82.01%；真实 ComfyUI 30 步推理、输出解码、Job ID 幂等恢复和队列清空均已通过，完整证据见 `artifacts/qa-review.json`。

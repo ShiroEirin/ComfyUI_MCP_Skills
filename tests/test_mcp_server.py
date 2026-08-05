@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ import anyio
 import pytest
 from mcp import Client
 from mcp.shared.exceptions import MCPError
+from mcp.types import PromptReference
 
 from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
 from comfyui_mcp_skills.adapters.mcp.server import create_server
@@ -128,8 +130,9 @@ def _add_workflow(
     workflow_id: str,
     *,
     parameters: dict[str, Any] | None = None,
+    server_id: str = "local",
 ) -> None:
-    directory = base_dir / "data" / "local" / workflow_id
+    directory = base_dir / "data" / server_id / workflow_id
     directory.mkdir(parents=True)
     (directory / "schema.json").write_text(
         json.dumps(
@@ -172,6 +175,91 @@ async def test_long_workflow_tool_names_are_bounded_stable_and_unique(
     assert len(first_names) == 3
     assert len(first_names) == len(set(first_names))
     assert all(len(name) <= 128 for name in first_names)
+
+
+@pytest.mark.anyio
+async def test_portable_tool_names_are_api_compatible_and_dispatch(tmp_path: Path) -> None:
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        portable_tool_names=True,
+    )
+
+    async with Client(server) as client:
+        listed = await client.list_tools()
+        names = {tool.name for tool in listed.tools}
+        assert all(re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in names)
+        workflow_name = next(name for name in names if name.startswith("comfyui_run_local_txt2img"))
+        submitted = await client.call_tool(
+            workflow_name,
+            {"prompt": "a white cat", "_execution": {"idempotency_key": "portable-1"}},
+        )
+        fetched = await client.call_tool(
+            "comfyui_job_get",
+            {"server_id": "local", "prompt_id": "prompt-mcp"},
+        )
+        searched = await client.call_tool(
+            "comfyui_capability_search",
+            {"query": "job status", "limit": 5},
+        )
+        described = await client.call_tool(
+            "comfyui_capability_describe",
+            {"name": "comfyui_job_get"},
+        )
+
+    assert submitted.is_error is False
+    assert submitted.structured_content["prompt_id"] == "prompt-mcp"
+    assert fetched.is_error is False
+    discovered_names = {item["name"] for item in searched.structured_content["items"]}
+    assert "comfyui_job_get" in discovered_names
+    assert all(re.fullmatch(r"[A-Za-z0-9_-]+", name) for name in discovered_names)
+    assert described.structured_content["name"] == "comfyui_job_get"
+
+
+@pytest.mark.anyio
+async def test_portable_tool_name_collision_fails_closed(tmp_path: Path) -> None:
+    _project(tmp_path)
+    config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    config["servers"].extend(
+        [
+            {"id": "a_b", "name": "A B", "url": "http://127.0.0.1:8189"},
+            {"id": "a", "name": "A", "url": "http://127.0.0.1:8190"},
+        ]
+    )
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    _add_workflow(tmp_path, "c", server_id="a_b")
+    _add_workflow(tmp_path, "b_c", server_id="a")
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: FakeGateway(),
+        portable_tool_names=True,
+    )
+
+    async with Client(server) as client:
+        with pytest.raises(MCPError) as collision:
+            await client.list_tools()
+
+    assert collision.value.code == -32603
+
+
+@pytest.mark.anyio
+async def test_prompt_and_resource_completion_uses_visible_catalog(tmp_path: Path) -> None:
+    _project(tmp_path)
+    server = create_server(tmp_path, gateway_factory=lambda _config: FakeGateway())
+    async with Client(server) as client:
+        servers = await client.complete(
+            PromptReference(name="select-or-import-workflow"),
+            {"name": "server_id", "value": "lo"},
+        )
+        workflows = await client.complete(
+            PromptReference(name="select-or-import-workflow"),
+            {"name": "workflow_id", "value": "txt"},
+        )
+
+    assert servers.completion.values == ["local"]
+    assert workflows.completion.values == ["txt2img"]
 
 
 @pytest.fixture

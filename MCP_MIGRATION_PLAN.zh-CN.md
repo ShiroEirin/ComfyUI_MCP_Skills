@@ -842,7 +842,7 @@ POST /mcp
 
 ## 14. 迁移阶段
 
-> v1.1.0 已完成阶段 A–F 的代码落地。公网认证当前明确限定为静态 Bearer Token；OAuth 2.1 和跨 worker 全局限流不在本版本实现范围。多 worker 仅允许在部署方声明已有外部全局限流时启动。
+> v1.1.x 已完成阶段 A–Q 的代码落地。远程认证支持静态 Bearer Token 和受众绑定的 RFC 7662 Token Introspection；多 worker 仍仅允许在部署方声明已有外部全局限流时启动。
 
 ### 阶段 A：修复安全和正确性阻断项
 
@@ -939,6 +939,24 @@ mcp = ">=2,<3"
 - HTTPS URL 安全下载。
 - 限流、请求体限制和追踪。
 
+### 阶段 G–Q：持久控制面与生产加固
+
+已完成：
+
+- **G**：SQLite 控制面迁移、主体与 scope 授权、执行 plan/commit、能力目录和评估基线。
+- **H**：作业分页、队列、日志、模板、子图、能力探测、订阅和有界可观测性。
+- **I**：API/Editor 工作流导入预览、不可变 Revision、语义图及依赖覆盖。
+- **J**：actor 绑定的工作流变更计划、精确 diff、发布、回滚和载荷完整性保护。
+- **K**：多服务器路由、候选兼容性、策略评估、Server Revision pin 和双层幂等。
+- **L**：资产库、Artifact、集合、元数据、删除计划及跨服务器传输。
+- **M**：持久化 Experiment、参数扫描、预算、评分和 Revision 固化。
+- **N**：确定性诊断、脱敏证据、修复计划及可恢复重试 lineage。
+- **O**：owner-bound Server 配置、Config Bundle、审批和依赖供应编排。
+- **P**：队列删除/清理、服务中断和重启影响预览；未审批的即时 `server.free` 不再暴露。
+- **Q**：OAuth introspection 主体/受众绑定、预认证限流、owner-aware Server 连接、Revision 隔离、路由 commit fencing 和发布安全收口。
+
+阶段 G–Q 的验收覆盖 owner 隔离、并发幂等、迁移升级、MCP schema、HTTP 安全边界、真实 ComfyUI 推理及输出校验。
+
 ## 15. 必须保留和新增的回归用例
 
 ### 15.1 现有兼容回归
@@ -977,27 +995,29 @@ mcp = ">=2,<3"
 
 ## 16. 当前验证基线
 
-v1.1.0 已执行：
+v1.1.x 已执行：
 
 ```text
-uv run ruff check src/comfyui_mcp_skills
+uv run ruff check src/comfyui_mcp_skills tests
 uv run mypy src/comfyui_mcp_skills
 uv run python -m pytest --cov --cov-report=term-missing -q
-uv run pip-audit
+uvx pip-audit
 uv build
 ```
 
 当前结果：
 
-- 218 个测试全部通过；MCP 包语句覆盖率为 84.24%。
+- 784 个测试通过、1 个跳过、2 个 subtest 通过；语句覆盖率为 82.01%，超过 80% 门禁。
 - Ruff 与 Mypy 通过。
-- `pip-audit` 未发现第三方依赖已知漏洞；项目自身尚未发布到 PyPI，因此被审计器跳过。
+- `pip-audit` 未发现第三方依赖已知漏洞。
 - sdist 与 wheel 构建成功；wheel 包含 MCP 和兼容 CLI 两套入口。
-- `comfyui-skill --version`、`comfyui-mcp-maintain` 和隔离 wheel 安装完成进程级冒烟验证。
 - CI 覆盖 Ubuntu / Windows 与 Python 3.10–3.13，并复验 wheel 导入和版本。
-- 独立代码复审确认无 P0/P1 发布阻断项。
+- 独立代码复审与安全复审确认无当前范围内的发布阻断项。
+- 真实 ComfyUI `0.28.3` 完成 30 步工作流：36.66 秒生成 2048×2048 PNG，输出 SHA-256 为 `666db7559bc8e2e8735ec1fbdfb5b9df162c7fd3ca0637421a6fb9e2048f2d5a`。
+- 相同 Job ID 在 0.72 秒内恢复同一 `prompt_id`，未重复提交；验收后运行和等待队列均为空。
+- ComfyUI `0.28.3` 不提供可选 `/api/jobs` 端点；服务端历史查询按能力矩阵降级，本地持久历史可用。
 
-仓库未包含可公开复现的真实 ComfyUI GPU 环境、模型和工作流资产。因此以上验证覆盖协议、应用服务、安全边界、持久化和打包，不宣称已完成真实 GPU 推理端到端验证。
+机器相关的完整发布证据记录在 `artifacts/qa-review.json`；仓库不包含模型和工作流资产，因此该 GPU 验收不能作为公开环境中的确定性复现 fixture。
 
 ## 17. 最终决策
 

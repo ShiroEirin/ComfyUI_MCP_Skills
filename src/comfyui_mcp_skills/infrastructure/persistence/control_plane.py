@@ -11,6 +11,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from comfyui_mcp_skills.infrastructure.persistence.authoring_hardening_schema import (
+    PHASE_J_HARDENING_UP,
+)
+from comfyui_mcp_skills.infrastructure.persistence.provisioning_schema import (
+    PHASE_O_PROVISIONING_UP,
+)
+from comfyui_mcp_skills.infrastructure.persistence.routing_commit_schema import (
+    PHASE_Q_ROUTING_COMMIT_UP,
+)
+from comfyui_mcp_skills.infrastructure.persistence.routing_schema import PHASE_K_ROUTING_UP
+
 if TYPE_CHECKING:
     from comfyui_mcp_skills.application.control_plane_ports import (
         ControlPlaneUnitOfWork,
@@ -2151,6 +2162,34 @@ _MIGRATIONS = (
         _PHASE_N_DIAGNOSTIC_RECOVERY_UP,
         (),
         feasibility_note="forward-only owner-bound structured diagnostic and retry recovery storage",
+    ),
+    SchemaMigration(
+        9,
+        "phase-o-server-config-provisioning",
+        PHASE_O_PROVISIONING_UP,
+        (),
+        feasibility_note="forward-only owner-bound server, config, approval, and provisioning storage",
+    ),
+    SchemaMigration(
+        10,
+        "phase-k-routing-plans",
+        PHASE_K_ROUTING_UP,
+        (),
+        feasibility_note="forward-only owner-bound multi-server routing plan storage",
+    ),
+    SchemaMigration(
+        11,
+        "phase-j-workflow-change-hardening",
+        PHASE_J_HARDENING_UP,
+        (),
+        feasibility_note="forward-only immutable actor-bound Workflow change plans",
+    ),
+    SchemaMigration(
+        12,
+        "phase-q-routing-commit-idempotency",
+        PHASE_Q_ROUTING_COMMIT_UP,
+        (),
+        feasibility_note="forward-only owner-bound routing commit idempotency fencing",
     ),
 )
 
