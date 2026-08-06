@@ -110,7 +110,12 @@ from comfyui_mcp_skills.application.runtime_control import (
     RuntimeControlService,
 )
 from comfyui_mcp_skills.application.servers import OwnerAwareServerRegistry, ServerRegistry
-from comfyui_mcp_skills.application.telemetry import Tracer, tracer_from_env
+from comfyui_mcp_skills.application.telemetry import (
+    Meter,
+    Tracer,
+    meter_from_env,
+    tracer_from_env,
+)
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -277,10 +282,21 @@ def create_server(
     max_dynamic_tools: int = ToolInventory.DYNAMIC_LIMIT,
     runtime_controller_provider: Callable[[str], RuntimeController | None] | None = None,
     tracer: Tracer | None = None,
+    meter: Meter | None = None,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
     tracer = tracer or tracer_from_env()
+    meter = meter or meter_from_env()
+    tool_calls = meter.counter(
+        "mcp.tool.calls", unit="{call}", description="MCP tool invocations"
+    )
+    tool_errors = meter.counter(
+        "mcp.tool.errors", unit="{error}", description="MCP tool invocation failures"
+    )
+    tool_duration = meter.histogram(
+        "mcp.tool.duration", unit="s", description="MCP tool invocation duration"
+    )
     repositories = repositories or create_repository_bundle(base_dir)
     enforce_authorization = authorization is not None
     authorization = authorization or AuthorizationContext(
@@ -814,11 +830,13 @@ def create_server(
             except BaseException as exc:
                 span.record_error(exc)
                 span.set_attributes({"is_error": True})
+                tool_errors.add(1, {"tool": params.name, "owner": owner_id})
                 raise
             finally:
-                span.set_attributes(
-                    {"duration_ms": (time.perf_counter() - started) * 1000.0}
-                )
+                elapsed = time.perf_counter() - started
+                span.set_attributes({"duration_ms": elapsed * 1000.0})
+                tool_calls.add(1, {"tool": params.name, "owner": owner_id})
+                tool_duration.record(elapsed, {"tool": params.name, "owner": owner_id})
             return result
 
     async def _dispatch_tool_call(

@@ -240,7 +240,7 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`822 passed, 1 skipped, 2 subtests passed`。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`835 passed, 3 skipped, 2 subtests passed`。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
@@ -251,7 +251,7 @@ uv build
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Docker、Windows Service 的内置 RuntimeController 适配器（Linux systemd 适配器已实现并接线，执行闭环未交付）。
+- Windows Service 的内置 RuntimeController 适配器（Linux systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
 
 Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。

@@ -9,7 +9,7 @@
 | 默认可用 | execution Toolset + 文件仓库 | 动态执行、上传、Job get/cancel、基础发现（`job.list` 需 run cutover） |
 | 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置 | 队列、日志、运行时、服务器/配置管理、Dependency/Provisioning |
 | 显式授权且完成对应 cutover | Authoring 或 Execution + 对应 SQLite aggregate | 工作流理解、Revision、Artifact/Lineage、Plan、Experiment、Diagnostic、Routing |
-| 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation、Docker/Windows RuntimeController |
+| 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation、Windows Service RuntimeController |
 
 当前发行版提供只读 `comfyui-mcp-migration-dry-run` 演练和显式 `comfyui-mcp-migrate` 生产切换命令（需精确确认短语与备份证据）。全新安装默认仍保留文件仓库，第三层能力在对应 aggregate 切换前不会启用；不要手工伪造切换证据。
 
@@ -324,7 +324,7 @@ comfyui.runtime.restart.plan
 - `server.interrupt`：显式全局中断，不伪装成单 Job 取消。
 - `runtime.restart.plan`：返回调用方所有者影响范围内的运行中 Job（`impact_coverage` 如实标注枚举范围，非全局枚举），以及审批与操作要求，不执行宿主命令。
 
-重启执行闭环（approve/commit）未交付：安全执行要求服务端持久化的影响快照、单次审批与按服务器的 drain/fence 协调（所有提交路径在入队前检查、原子启用与解除），这些基础设施尚未实现，因此本版本不暴露执行工具。systemd `RuntimeController` 适配器已实现并接线（`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}`，只执行固定 `systemctl restart <unit>`，无 shell、有超时、非法配置 fail-closed），但仅在 `restart.plan` 中报告可用性，不执行重启。Docker 与 Windows Service 控制器未内置。
+重启执行闭环（approve/commit）未交付：安全执行要求服务端持久化的影响快照、单次审批与按服务器的 drain/fence 协调（所有提交路径在入队前检查、原子启用与解除），这些基础设施尚未实现，因此本版本不暴露执行工具。systemd 与 Docker `RuntimeController` 适配器已实现并接线（`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}` 或 `runtime: {"adapter": "docker", "container": "comfyui-local"}`，只执行固定的 `systemctl restart <unit>` / `docker restart <container>`，无 shell、有超时、非法配置 fail-closed），但仅在 `restart.plan` 中报告可用性，不执行重启。Windows Service 控制器未内置。
 
 ## 13. Resources、Prompts 与订阅
 
@@ -381,7 +381,7 @@ Streamable HTTP 支持：
 - 默认 `process` 限流拒绝多 worker；`COMFYUI_MCP_LIMIT_MODE=external` 启用 SQLite 共享限流后可多 worker 同主机部署。
 - Introspection 已实现，但不等于完整 OAuth Authorization Server 或动态客户端注册。
 - MCP Apps：已提供只读 Job 状态查看器（`ui://comfyui/job.html`），仅对声明 UI 扩展与 app MIME 的客户端注入工具元数据；文本/结构化输出与 Resource Link 保留为降级路径。
-- 多副本 SubscriptionBus、跨主机租约、OpenTelemetry metrics/logs 和更完整 MCP App 界面尚未交付；可选 OpenTelemetry traces（工具调用 span）已交付：安装 `comfyui-mcp-skills[otel]` 并设置 `COMFYUI_MCP_OTEL_ENDPOINT`（OTLP/HTTP 端点）后启用，未设置端点时零依赖零开销；metrics 与 logs 信号不提供。
+- 多副本 SubscriptionBus、跨主机租约、OpenTelemetry logs 和更完整 MCP App 界面尚未交付；可选 OpenTelemetry traces 与 metrics（工具调用 span、调用/错误计数与耗时直方图）已交付：安装 `comfyui-mcp-skills[otel]` 并设置 `COMFYUI_MCP_OTEL_ENDPOINT`（OTLP/HTTP 端点）后启用，未设置端点时零依赖零开销；logs 信号不提供。
 
 ## 16. 推荐 Agent 操作方式
 
@@ -445,5 +445,5 @@ dependency.inspect
 - 跨主机共享租约与配额（同主机多 worker 共享限流已可用）。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Docker、Windows Service RuntimeController（systemd 适配器已实现并接线，执行闭环未交付）。
+- Windows Service RuntimeController（systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；subgraph 提取/按名复用闭环已交付）。

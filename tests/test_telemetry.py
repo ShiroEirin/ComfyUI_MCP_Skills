@@ -9,8 +9,11 @@ import pytest
 
 from comfyui_mcp_skills.application.telemetry import (
     OTEL_ENDPOINT_ENV,
+    NullMeter,
     NullTracer,
+    OtelMeter,
     OtelTracer,
+    meter_from_env,
     tracer_from_env,
 )
 
@@ -156,3 +159,136 @@ def test_recording_tracer_captures_errors(tmp_path: Path) -> None:
     assert call["attributes"].get("is_error") is True
     assert "error" in call["attributes"]
     assert "duration_ms" in call["attributes"]
+
+
+class RecordingMeter:
+    def __init__(self) -> None:
+        self.counters: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+        self.histograms: dict[str, list[tuple[float, dict[str, Any]]]] = {}
+
+    def counter(self, name: str, *, unit: str = "", description: str = ""):
+        del unit, description
+        records = self.counters.setdefault(name, [])
+
+        class _Counter:
+            def add(self, amount: int | float, attributes: dict[str, Any] | None = None) -> None:
+                records.append((amount, dict(attributes or {})))
+
+        return _Counter()
+
+    def histogram(self, name: str, *, unit: str = "", description: str = ""):
+        del unit, description
+        records = self.histograms.setdefault(name, [])
+
+        class _Histogram:
+            def record(
+                self, amount: int | float, attributes: dict[str, Any] | None = None
+            ) -> None:
+                records.append((float(amount), dict(attributes or {})))
+
+        return _Histogram()
+
+
+def test_null_meter_is_side_effect_free() -> None:
+    meter = NullMeter()
+    counter = meter.counter("mcp.tool.calls")
+    counter.add(1, {"tool": "x"})
+    histogram = meter.histogram("mcp.tool.duration")
+    histogram.record(0.5, {"tool": "x"})
+    assert True
+
+
+def test_meter_from_env_returns_null_when_unconfigured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(OTEL_ENDPOINT_ENV, raising=False)
+    assert isinstance(meter_from_env(), NullMeter)
+
+
+def test_otel_meter_records_counter_and_histogram_with_sdk() -> None:
+    pytest.importorskip("opentelemetry.sdk.metrics")
+    from opentelemetry.sdk.metrics import MeterProvider
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader
+
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    meter = OtelMeter(provider.get_meter("test"))
+    counter = meter.counter("mcp.tool.calls", unit="{call}")
+    counter.add(2, {"tool": "ping"})
+    histogram = meter.histogram("mcp.tool.duration", unit="s")
+    histogram.record(0.25, {"tool": "ping"})
+
+    data = reader.get_metrics_data()
+    names = {
+        metric.name
+        for resource_metrics in data.resource_metrics
+        for metric in resource_metrics.scope_metrics[0].metrics
+    }
+    assert names == {"mcp.tool.calls", "mcp.tool.duration"}
+
+
+def test_recording_meter_captures_server_tool_calls(tmp_path: Path) -> None:
+    """The MCP server records invocation counters and duration histograms."""
+    import json
+
+    import anyio
+    from mcp.client import Client
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "id": "local",
+                        "url": "http://127.0.0.1:1",
+                        "auth": {"type": "none"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    recorder = RecordingMeter()
+    server = create_server(tmp_path, meter=recorder)  # type: ignore[arg-type]
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            await client.call_tool("comfyui.capability.search", {"query": "queue"})
+            await client.call_tool("comfyui.capability.search", {"query": "job"})
+
+    anyio.run(exercise)
+
+    calls = recorder.counters["mcp.tool.calls"]
+    assert len(calls) == 2
+    assert all(attributes["tool"] == "comfyui.capability.search" for _, attributes in calls)
+    assert all(attributes["owner"] == "local-stdio" for _, attributes in calls)
+    durations = recorder.histograms["mcp.tool.duration"]
+    assert len(durations) == 2
+    assert all(duration >= 0.0 for duration, _ in durations)
+    assert recorder.counters["mcp.tool.errors"] == []
+
+
+def test_recording_meter_captures_errors(tmp_path: Path) -> None:
+    import anyio
+    from mcp.client import Client
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    recorder = RecordingMeter()
+    server = create_server(tmp_path, meter=recorder)  # type: ignore[arg-type]
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            await client.call_tool("comfyui.unknown.tool", {})
+
+    with pytest.raises(Exception):
+        anyio.run(exercise)
+
+    errors = recorder.counters["mcp.tool.errors"]
+    assert len(errors) == 1
+    assert errors[0][0] == 1
+    assert errors[0][1]["tool"] == "comfyui.unknown.tool"
+    assert len(recorder.counters["mcp.tool.calls"]) == 1
