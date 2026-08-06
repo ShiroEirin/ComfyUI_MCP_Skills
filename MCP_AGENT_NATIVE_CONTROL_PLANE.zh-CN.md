@@ -533,8 +533,8 @@ comfyui:author
 
 | Tool | 用途 |
 |---|---|
-| `comfyui.admin.workflow.set_enabled` | 已实现，继续保留 |
-| `comfyui.admin.workflow.delete` | 已实现，继续保留 |
+| `comfyui.admin.workflow.set_enabled` | 已实现；**workflow aggregate cutover 后隐藏**（file-backed 仓库被封存，工具不再挂载，调用返回不可用） |
+| `comfyui.admin.workflow.delete` | 已实现；**workflow aggregate cutover 后隐藏**（同上） |
 | `comfyui.admin.workflow.validate` | 验证 workflow、schema、节点和模型，不执行 |
 
 不建议提供一个带任意 `action` 字符串的万能 `workflow.manage`。导入、图变更和删除的风险及输入契约不同，应保持独立。
