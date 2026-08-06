@@ -501,6 +501,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("enable", "disable", "configuration"),
     ),
     CapabilitySpec(
+        "comfyui.admin.workflow.validate",
+        "Validate a workflow",
+        "Validate one workflow graph, parameters, nodes, and dependencies without executing.",
+        frozenset({Toolset.ADMIN}),
+        frozenset({Scope.CONFIGURE}),
+        RiskLevel.LOW,
+        ("workflow", "validate", "schema"),
+    ),
+    CapabilitySpec(
         "comfyui.admin.workflow.delete",
         "Delete a workflow permanently",
         "Permanently delete one workflow after exact confirmation.",

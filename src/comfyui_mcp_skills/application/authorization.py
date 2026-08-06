@@ -76,6 +76,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.admin.workflow.publish": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.workflow.rollback": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.workflow.set_enabled": frozenset({Scope.CONFIGURE}),
+    "comfyui.admin.workflow.validate": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.workflow.delete": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.audit.get": frozenset({Scope.AUDIT}),
     "comfyui.admin.audit.retry": frozenset({Scope.AUDIT}),

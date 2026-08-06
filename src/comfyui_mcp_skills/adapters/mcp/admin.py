@@ -179,13 +179,15 @@ def create_admin_server(
     store = repositories.store
     workflow_owner_id = owner_id if provisioning_repository is not None else None
     workflow_actor = owner_id if provisioning_repository is not None else actor
+    validation_service = WorkflowValidationService()
+    workflow_graphs = WorkflowGraphService(
+        ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+    )
     workflow_import = None
     if repositories.workflow_store == "sqlite" and store is not None:
         workflow_import = WorkflowImportService(
-            WorkflowGraphService(
-                ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
-            ),
-            WorkflowValidationService(),
+            workflow_graphs,
+            validation_service,
             SQLiteWorkflowRepository(store, owner_id=workflow_owner_id),
             runtime_estimator=lambda server_id, _graph: float(
                 servers.connection(server_id).get("experiment_trusted_seconds_per_run", 300.0)
@@ -195,10 +197,8 @@ def create_admin_server(
     if store is not None and repositories.workflow_store == "sqlite":
         workflow_changes = WorkflowChangeService(
             SQLiteWorkflowChangeRepository(store, owner_id=workflow_owner_id),
-            WorkflowGraphService(
-                ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
-            ),
-            WorkflowValidationService(),
+            workflow_graphs,
+            validation_service,
             actor=workflow_actor,
         )
 
@@ -363,6 +363,26 @@ def create_admin_server(
                         ]
                         if workflow_changes is not None
                         else []
+                    ),
+                    Tool(
+                        name="comfyui.admin.workflow.validate",
+                        description=(
+                            "Validate one workflow graph, parameters, nodes, and model "
+                            "dependencies without executing it."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": identity,
+                            "required": ["server_id", "workflow_id"],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=True,
+                            destructive_hint=False,
+                            idempotent_hint=True,
+                            open_world_hint=True,
+                        ),
                     ),
                     *(
                         [
@@ -646,6 +666,21 @@ def create_admin_server(
                         server_id,
                         target_revision_id,
                         request_id,
+                    )
+                )
+            elif params.name == "comfyui.admin.workflow.validate":
+                _validate_keys(arguments, {"server_id", "workflow_id"})
+                server_id = _required_string(arguments, "server_id")
+                workflow_id = _required_string(arguments, "workflow_id")
+                result = await anyio.to_thread.run_sync(
+                    lambda: _validate_published_workflow(
+                        repositories.workflows,
+                        workflow_graphs,
+                        validation_service,
+                        gateway_factory,
+                        servers,
+                        server_id,
+                        workflow_id,
                     )
                 )
             elif params.name == "comfyui.admin.workflow.set_enabled":
@@ -1012,6 +1047,35 @@ def create_admin_server(
         on_subscriptions_listen=authorized_listen,
         **resource_kwargs,
     )
+
+
+def _validate_published_workflow(
+    repository: Any,
+    graphs: WorkflowGraphService,
+    validation: WorkflowValidationService,
+    gateway_factory: GatewayFactory,
+    servers: ServerRegistry,
+    server_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    """Validate one workflow graph and its dependency contract without executing."""
+    workflow = repository.get(server_id, workflow_id)
+    if workflow is None:
+        raise LookupError(f"Workflow not found: {server_id}/{workflow_id}")
+    gateway = gateway_factory(servers.connection(server_id))
+    object_info = gateway.get_object_info()
+    result = validation.validate_api(workflow.graph, object_info)
+    semantic = graphs.describe(workflow.graph, object_info=object_info)
+    return {
+        "workflow_id": workflow_id,
+        "server_id": server_id,
+        "valid": bool(result["valid"]),
+        "issues": list(result["issues"]),
+        "unsupported_nodes": sorted(result["unsupported_nodes"]),
+        "node_count": int(semantic["node_count"]),
+        "edge_count": int(semantic["edge_count"]),
+        "dependencies": dict(semantic["dependencies"]),
+    }
 
 
 def _required_string(arguments: dict[str, Any], name: str) -> str:

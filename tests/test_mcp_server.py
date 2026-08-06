@@ -567,6 +567,7 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
         assert {tool.name for tool in listed.tools} == {
             "comfyui.admin.workflow.set_enabled",
             "comfyui.admin.workflow.delete",
+            "comfyui.admin.workflow.validate",
             "comfyui.admin.audit.get",
             "comfyui.admin.audit.retry",
             "comfyui.admin.audit.export",
@@ -711,6 +712,64 @@ async def test_workflow_list_hidden_from_execution_surface(tmp_path: Path) -> No
             await client.call_tool("comfyui.workflow.list", {})
 
     assert "comfyui.workflow.list" not in names
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_validate_returns_structured_result(tmp_path: Path) -> None:
+    """admin.workflow.validate checks a graph without executing it."""
+    _project(tmp_path)
+
+    class _ObjectInfoGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "CLIPTextEncode": {
+                    "input": {"required": {"text": ["STRING"]}},
+                    "input_order": {"required": ["text"]},
+                    "output": ["CONDITIONING"],
+                }
+            }
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ObjectInfoGateway(),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        result = await client.call_tool(
+            "comfyui.admin.workflow.validate",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    assert "comfyui.admin.workflow.validate" in names
+    content = result.structured_content
+    assert content["workflow_id"] == "txt2img"
+    assert content["server_id"] == "local"
+    assert isinstance(content["valid"], bool)
+    assert isinstance(content["issues"], list)
+    assert content["node_count"] == 1
+    assert "dependencies" in content
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_validate_missing_workflow_errors(tmp_path: Path) -> None:
+    _project(tmp_path)
+
+    class _ObjectInfoGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ObjectInfoGateway(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.validate",
+            {"server_id": "local", "workflow_id": "missing"},
+        )
+    assert result.is_error is True
 
 
 @pytest.mark.anyio
