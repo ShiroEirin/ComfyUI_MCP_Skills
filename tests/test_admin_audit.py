@@ -350,3 +350,88 @@ def test_audit_only_recovery_rejects_different_operation_parameters(
         (tmp_path / "data" / "local" / "txt2img" / "schema.json").read_text(encoding="utf-8")
     )
     assert schema["enabled"] is False
+
+
+def test_export_audit_filters_and_paginates_append_order(tmp_path: Path) -> None:
+    repository = _workflow_project(tmp_path)
+    admin = WorkflowAdmin(tmp_path, repository, actor="exporter-admin")
+    admin.set_enabled("local", "txt2img", True, request_id="export-one")
+    with pytest.raises(ValueError, match="confirmation must equal"):
+        admin.delete("local", "txt2img", "wrong", request_id="export-two")
+    admin.set_enabled("local", "txt2img", False, request_id="export-three")
+
+    exported = admin.export_audit(actor="exporter-admin", limit=100)
+    assert exported["count"] == 6
+    assert exported["next_cursor"] == ""
+    assert [event["request_id"] for event in exported["events"]] == [
+        "export-one",
+        "export-one",
+        "export-two",
+        "export-two",
+        "export-three",
+        "export-three",
+    ]
+    assert [event["outcome"] for event in exported["events"]] == [
+        "intent",
+        "success",
+        "intent",
+        "failure",
+        "intent",
+        "success",
+    ]
+
+    failures = admin.export_audit(outcomes=["failure"], limit=100)
+    assert failures["count"] == 1
+    assert failures["events"][0]["request_id"] == "export-two"
+    assert failures["events"][0]["error_code"] == "INVALID_ARGUMENTS"
+
+    by_action = admin.export_audit(action="workflow.set_enabled", limit=100)
+    assert by_action["count"] == 4
+    assert {event["request_id"] for event in by_action["events"]} == {
+        "export-one",
+        "export-three",
+    }
+
+    first_page = admin.export_audit(limit=2)
+    assert first_page["count"] == 2
+    assert first_page["next_cursor"]
+    second_page = admin.export_audit(limit=100, cursor=first_page["next_cursor"])
+    assert second_page["count"] == 4
+    assert second_page["next_cursor"] == ""
+    combined = first_page["events"] + second_page["events"]
+    assert [event["request_id"] for event in combined if event["outcome"] == "success"] == [
+        "export-one",
+        "export-three",
+    ]
+
+    after = admin.export_audit(after=first_page["events"][0]["timestamp"], limit=100)
+    assert after["count"] == 6
+
+
+def test_export_audit_rejects_invalid_filters(tmp_path: Path) -> None:
+    repository = _workflow_project(tmp_path)
+    admin = WorkflowAdmin(tmp_path, repository, actor="exporter-admin")
+
+    with pytest.raises(ValueError, match="outcome rejected is not recognized"):
+        admin.export_audit(outcomes=["rejected"])
+    with pytest.raises(ValueError, match="after must be a UTC"):
+        admin.export_audit(after="2026-13-99T99:99:99")
+    with pytest.raises(ValueError, match="limit must be an integer"):
+        admin.export_audit(limit=0)
+    with pytest.raises(ValueError, match="cursor is invalid"):
+        admin.export_audit(cursor="not-a-number")
+    with pytest.raises(ValueError, match="cursor must be non-negative"):
+        admin.export_audit(cursor="-1")
+
+
+def test_export_audit_empty_trail_and_corrupt_line(tmp_path: Path) -> None:
+    repository = _workflow_project(tmp_path)
+    admin = WorkflowAdmin(tmp_path, repository, actor="exporter-admin")
+    empty = admin.export_audit(limit=100)
+    assert empty["events"] == []
+    assert empty["next_cursor"] == ""
+
+    path = tmp_path / "data" / "admin-audit.jsonl"
+    path.write_text("{not-json}\n", encoding="utf-8")
+    with pytest.raises(AdminAuditError, match="could not be exported"):
+        admin.export_audit(limit=100)

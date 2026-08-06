@@ -1525,7 +1525,7 @@ Published Revision + arguments + Asset URI
 - Execution Plan 计算 `execution_slots`、`submission_window` 和资产 `reuse_mode`
 - `comfyui.route.explain`
 - 参数、资产、Revision、Deployment、服务器、Policy 和预算的完整解析
-- 基于历史数据的可选耗时估计
+- 基于历史数据的可选耗时估计（未交付：无可靠样本时显式返回不可用，不伪造数值；本切片不提供估计功能）
 
 验收：
 
@@ -1666,15 +1666,20 @@ Published Revision + arguments + Asset URI
 > 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流与 MCP Apps 只读 Job 查看器；Redis/NATS 多副本总线、跨主机租约、MCP Tasks、Elicitation 和 OpenTelemetry 仍未交付。
 
 
-交付：
+已交付：
+
+- Prompt 与 Resource Template 参数的 `completion/complete`；不宣称支持 Tool 参数补全
+- OAuth 2.1、JWT/JWKS 或 Token Introspection 中至少一种生产认证（本切片交付 RFC 7662 Token Introspection）
+- 同主机多 worker SQLite 共享限流、保留策略与审计闭环（append-only 事件存储 + `admin.audit.get/retry/export` 有界过滤导出）
+- MCP Apps 只读 Job 查看器（可选图库、实验对比与 Job 监视器未交付）
+
+尚未交付（后续计划，不得按现有能力使用）：
 
 - 多副本 `SubscriptionBus`（Redis Pub/Sub 或 NATS）只做即时 fan-out，不提供 replay
+- 跨主机租约与全局配额（当前限流仅限同主机多 worker）
 - 基于 MRTR `InputRequiredResult` 的 Elicitation 审批及持久化 Approval 后备
 - 评估 `io.modelcontextprotocol/tasks` 扩展映射，不替换领域 Job 或 Orchestrator
-- Prompt 与 Resource Template 参数的 `completion/complete`；不宣称支持 Tool 参数补全
-- 可选 MCP App 图库、实验对比和 Job 监视器，核心功能不得依赖 App
-- OAuth 2.1、JWT/JWKS 或 Token Introspection 中至少一种生产认证
-- 多 worker 全局限流、OpenTelemetry、审计导出和保留策略
+- OpenTelemetry 导出与更完整 MCP App 图库
 
 验收：
 

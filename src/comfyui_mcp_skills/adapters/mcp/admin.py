@@ -412,6 +412,50 @@ def create_admin_server(
                             open_world_hint=False,
                         ),
                     ),
+                    Tool(
+                        name="comfyui.admin.audit.export",
+                        description=(
+                            "Export a bounded, filterable slice of the durable admin audit "
+                            "trail in append order."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                "actor": {"type": "string", "maxLength": 128, "default": ""},
+                                "action": {"type": "string", "maxLength": 256, "default": ""},
+                                "outcomes": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "string",
+                                        "enum": ["intent", "success", "failure"],
+                                    },
+                                    "maxItems": 3,
+                                    "default": [],
+                                },
+                                "after": {
+                                    "type": "string",
+                                    "description": "UTC ISO-8601 lower bound (inclusive)",
+                                    "maxLength": 64,
+                                    "default": "",
+                                },
+                                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                                "cursor": {
+                                    "type": "string",
+                                    "description": "Opaque next-page cursor from a prior call",
+                                    "maxLength": 64,
+                                    "default": "",
+                                },
+                            },
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=True,
+                            destructive_hint=False,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
+                    ),
                     *phase_o_surface,
                 ]
                 if is_authorized(authorization.scopes, scopes_for_tool(tool.name))
@@ -574,6 +618,20 @@ def create_admin_server(
                 _validate_keys(arguments, {"request_id"})
                 request_id = _required_string(arguments, "request_id")
                 result = await anyio.to_thread.run_sync(lambda: admin.retry_audit(request_id))
+            elif params.name == "comfyui.admin.audit.export":
+                _validate_keys(
+                    arguments, {"actor", "action", "outcomes", "after", "limit", "cursor"}
+                )
+                result = await anyio.to_thread.run_sync(
+                    lambda: admin.export_audit(
+                        actor=_optional_string(arguments, "actor", ""),
+                        action=_optional_string(arguments, "action", ""),
+                        outcomes=arguments.get("outcomes"),
+                        after=_optional_string(arguments, "after", ""),
+                        limit=arguments.get("limit", 100),
+                        cursor=_optional_string(arguments, "cursor", ""),
+                    )
+                )
             elif params.name in PHASE_O_TOOL_NAMES:
                 if not is_authorized(authorization.scopes, scopes_for_tool(params.name)):
                     raise MCPError(code=INVALID_PARAMS, message="Tool unavailable")
@@ -892,6 +950,13 @@ def _optional_request_id(arguments: dict[str, Any], fallback: str) -> str:
     if "request_id" not in arguments:
         return fallback
     return _required_string(arguments, "request_id")
+
+
+def _optional_string(arguments: dict[str, Any], name: str, default: str) -> str:
+    value = arguments.get(name, default)
+    if not isinstance(value, str):
+        raise TypeError(f"{name} must be a string")
+    return value
 
 
 def _validate_keys(arguments: dict[str, Any], allowed: set[str]) -> None:

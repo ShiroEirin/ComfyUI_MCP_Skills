@@ -567,6 +567,7 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
             "comfyui.admin.workflow.delete",
             "comfyui.admin.audit.get",
             "comfyui.admin.audit.retry",
+            "comfyui.admin.audit.export",
         }
         assert all(tool.title for tool in listed.tools)
         assert all(tool.icons for tool in listed.tools)
@@ -607,6 +608,21 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
         )
         assert audit.structured_content["committed"] is True
         assert audit.structured_content["audit_status"] == "audited"
+        exported = await client.call_tool(
+            "comfyui.admin.audit.export",
+            {"actor": "stdio-admin", "action": "workflow.delete", "limit": 100},
+        )
+        assert exported.structured_content["count"] >= 2
+        assert all(
+            event["request_id"] == "delete-committed"
+            for event in exported.structured_content["events"]
+            if event["outcome"] == "success"
+        )
+        invalid = await client.call_tool(
+            "comfyui.admin.audit.export",
+            {"outcomes": ["bogus"]},
+        )
+        assert invalid.is_error is True
     assert not (tmp_path / "data" / "local" / "txt2img").exists()
 
 

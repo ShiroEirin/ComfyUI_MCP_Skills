@@ -75,6 +75,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.admin.workflow.delete": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.audit.get": frozenset({Scope.AUDIT}),
     "comfyui.admin.audit.retry": frozenset({Scope.AUDIT}),
+    "comfyui.admin.audit.export": frozenset({Scope.AUDIT}),
     "comfyui.admin.server.list": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.server.inspect": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.server.upsert": frozenset({Scope.CONFIGURE}),

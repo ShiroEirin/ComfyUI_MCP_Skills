@@ -34,6 +34,14 @@ class AdminAuditError(ComfyUISkillsError):
     code = "ADMIN_AUDIT_UNAVAILABLE"
 
 
+def _valid_utc_timestamp(value: str) -> bool:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None and parsed.utcoffset() is not None
+
+
 class JsonlAuditLog:
     """Append bounded administrative events as durable JSON lines."""
 
@@ -65,6 +73,58 @@ class JsonlAuditLog:
                     if event.get("request_id") == request_id:
                         events.append(event)
         return events
+
+    def export_events(
+        self,
+        *,
+        actor: str = "",
+        action: str = "",
+        outcomes: frozenset[str] = frozenset(),
+        after: str = "",
+        limit: int = 100,
+        cursor: int = 0,
+    ) -> tuple[list[dict[str, Any]], str]:
+        """Read a bounded, filtered slice of the append-only audit trail.
+
+        ``cursor`` is the line index of the last returned event (1-based);
+        pass it back to continue from the following line. Events are returned
+        in append order; a corrupt line raises instead of being silently
+        skipped because the audit trail must stay trustworthy.
+        """
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
+        if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
+            raise ValueError("cursor must be a non-negative integer")
+        if after and not _valid_utc_timestamp(after):
+            raise ValueError("after must be a UTC ISO-8601 timestamp")
+        if not self._path.exists():
+            return [], ""
+        events: list[dict[str, Any]] = []
+        with FileLock(f"{self._path}.lock", timeout=10):
+            with self._path.open("r", encoding="utf-8") as file:
+                for line_index, line in enumerate(file, start=1):
+                    if line_index <= cursor:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        raise ValueError(
+                            f"audit trail is corrupt at line {line_index}"
+                        ) from exc
+                    if not isinstance(event, dict):
+                        continue
+                    if actor and event.get("actor") != actor:
+                        continue
+                    if action and event.get("action") != action:
+                        continue
+                    if outcomes and event.get("outcome") not in outcomes:
+                        continue
+                    if after and str(event.get("timestamp", "")) < after:
+                        continue
+                    events.append(event)
+                    if len(events) >= limit:
+                        return events, str(line_index)
+        return events, ""
 
 
 class WorkflowAdmin:
@@ -187,6 +247,57 @@ class WorkflowAdmin:
                 self._synchronize_audit_status(transaction, append_pending=True)
                 return self._status_result(transaction)
         return self.get_audit_status(request_id)
+
+    def export_audit(
+        self,
+        *,
+        actor: str = "",
+        action: str = "",
+        outcomes: list[str] | None = None,
+        after: str = "",
+        limit: int = 100,
+        cursor: str = "",
+    ) -> dict[str, object]:
+        """Export a bounded, filterable slice of the durable admin audit trail."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            raise ValueError("limit must be an integer between 1 and 1000")
+        outcome_set = frozenset(outcomes or [])
+        for outcome in outcome_set:
+            if outcome not in {"intent", "success", "failure"}:
+                raise ValueError(f"outcome {outcome} is not recognized")
+        if after and not _valid_utc_timestamp(after):
+            raise ValueError("after must be a UTC ISO-8601 timestamp")
+        start = 0
+        if cursor:
+            try:
+                start = int(cursor)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("cursor is invalid") from exc
+            if start < 0:
+                raise ValueError("cursor must be non-negative")
+        try:
+            events, next_cursor = self._audit_log.export_events(
+                actor=actor,
+                action=action,
+                outcomes=outcome_set,
+                after=after,
+                limit=limit,
+                cursor=start,
+            )
+        except Exception as exc:
+            raise AdminAuditError("Administrative audit records could not be exported") from exc
+        return {
+            "events": events,
+            "count": len(events),
+            "limit": limit,
+            "next_cursor": next_cursor,
+            "filters": {
+                "actor": actor,
+                "action": action,
+                "outcomes": sorted(outcome_set),
+                "after": after,
+            },
+        }
 
     def _execute(
         self,

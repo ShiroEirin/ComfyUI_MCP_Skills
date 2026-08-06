@@ -293,6 +293,7 @@ retry plan 保留原参数快照，所有变化都出现在 diff 中。commit �
 - Dependency inspect、plan 和 install。
 - Approval 查询与 decision plan/commit。
 - Provisioning 查询、取消和 worker 恢复。
+- 审计导出：`comfyui.admin.audit.export` 按 actor/action/outcome/时间下界有界导出 append-only 审计轨迹（JSONL，追加序），`next_cursor` 分页；损坏行显式报错不静默跳过。
 
 供应链安全边界：
 

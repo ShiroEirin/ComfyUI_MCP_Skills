@@ -482,6 +482,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         RiskLevel.MEDIUM,
         ("audit", "recovery"),
     ),
+    CapabilitySpec(
+        "comfyui.admin.audit.export",
+        "Export the admin audit trail",
+        "Export a bounded, filterable slice of durable admin audit events in append order.",
+        frozenset({Toolset.ADMIN}),
+        frozenset({Scope.AUDIT}),
+        RiskLevel.LOW,
+        ("audit", "export", "trail"),
+    ),
     *tuple(
         CapabilitySpec(
             name,
