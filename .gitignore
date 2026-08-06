@@ -27,3 +27,9 @@ uploads/
 .snow/
 .DS_Store
 Thumbs.db
+
+# Local tooling and agent state
+.omp/
+.helloagents/
+.learnings/
+llmdoc/
