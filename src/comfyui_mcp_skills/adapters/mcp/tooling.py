@@ -26,6 +26,75 @@ from comfyui_mcp_skills.application.capabilities import CAPABILITY_BY_NAME, PROJ
 from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Job, Workflow
 
+UI_EXTENSION_ID = "io.modelcontextprotocol/ui"
+UI_MIME_TYPE = "text/html;profile=mcp-app"
+JOB_VIEWER_URI = "ui://comfyui/job.html"
+
+
+def client_supports_apps(ctx: Any) -> bool:
+    """Return True only when the client advertised the UI extension and app MIME."""
+    session = getattr(ctx, "session", None)
+    capabilities = getattr(session, "client_capabilities", None)
+    if capabilities is None:
+        return False
+    extensions = getattr(capabilities, "extensions", None)
+    if not isinstance(extensions, dict):
+        return False
+    settings = extensions.get(UI_EXTENSION_ID)
+    if not isinstance(settings, dict):
+        return False
+    mime_types = settings.get("mimeTypes")
+    return isinstance(mime_types, (list, tuple)) and UI_MIME_TYPE in mime_types
+
+
+def with_ui_metadata(tool: Tool) -> Tool:
+    """Attach the Job viewer app reference to a tool's metadata."""
+    return tool.model_copy(
+        update={"meta": {**(tool.meta or {}), "ui": {"resourceUri": JOB_VIEWER_URI}}}
+    )
+
+
+def job_viewer_html() -> str:
+    """Static, dependency-free Job status viewer served with the app MIME type."""
+    return """<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ComfyUI Job 状态</title>
+<style>
+  body{font-family:system-ui,sans-serif;max-width:720px;margin:2rem auto;
+       padding:0 1rem;color:#1f2933}
+  h1{font-size:1.25rem}
+  input{width:100%;box-sizing:border-box;padding:.5rem;font-family:monospace}
+  button{margin-top:.5rem;padding:.5rem 1rem}
+  pre{background:#f5f7fa;padding:1rem;overflow:auto;border-radius:6px;font-size:.8rem}
+</style>
+</head>
+<body>
+<h1>ComfyUI Job 状态查看</h1>
+<p>输入持久化 Job ID（或 ComfyUI prompt_id），读取 <code>comfyui://jobs/...</code> 资源。</p>
+<input id="job" placeholder="job_... 或 prompt_id" autocomplete="off">
+<button id="load">读取</button>
+<pre id="out">等待输入…</pre>
+<script>
+const out = document.getElementById("out");
+document.getElementById("load").addEventListener("click", async () => {
+  const id = document.getElementById("job").value.trim();
+  if (!id) return;
+  out.textContent = "请求资源 " + id + " …";
+  try {
+    const result = await client.readResource({uri: "comfyui://jobs/" + encodeURIComponent(id)});
+    out.textContent = JSON.stringify(result, null, 2);
+  } catch (error) {
+    out.textContent = "读取失败: " + (error && error.message ? error.message : String(error));
+  }
+});
+</script>
+</body>
+</html>
+"""
+
+
 JOB_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "object",
@@ -1430,6 +1499,29 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
+        Tool(
+            name="comfyui.runtime.restart.commit",
+            description=(
+                "Execute a planned host restart through the configured controller "
+                "using the plan digest from comfyui.runtime.restart.plan."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": server_identifier,
+                    "plan_digest": public_identifier,
+                },
+                "required": ["server_id", "plan_digest"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=True,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
     ]
     if not include_phase_p:
         phase_p_names = {
@@ -1437,6 +1529,7 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             "comfyui.queue.clear",
             "comfyui.server.interrupt",
             "comfyui.runtime.restart.plan",
+            "comfyui.runtime.restart.commit",
         }
         tools = [tool for tool in tools if tool.name not in phase_p_names]
     return [decorate_tool(tool) for tool in tools]

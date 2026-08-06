@@ -1,9 +1,9 @@
 # ComfyUI MCP Skills：Agent 原生超级控制平面设计与开发路线
 
-> 状态：G0–G6、H–J、L–O 纵向切片已验收；K、P、Q 与 J 的扩展编辑范围待实施
-> 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 本地工作区
+> 状态：G0–G6、H–Q 已完成当前定义的后端纵向切片；高级宿主集成仍有明确边界
+> 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 Beta
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
-> 更新日期：2026-08-03
+> 更新日期：2026-08-05
 
 ## 目录
 
@@ -45,7 +45,7 @@ MCP 完整能力
   + CLI 难以表达的图、资产与执行智能
 ```
 
-当前实现已经完成 G0–G6、H–J、L–O：可靠执行与观察内核、语义导入和图级变更、资产血缘、Experiment、结构化诊断，以及服务器/配置/依赖供应链闭环。阶段 K 的高级 Policy 与多服务器路由、阶段 P 的高级运行时控制、阶段 Q 的生产级宿主适配仍未完成，因此尚不能宣称达到最终“超级控制平面”产品形态。
+当前实现已经完成 G0–G6 与 H–Q 的当前后端纵向切片：可靠执行与观察内核、语义导入和边界化图级变更、资产血缘、Experiment、结构化诊断、服务器/配置/依赖供应链、多服务器路由、显式运行时控制（含可选 systemd 重启控制器）、静态 Bearer Token 与 RFC 7662 Token Introspection、基于 SQLite 的同主机多 worker 共享限流，以及 MCP Apps 只读 Job 查看器。仍未交付的是完整 recipe/subgraph 高层编辑、Docker/Windows Service RuntimeController、多副本 SubscriptionBus、跨主机租约、MCP Tasks、Elicitation 和完整 App 图库；因此“超级控制平面”定位已具备主体能力，但不能把这些宿主与多副本扩展描述为现有功能。
 
 后续开发不能再以“一条 CLI 命令对应一个 MCP Tool”为主线，也不能把 CLI 没有的能力视为非必要范围。应从 Agent 完成目标所需的信息、决策和闭环出发设计能力。
 
@@ -115,21 +115,16 @@ flowchart LR
 
 如果需要管理 ComfyUI 进程，应增加可选 `RuntimeController` 端口，并按部署方式实现 Docker、systemd、Windows Service 等适配器。默认实现只报告 `restart_required`，不执行宿主机命令。
 
-### 2.6 实施就绪门禁
+### 2.6 实施状态说明
 
-本文可以作为产品蓝图、目标架构和最终验收母规范，但在阶段 G0 验收前不能作为开发 Agent 的唯一实施依据，也不得直接下达“实现阶段 G”这一宽泛任务。
+本文同时承担产品蓝图、目标架构和当前实现记录。阅读第 3 章和第 4 章时，必须区分：
 
-正式功能开发必须先冻结并验证五项前置决策：
+1. **默认执行面**：新项目即可使用的 execution Toolset。
+2. **显式授权面**：配置 Toolset、Scope 和高风险开关后才会出现在 `tools/list` 的能力。
+3. **SQLite 切换面**：对应 aggregate 完成生产 cutover 后才启用 Revision、Artifact、Plan、Experiment、诊断、路由和工作流语义/编辑等持久化闭环；独立 Admin 的 Provisioning 不依赖该 cutover，但需要来源白名单和受信任 catalog。
+4. **未交付面**：代码、测试或路线图尚未提供的功能，不得按已实现能力使用。
 
-1. 规范领域 ID、canonical Resource URI 和旧 URI 只读别名。
-2. SQLite/PostgreSQL 共用的 `ControlPlaneUnitOfWork` 与 Outbox 事务边界。
-3. 项目级 Workflow、不可变 Revision 和服务器 Deployment 的归属关系。
-4. HTTP 各固定 Toolset 与 stdio 的主体、scope 来源和高风险启用规则。
-5. 原子文件仓库到数据库的备份、事务导入、一致性校验和单一事实源切换。
-
-门禁通过的证据必须包含：评审通过的领域 schema、可执行迁移演练、事务失败注入测试、旧 URI 兼容读取，以及由隔离 contract harness 验证的最小 Revision → Plan → Job 模型。G0 不切换生产 Workflow 或执行链；真实数据回填和真实执行分别由 G3、G4 验收。任何一项未通过，文档状态保持“实施前置决策待完成”。
-
-截至 2026-07-30，G0 门禁已通过：规范 ID/canonical URI 与旧 URI alias、SQLite `ControlPlaneUnitOfWork`/Outbox 边界、Workflow/Revision/Deployment 归属、HTTP/stdio 主体与 scope 契约、文件事实源 Manifest/备份/隔离迁移演练，以及最小 Revision → Deployment → Plan → Job contract harness 均已有可执行证据。生产 Workflow Repository、Job/Asset 事实源与真实执行链仍未切换，分别留待 G1、G3、G4。
+G0 的 schema、Unit of Work、Manifest、备份和 contract harness 证据已完成；这不等于全新项目已经完成 G1/G3/G4 的生产数据切换。`comfyui-mcp-migration-dry-run` 仍是只读演练；生产切换由 `comfyui-mcp-migrate` 在显式确认短语与冻结备份下执行，并在部分失败时如实报告已切换组与恢复证据。
 
 ---
 
@@ -137,119 +132,69 @@ flowchart LR
 
 ### 3.1 默认执行 MCP
 
-固定工具：
+默认 stdio 身份为 `local-stdio`，Toolset 为 `execution`，Scope 为 `comfyui:execute`。它提供基础执行、资产上传、Job 查询/取消，以及当前已完成切片中不依赖未切换 aggregate 的执行能力。服务器健康、节点与模型查询属于显式授权的 Operations 面。
 
-| Tool | 当前能力 |
-|---|---|
-| `comfyui.asset.upload` | 从授权目录上传图像、蒙版、音频或视频 |
-| `comfyui.job.get` | 按 `server_id + prompt_id` 查询当前主体作业 |
-| `comfyui.job.cancel` | 取消当前主体拥有的排队作业 |
-| `comfyui.server.list` | 列出已启用服务器，不泄露凭据和私有 URL |
-| `comfyui.server.health` | 查询健康状态和运行设备信息 |
-| `comfyui.node.list` | 分页搜索节点 |
-| `comfyui.node.describe` | 获取节点完整定义 |
-| `comfyui.model.list` | 列出模型目录或分页搜索模型 |
-
-动态工具：
+动态工作流工具：
 
 ```text
 comfyui.run.<server>.<workflow>
 ```
 
-动态工作流工具支持结构化参数、幂等键、最长 300 秒单次等待、进度通知和持久化 Job。
+每个已启用工作流参与动态目录。单个端点默认投影排序后的前 8 个动态工具；`COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 可在 1–128 范围内调整预算。该配置只扩展已授权动态工作流数量，不改变 Toolset、Scope 或 aggregate cutover 边界。
 
-### 3.2 当前 Resources
+### 3.2 显式授权面
 
-```text
-comfyui://workflows/{server_id}/{workflow_id}
-comfyui://assets/{server_id}/{asset_id}
-comfyui://jobs/{server_id}/{prompt_id}
-comfyui://outputs/{server_id}/{prompt_id}/{index}  # 旧版输出 URI
-```
+| Toolset | 配置要求 | 能力范围 |
+|---|---|---|
+| `execution` | 默认 `comfyui:execute` | 执行、Job、Asset、Experiment、Routing |
+| `authoring` | `comfyui:observe,comfyui:author` + 高风险开关 | Workflow、Revision、diff、依赖检查 |
+| `operations` | `comfyui:observe,comfyui:operate` + 高风险开关 | Server、Queue、Log、Runtime |
+| `admin` | `comfyui:configure,comfyui:provision,comfyui:audit` + 独立 Admin | 配置、供应、审批、审计 |
 
-`comfyui://outputs/...` 已经是外部可见句柄，迁移时不得直接失效。目标模型以 Artifact 为规范名称，旧 URI 只保留兼容解析，详见第 6 章。
+授权不等于存储切换。没有对应 SQLite cutover 时，工具可能不出现在工具面，或明确返回 backend unavailable。
 
-### 3.3 当前 Admin MCP
+### 3.3 当前 Resources
 
-| Tool | 当前能力 |
-|---|---|
-| `comfyui.admin.workflow.set_enabled` | 启用或停用工作流 |
-| `comfyui.admin.workflow.delete` | 精确确认后永久删除工作流 |
-| `comfyui.admin.audit.get` | 查询管理操作审计状态 |
-| `comfyui.admin.audit.retry` | 只重试待完成的审计写入 |
+Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级对象的可读性仍受其 aggregate cutover 与 owner scope 约束。
 
-### 3.4 当前权限限制
+### 3.4 Streamable HTTP
 
-Streamable HTTP 当前只接受静态 Bearer Token，且只允许：
-
-```text
-comfyui:execute
-```
-
-因此现有 HTTP 服务没有表达观察、运维、配置和供应链权限的能力。
+当前支持静态 Bearer Token 和 RFC 7662 Token Introspection；HTTP 当前只接受 `execution` 或 `operations` Toolset，`authoring` 与 `admin` 仅允许隔离的本地服务。远程部署仍必须显式配置 Host、Origin、Public URL 和认证参数。
 
 ---
 
 ## 4. CLI 到 MCP 能力矩阵
 
-### 4.1 已等价迁移
+### 4.1 已实现但不一定默认可见
 
-| CLI | MCP | 结论 |
-|---|---|---|
-| `list` | `tools/list`、`resources/list` | 已替代 |
-| `info` | 动态 Tool `inputSchema`、workflow Resource | 已替代 |
-| `run` | 动态 `comfyui.run.*`，`wait=true` | 已替代 |
-| `submit` | 动态 `comfyui.run.*`，`wait=false` | 已替代 |
-| `status` | `comfyui.job.get` | 已替代 |
-| `upload` | `comfyui.asset.upload` | 已替代 |
-| `cancel` | `comfyui.job.cancel` | 部分替代，仅支持安全的排队取消 |
-| `server list` | `comfyui.server.list` | 已替代 |
-| `server status/stats` | `comfyui.server.health` | 已替代 |
-| `nodes list/search` | `comfyui.node.list` | 已合并 |
-| `nodes info` | `comfyui.node.describe` | 已替代 |
-| `models list` | `comfyui.model.list` | 已替代 |
-| `workflow enable/disable` | Admin `workflow.set_enabled` | 已替代 |
-| `workflow delete` | Admin `workflow.delete` | 已替代且更安全 |
+下表表示代码中已有实现，不表示新项目默认已经切换或每个 Agent 都能看到：
 
-### 4.2 尚未迁移
+| 能力 | 实现条件 |
+|---|---|
+| Job list、Queue、Log、Template、Subgraph | Operations Toolset，且相关后端能力可用 |
+| Workflow describe、Revision、diff、依赖检查 | Authoring Toolset + G3 Workflow SQLite cutover |
+| Asset/Artifact/Lineage | Execution Toolset + G1 Asset/Job 与相关 Artifact cutover |
+| Plan、Route、Experiment、Diagnostic、Retry | Execution Toolset + 对应 SQLite aggregate cutover |
+| Server/Config/Dependency/Provisioning | 独立 Admin + 配置、来源白名单和依赖 catalog |
+| Runtime queue/remove/clear/interrupt/restart plan + commit | Operations Toolset；restart commit 需要配置的 RuntimeController（systemd 已内置） |
 
-| CLI 能力 | 当前状态 | 缺失影响 | 优先级 |
-|---|---|---|---|
-| `history list` | 无 Job 列表工具 | Agent 必须预先知道 `prompt_id` | P0 |
-| `history show` | 已知 Job 可查 | 缺少跨本地记录与服务器历史的统一读取 | P1 |
-| `queue list` | 无 | 无法判断拥塞和排队顺序 | P0 |
-| `queue delete` | 仅能取消自有单任务 | 无批量、管理员和跨主体管理 | P1 |
-| `queue clear` | 无 | 无法执行受控队列清理 | P1 |
-| `logs show` | 无 | 无法诊断节点加载和运行异常 | P0 |
-| `free` | 无 | 无法卸载模型或释放显存 | P0 |
-| `templates list` | 无 | 无法发现可复用模板 | P1 |
-| `templates subgraphs` | 无 | 无法发现服务器子图 | P1 |
-| `workflow import` | 无 | 无法通过 MCP 接入新工作流 | P0 |
-| Editor → API 转换 | 无 | Agent 必须在 MCP 外预处理工作流 | P0 |
-| 自动生成参数 schema | 无 | 新工作流无法自动成为动态 Tool | P0 |
-| 废弃节点检查 | 无 | 导入后可能直接运行失败 | P1 |
-| `deps check` | 无 | 无法在运行前判断工作流是否就绪 | P0 |
-| `deps install` | 无 | 无法安装缺失节点和模型 | P2 |
-| `server add` | 无 | 无法注册新 ComfyUI 实例 | P1 |
-| `server enable/disable` | 无 | 无法维护服务器可用集合 | P1 |
-| `server remove` | 无 | 无法移除失效配置 | P1 |
-| 默认服务器设置 | 无 | 无法完整维护配置 | P2 |
-| `config export` | 无 | 无法生成可迁移配置包 | P2 |
-| `config import` | 无 | 无法批量恢复环境 | P2 |
-| Manager 安装队列状态 | 无 | 依赖安装不可恢复查询 | P2 |
+### 4.2 尚未交付
 
-### 4.3 CLI 只作为最低兼容基线
+以下不是当前可用功能：
 
-CLI 能力必须迁移，但优先级不能只按旧命令数量排序。每项工作都要判断它属于哪一层：
+| 能力 | 状态 |
+|---|---|
+| Redis/NATS 多副本订阅与事件 fan-out | 未交付 |
+| 跨主机共享租约与全局配额（同主机 SQLite 共享限流已可用） | 未交付 |
+| MCP Tasks 扩展映射 | 未交付 |
+| MCP Elicitation 审批 | 未交付 |
+| MCP App 完整界面 | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
+| Docker、Windows Service RuntimeController（systemd 已内置） | 未交付 |
+| 完整 recipe/subgraph 高层图编辑 | 未交付 |
 
-| 层级 | 定义 | 示例 |
-|---|---|---|
-| L0 协议替代 | 消除 Shell、字符串 JSON 和退出码 | 结构化 run、Job、Resource |
-| L1 功能超集 | 覆盖 CLI 全部有效能力 | workflow import、queue、logs、free |
-| L2 Agent 增强 | 让 Agent 直接操作领域对象 | graph patch、revision、lineage、plan |
-| L3 自治控制 | 在策略内完成规划、执行、诊断和恢复 | routing、batch、remediation、approval |
+旧 CLI 尚未迁移的条目保留在后续路线中，不能按当前 MCP Tool 使用。
 
-只有达到 L2，MCP 才不是 CLI 重写；达到 L3，才是 Agent 原生超级控制平面。
+---
 
 ### 4.4 超越 CLI 的能力地图
 
@@ -872,7 +817,7 @@ POLICY_DENIED
 
 | 部署 Toolset | 主要工具 | 单端点活动面目标 |
 |---|---|---|
-| Execute | `workflow.execute`、动态 run、Job、Asset、Execution Plan | 8–16 个固定工具；小目录可附最多 8 个动态工作流 |
+| Execute | `workflow.execute`、动态 run、Job、Asset、Execution Plan | 8–16 个固定工具；动态工作流默认 8 个，可配置 1–128 |
 | Observe/Ops | Queue、Log、Diagnostic、Runtime | 8–14 个 |
 | Authoring | Workflow、Graph、Revision、Template | 8–16 个 |
 | Admin/Provision | Server、Config、Dependency、Policy、Audit | 8–16 个 |
@@ -972,7 +917,7 @@ Resource 设计规则：
 - Job、Experiment、Provisioning 和 Revision 通过 `subscriptions/listen` 发更新提示；通知只使缓存失效，不承载历史。
 - 输出媒体使用 Resource Link；必要时可提供受鉴权、短 TTL 的 HTTPS 下载 URI，不内联到普通 JSON 结果。
 
-`resources/templates/list` 至少声明 Workflow、Revision、Deployment、Plan、Job、Experiment、Variant、Asset、Artifact、Diagnostic、Provisioning、Approval 和 Event URI 模式。当前实现已经声明服务器绑定的旧 Workflow、Asset、Job 和 Output 模式；G1–G4 按对象切换顺序增加 canonical 模板与只读别名，后续阶段随领域对象交付同步增加模板，不能等阶段 Q 一次补齐。
+`resources/templates/list` 已按可用后端和授权范围声明 canonical Workflow、Revision、Deployment、Asset、Job、Artifact/Lineage、Experiment、Diagnostic 等模板及旧只读别名；独立 Admin 还声明 Server、Config、Dependency、Approval 和 Provisioning 模板。Plan、Policy、Event 等仍属于目标 URI，不能按当前已投影模板使用。
 
 以下数据仍适合 Tool 查询，而不是静态 Resource 列表：
 
@@ -1026,14 +971,14 @@ flowchart TD
 | Operations MCP | 显式开启 | `observe`、`operate` | Queue、Log、Diagnostic、Runtime |
 | Admin/Provisioning MCP | 默认关闭 | `configure`、`provision`、`audit` | Server、Dependency、Policy、Approval |
 
-Agent 要完整管理时可以同时注册四个端点。远程部署必须分离高风险端口和 Token；`tools/list` 可按每次请求的授权 scope 过滤，但不能按连接历史变化，Tool 调用和 Resource 读取仍需再次授权。
+Agent 要完整管理时可同时注册多个隔离端点。当前 Streamable HTTP 只允许 Execution 与 Operations；Authoring 和 Admin/Provisioning 必须使用隔离的本地服务。远程端点必须分离高风险端口和 Token；`tools/list` 可按每次请求的授权 scope 过滤，但 Tool 调用和 Resource 读取仍需再次授权。
 
 ### 7.3 HTTP 与 stdio 身份契约
 
-HTTP 端点和 stdio 必须在进程启动时固定 Toolset，不能通过 Tool 调用、连接历史或运行时 profile 改变。Authoring Token 不隐含也不要求 `execute`；scope 之间默认没有继承关系。
+HTTP 端点和 stdio 必须在进程启动时固定 Toolset，不能通过 Tool 调用、连接历史或运行时 profile 改变。scope 之间默认没有继承关系。
 
-- 每个 HTTP Toolset 使用独立 app/server factory。认证层验证 Token 和主体；端点声明允许进入的 scope 集，Tool handler、Resource handler 和订阅过滤器再按同一中央授权矩阵检查具体能力。
-- Execution 端点接受 `execute`；Authoring 接受 `author`；Operations 接受 `observe` 或 `operate`；Admin/Provisioning 接受 `configure`、`provision` 或 `audit`。SDK 外层若只能表达“全部 required scopes”，由项目认证中间件实现 any-of 端点准入，不能强迫无关 scope 组合。
+- HTTP Execution 端点接受 `execute`；Operations 接受 `observe` 或 `operate`。HTTP factory 明确拒绝 Authoring 与 Admin。
+- 本地 stdio 可显式配置 Execution、Authoring 或 Operations；Admin 使用独立 `comfyui-mcp-admin` 进程。高风险能力还需对应 enable 开关。
 - Resource 与 `subscriptions/listen` 使用创建/读取目标对象所需的同一 scope 和 `principal_id` 所有权规则；订阅不能绕过 Toolset 边界。
 - stdio 在启动时读取固定的 `COMFYUI_MCP_PRINCIPAL_ID`、`COMFYUI_MCP_SCOPES` 和 `COMFYUI_MCP_TOOLSET`。未配置时只允许兼容的本地 Execution Toolset，主体为 `local-stdio`，scope 仅为 `comfyui:execute`。
 - stdio 的 Authoring、Operations、Admin/Provisioning 必须显式配置主体、scope、Toolset，并设置独立高风险 enable 开关；不能因“本地进程”自动获得管理员权限。
@@ -1048,61 +993,24 @@ HTTP 端点和 stdio 必须在进程启动时固定 Toolset，不能通过 Tool 
 ### 8.1 当前依赖关系
 
 ```text
-MCP Adapter
-  ├─ WorkflowCatalog
-  ├─ ExecutionService
-  ├─ JobService
-  ├─ AssetService
-  ├─ DiscoveryService
-  └─ WorkflowAdmin
-       ↓
-Repositories / ComfyUIGateway
-       ↓
-ComfyUI HTTP / WebSocket / Local Files
-```
-
-### 8.2 目标依赖关系
-
-```text
 MCP Adapters
-  ├─ Execution / Experiment
-  ├─ Authoring / Graph
-  ├─ Observe / Operations
-  └─ Admin / Provisioning
+  ├─ Execution / Experiment / Routing
+  ├─ Authoring / Workflow inspection and change
+  ├─ Observe / Operations / Diagnostic / Retry
+  └─ Admin / Provisioning / Approval / Audit
        ↓
 Application Services
-  ├─ WorkflowImportService
-  ├─ WorkflowGraphService
-  ├─ WorkflowRevisionService
-  ├─ WorkflowValidationService
-  ├─ ExecutionPlanningService
-  ├─ RoutingService
-  ├─ ExperimentService
-  ├─ JobService / DiagnosticService
-  ├─ AssetService / LineageService
-  ├─ DependencyService / ProvisioningService
-  ├─ QueueService / RuntimeMaintenanceService
-  ├─ TemplateService / LogService
-  ├─ ServerAdministrationService
-  ├─ ConfigurationTransferService
-  ├─ PolicyService / ApprovalService
-  ├─ OperationOrchestrator
-  └─ AuditService
        ↓
 Domain Ports
-  ├─ ComfyUIGateway / ComfyUIManagerGateway
-  ├─ WorkflowRepository / RevisionRepository / DeploymentRepository
-  ├─ PlanRepository / JobRepository / ExperimentRepository
-  ├─ AssetRepository / ArtifactRepository / LineageRepository
-  ├─ ProvisioningRepository / TransferRepository
-  ├─ EventRepository / WorkItemRepository / WorkLeaseRepository
-  ├─ PolicyRepository / ApprovalRepository / AuditRepository
-  ├─ ServerConfigRepository / SecretProvider
-  ├─ ControlPlaneUnitOfWork / OutboxRepository
-  └─ RuntimeController（可选）
        ↓
-Infrastructure Adapters
+SQLite or compatibility file repositories
+ComfyUI HTTP / WebSocket / Manager gateways
+OperationOrchestrator / SubscriptionBus
 ```
+
+当前装配已经覆盖 Planning、Routing、Experiment、Workflow inspection/change、Diagnostic/Retry、Orchestrator、同主机多 worker 的 SQLite 共享限流，以及可选 systemd RuntimeController；是否实例化由 Toolset、Scope、后端 cutover、配置绑定与可选 gateway 决定。共享多副本事件总线和跨主机租约仍未交付。
+
+### 8.2 依赖方向
 
 依赖方向始终是 Adapter → Application → Domain Port → Infrastructure。Graph、Plan、Policy 和 Revision 不得依赖 MCP 类型或 ComfyUI HTTP 响应格式。
 
@@ -1601,7 +1509,7 @@ Published Revision + arguments + Asset URI
 - 节点增删替换、subgraph 与高层 recipe 必须在最小闭环稳定后分批加入，不属于阶段 J 首次验收。
 
 ### 阶段 K：高级 Policy 与多服务器路由（P1）
-> 实施状态：待实施。当前只有 G4 单服务器最小 Plan，以及 O 阶段的供应链 Policy/Approval；尚无多 Deployment 自动路由、通用 `execution.plan/commit` 或 `route.explain`。
+> 实施状态：2026-08-05 已完成当前切片。已交付多 Deployment 候选解析、确定性路由、Policy evaluate、`execution.plan/commit`、`route.explain`、摘要绑定幂等提交、调用方锁定 Server、槽位与 submission window 约束；高级历史耗时估计仍保持显式不可用，不伪造样本。
 
 
 阶段 G4 已交付单服务器最小 `ExecutionPlanningService`，并保证切换后的新 Job 具有非空 `plan_id`。本阶段只扩展计划能力，不再次迁移 Job 基本形态；`legacy_migrated=true` 的历史兼容记录继续保持可解释的可空绑定。
@@ -1732,7 +1640,7 @@ Published Revision + arguments + Asset URI
 - SSRF、恶意重定向、浮动 Git 来源、超大模型和未知校验和都有拒绝策略。
 
 ### 阶段 P：高级运行时控制与宿主适配器（P2）
-> 实施状态：待实施。
+> 实施状态：2026-08-06 已完成当前切片。已交付 owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界，以及按服务器配置的可选 systemd `RuntimeController` 与 `runtime.restart.commit`；Docker 与 Windows Service 适配器尚未内置，无控制器时只返回操作要求。
 
 
 交付：
@@ -1752,7 +1660,7 @@ Published Revision + arguments + Asset URI
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）
-> 实施状态：待实施。
+> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流与 MCP Apps 只读 Job 查看器；Redis/NATS 多副本总线、跨主机租约、MCP Tasks、Elicitation 和 OpenTelemetry 仍未交付。
 
 
 交付：
@@ -2055,26 +1963,9 @@ not_started | in_progress | implemented | verified | deferred
 
 最大工程风险不是代码量，而是同时推进过多领域对象。第一阶段严格按 G0–G5 证明身份、迁移、Revision/Deployment、最小 Plan 和一个真实恢复 work type；Experiment、跨服务器和 Provisioning 后置。
 
-### 14.6 新功能前的热点模块预拆分
+### 14.6 热点模块拆分状态
 
-当前 `src/comfyui_mcp_skills/adapters/http/server.py` 为 538 行，`src/comfyui_mcp_skills/infrastructure/comfyui/client.py` 为 576 行。阶段 G2/H/O 增加认证、Toolset、Manager、Queue、Userdata 和 Jobs API 前，先按现有行为测试做无功能变化拆分：
-
-```text
-adapters/http/
-  auth.py
-  limits.py
-  uploads.py
-  app.py
-
-infrastructure/comfyui/
-  core_client.py
-  jobs_client.py
-  userdata_client.py
-  manager_client.py
-  capabilities.py
-```
-
-拆分必须保持公共 Gateway 端口稳定、迁移全部调用方，并通过现有 HTTP/Client 契约测试；不得保留双实现或兼容转发层。后续单文件不得再次同时承担认证、传输、能力探测和业务路由。
+HTTP 与 ComfyUI Client 热点拆分已经完成：`adapters/http/server.py` 仅保留兼容 facade，认证、限流、上传和 app factory 分属独立模块；`infrastructure/comfyui/client.py` 组合 `core_client`、`jobs_client`、`userdata_client`、`manager_client` 与 `capabilities`。后续不得把认证、传输、能力探测和业务路由重新集中到单一模块。
 
 ---
 
@@ -2432,7 +2323,7 @@ Agent 不应在对话中记住：
 
 - 默认活动固定 Tool 不超过 16 个。
 - 单个 Toolset 端点不超过 20 个固定 Tool。
-- 默认动态工作流 Tool 不超过 8 个。
+- 默认动态工作流 Tool 不超过 8 个；大上下文部署可显式提高到 128 个。
 - 列表默认最多 50 项，并提供 cursor。
 - 普通生成中位调用数不超过 4。
 - 图级修改中位调用数不超过 7。

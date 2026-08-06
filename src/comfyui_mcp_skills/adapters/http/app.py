@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.auth.settings import AuthSettings
@@ -28,12 +29,41 @@ from comfyui_mcp_skills.application.authorization import (
     Toolset,
     admitted_scopes,
 )
+from comfyui_mcp_skills.application.runtime_control import RuntimeController
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.shared_limits import (
+    SharedLimitStore,
+    SharedLimitsUnavailable,
+)
 from comfyui_mcp_skills.infrastructure.comfyui.manager_gateway import SafeManagerGateway
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     create_repository_bundle,
 )
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_routing import SQLiteRoutingRepository
+from comfyui_mcp_skills.infrastructure.runtime.systemd import controller_from_config
+
+
+def _runtime_controller_provider(
+    base_dir: Path,
+) -> Callable[[str], RuntimeController | None] | None:
+    """Resolve one controller per server from config.json runtime bindings."""
+    registry = ServerRegistry(base_dir)
+    controllers: dict[str, RuntimeController] = {}
+    try:
+        for server in registry.list():
+            connection = registry.connection(server.server_id)
+            controller = controller_from_config(connection)
+            if controller is not None:
+                controllers[server.server_id] = controller
+    except Exception:
+        return None
+    if not controllers:
+        return None
+
+    def provider(server_id: str) -> RuntimeController | None:
+        return controllers.get(server_id)
+
+    return provider
 
 
 def create_http_app(
@@ -51,6 +81,7 @@ def create_http_app(
     max_concurrent_requests: int = 32,
     max_subscription_streams: int = 8,
     max_subscriptions_per_principal: int = 2,
+    max_dynamic_tools: int = 8,
     public_mcp_url: str | None = None,
     auth_mode: str = "static",
     introspection_url: str = "",
@@ -62,8 +93,14 @@ def create_http_app(
     manager_server_origins: list[str] | None = None,
     toolset: str = "execution",
     enable_high_risk: bool = False,
+    limit_mode: str = "process",
+    shared_limit_store: SharedLimitStore | None = None,
 ):
     """Build the remote MCP app; remote mode refuses anonymous operation."""
+    if limit_mode not in {"process", "external"}:
+        raise ValueError("limit_mode must be process or external")
+    if limit_mode == "external" and shared_limit_store is None:
+        raise SharedLimitsUnavailable("external limit mode requires a shared limit store")
     try:
         selected_toolset = Toolset(toolset)
     except ValueError as exc:
@@ -133,6 +170,8 @@ def create_http_app(
             allowed_server_origins=set(manager_server_origins or []),
         ),
         owner_provider=current_owner,
+        max_dynamic_tools=max_dynamic_tools,
+        runtime_controller_provider=_runtime_controller_provider(base_dir),
     )
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
@@ -181,5 +220,7 @@ def create_http_app(
         bearer_principals={
             token: principal_id for token, (principal_id, _scopes) in normalized_tokens.items()
         },
+        limit_mode=limit_mode,
+        shared_limit_store=shared_limit_store,
     )
     return app

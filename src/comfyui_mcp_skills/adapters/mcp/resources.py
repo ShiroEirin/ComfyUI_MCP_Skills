@@ -28,11 +28,14 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills.adapters.mcp.tooling import (
+    JOB_VIEWER_URI,
+    UI_MIME_TYPE,
     current_owner,
     current_scopes,
     diagnostic_report_dict,
     experiment_dict,
     job_dict,
+    job_viewer_html,
     repair_plan_dict,
     variant_dict,
 )
@@ -347,13 +350,22 @@ def create_resource_handlers(
         )
         resources = [
             Resource(
-                uri=f"comfyui://workflows/{workflow.server_id}/{workflow.workflow_id}",
-                name=f"{workflow.server_id}/{workflow.workflow_id}",
-                title=f"Workflow {workflow.workflow_id}",
-                description=workflow.description,
-                mime_type="application/json",
-            )
-            for workflow in enabled_workflows()
+                uri=JOB_VIEWER_URI,
+                name="ComfyUI Job viewer",
+                title="ComfyUI Job 状态查看器",
+                description="Read-only Job status app bound to comfyui.job.get",
+                mime_type=UI_MIME_TYPE,
+            ),
+            *[
+                Resource(
+                    uri=f"comfyui://workflows/{workflow.server_id}/{workflow.workflow_id}",
+                    name=f"{workflow.server_id}/{workflow.workflow_id}",
+                    title=f"Workflow {workflow.workflow_id}",
+                    description=workflow.description,
+                    mime_type="application/json",
+                )
+                for workflow in enabled_workflows()
+            ],
         ]
         if asset_library is not None and _resource_scope_allowed(
             "asset", required=require_authorization, authorization=authorization
@@ -398,6 +410,16 @@ def create_resource_handlers(
         ctx: ServerRequestContext[dict[str, object]],
         params: ReadResourceRequestParams,
     ) -> ReadResourceResult:
+        if params.uri == JOB_VIEWER_URI:
+            return ReadResourceResult(
+                contents=[
+                    TextResourceContents(
+                        uri=JOB_VIEWER_URI,
+                        mime_type=UI_MIME_TYPE,
+                        text=job_viewer_html(),
+                    )
+                ]
+            )
         try:
             return await _read_resource(
                 ctx,

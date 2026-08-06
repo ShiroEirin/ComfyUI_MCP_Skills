@@ -1,51 +1,151 @@
 # ComfyUI MCP Skills
 
-面向 AI Agent 的 ComfyUI MCP 服务。基于 MCP `2026-07-28` 和 MCP Python SDK v2，同时保留原有 CLI 兼容入口。
+**让 AI Agent 以原生 MCP 工具安全地理解、执行和管理 ComfyUI。**
 
-## 能力
+ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影为结构化 MCP Tools、Resources 与 Prompts。Agent 无需拼接 Shell 命令，也无需直接修改工作流 JSON，即可完成工作流发现、参数校验、执行、结果复用、诊断、实验和受控运维。
 
-- 每个启用的工作流动态生成带 JSON Schema 的 MCP Tool；目录变化后发送 `notifications/tools/list_changed` 和 `notifications/resources/list_changed`。
-- 固定工具覆盖资产上传、作业查询/取消/分页、队列、脱敏日志、可选 API 能力矩阵、模板、子图摘要和经过影响预览的运行时控制。
-- MCP Resources 同时提供旧服务器绑定 URI 与 Workflow、Revision、Deployment、Asset、Job、Artifact canonical URI；MCP Prompts 提供有界的作业操作、失败诊断和依赖观察流程。
-- Phase I–L 提供损失感知工作流导入、不可变 Revision、actor-bound 变更、owner-aware 多服务器路由，以及持久化 Asset/Artifact 管理与传输。
-- Phase M–Q 提供 Experiment、确定性诊断与修复、配置和供应编排、运行时控制、OAuth introspection 及 owner-bound 生产加固。
-- 支持 stdio，以及采用静态 Bearer Token 或受众绑定 RFC 7662 Token Introspection 的 Streamable HTTP。
-- 上传、路径、下载大小、Host、Origin、请求体、并发和速率均受边界校验。
-- 危险的工作流修改与删除位于独立、默认关闭的管理进程。
-- 版本 `1.1.x` 的产品成熟度为 Beta；协议目标为 MCP `2026-07-28`，SDK 为 Python SDK v2。
+项目当前版本为 `1.1.0 Beta`。包元数据要求 Python `>=3.10`；CI 已验证 3.10–3.13，更新版本尚未纳入验证矩阵。
 
-完整架构与迁移依据见 [`MCP_MIGRATION_PLAN.zh-CN.md`](./MCP_MIGRATION_PLAN.zh-CN.md)。
+> 本项目不是 ComfyUI 自定义节点。它是独立运行的 MCP 服务，通过 HTTP 和 WebSocket 连接一个或多个 ComfyUI 实例。
 
-## 安装
+## 文档
 
-从 PyPI 安装：
+- [安装与客户端配置](docs/INSTALLATION.zh-CN.md)
+- [功能与使用模型](docs/FEATURES.zh-CN.md)
+- [CLI → MCP 迁移方案](MCP_MIGRATION_PLAN.zh-CN.md)
+- [Agent 原生控制平面设计](MCP_AGENT_NATIVE_CONTROL_PLANE.zh-CN.md)
 
-```bash
-python -m pip install comfyui-mcp-skills
+## 核心能力
+
+| 领域 | 能力 |
+|---|---|
+| 工作流执行 | 每个已启用工作流参与动态工具目录；默认暴露 8 个，可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 调整到 1–128，超出部分仍可通过目录/Resource 管理 |
+| 工作流理解 | 提供有界的节点、边、参数、输出和依赖语义视图，不向 Agent 暴露无界原始图 |
+| 版本与编辑 | 不可变 Revision、结构化 diff、变更 plan/commit、发布、回滚和损失感知导入 |
+| 作业与队列 | Job 查询、分页、取消、诊断、安全重试、队列查看与受控清理 |
+| 资产与产物 | 上传、Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要和完整血缘 |
+| 批量实验 | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化 |
+| 多服务器路由 | 根据 Deployment、依赖、队列、显存和 Policy 生成不可变执行计划，并以摘要绑定提交 |
+| 管理与供应 | Server/Config 管理、依赖检查、审批、ComfyUI Manager 安装计划和 Provisioning 恢复 |
+| 运行时控制 | 明确区分单作业取消、队列操作、全局 interrupt 和 restart 影响预览 |
+| MCP 原生交互 | Tools、Resources、Prompts、参数补全、资源订阅以及 provider-safe 工具名兼容模式 |
+| 远程部署 | Streamable HTTP、静态 Bearer Token、RFC 7662 Token Introspection、Host/Origin/大小/并发边界 |
+
+工作流、Revision、Plan、Job、Asset 和 Artifact 的高级能力依赖对应 SQLite aggregate cutover。全新目录默认先使用兼容文件仓库；执行本教程只保证基础工作流发现、动态执行、上传和 Job 查询，不能把高级控制平面能力当作已自动启用。
+
+完整工具面和使用流程见[功能文档](docs/FEATURES.zh-CN.md)。
+
+## 架构
+
+```mermaid
+flowchart LR
+    Agent[AI Agent / MCP Host] -->|stdio 或 Streamable HTTP| Adapter[MCP Adapter]
+    Adapter --> Auth[Toolset 与 Scope 授权]
+    Adapter --> App[Application Services]
+    App --> Store[(SQLite Control Plane)]
+    App --> Gateway[ComfyUI Gateway]
+    Gateway -->|HTTP / WebSocket| ComfyUI[ComfyUI Server]
+    App --> Resources[MCP Resources / Prompts / Events]
 ```
 
-开发环境使用锁文件恢复全部依赖：
+依赖方向固定为：
+
+```text
+MCP / HTTP / CLI adapters
+            ↓
+    Application services
+            ↓
+      Domain contracts
+            ↑
+ Infrastructure implementations
+```
+
+CLI 与 MCP 共用业务服务、ComfyUI Gateway 和持久化层；MCP handler 不启动 CLI 子进程。
+
+## 快速安装
+当前 PyPI 尚未发布 `comfyui-mcp-skills`，请从 GitHub 安装或使用源码运行。
+
+### 方式一：从 GitHub 安装
 
 ```bash
+python -m pip install "git+https://github.com/ShiroEirin/ComfyUI_MCP_Skills.git@main"
+```
+
+### 方式二：源码开发安装
+
+```bash
+git clone https://github.com/ShiroEirin/ComfyUI_MCP_Skills.git
+cd ComfyUI_MCP_Skills
 uv sync --locked --extra dev
 ```
 
-要求 Python 3.10+。安装后提供四个入口：`comfyui-mcp`、`comfyui-mcp-http`、`comfyui-mcp-admin` 和 `comfyui-mcp-maintain`；原 `comfyui-skill` CLI 继续保留。
+安装后主要入口：
 
-项目目录沿用原 CLI 布局：
+| 命令 | 用途 |
+|---|---|
+| `comfyui-mcp` | 本地 stdio MCP 服务 |
+| `comfyui-mcp-http` | Streamable HTTP 服务 |
+| `comfyui-mcp-admin` | 独立高风险管理面 |
+| `comfyui-mcp-maintain` | 保留策略与元数据清理 |
+| `comfyui-mcp-migration-dry-run` | 旧文件数据迁移演练 |
+| `comfyui-mcp-migrate` | 生产 aggregate 切换（需精确确认短语与备份） |
+| `comfyui-skill` | 兼容原 CLI |
+
+## 最小项目配置
+
+MCP 数据目录至少需要 `config.json` 和工作流目录：
 
 ```text
-config.json
-data/
-  <server_id>/
-    <workflow_id>/
-      schema.json
-      workflow.json
+my-comfyui-mcp/
+├── config.json
+├── data/
+│   └── local/
+│       └── txt2img/
+│           ├── schema.json
+│           └── workflow.json
+└── uploads/
 ```
 
-## stdio MCP
+`config.json` 示例：
 
-MCP 客户端配置示例：
+```json
+{
+  "default_server": "local",
+  "servers": [
+    {
+      "id": "local",
+      "name": "Local ComfyUI",
+      "url": "http://127.0.0.1:8188",
+      "enabled": true
+    }
+  ]
+}
+```
+
+## 最小 MCP 客户端配置
+
+源码运行配置：
+
+```json
+{
+  "mcpServers": {
+    "comfyui": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "D:/github/ComfyUI_MCP_Skills",
+        "comfyui-mcp"
+      ],
+      "env": {
+        "COMFYUI_MCP_DIR": "D:/path/to/my-comfyui-mcp"
+      }
+    }
+  }
+}
+```
+
+已安装命令时，可改为：
 
 ```json
 {
@@ -53,149 +153,109 @@ MCP 客户端配置示例：
     "comfyui": {
       "command": "comfyui-mcp",
       "env": {
-        "COMFYUI_MCP_DIR": "D:/path/to/project"
+        "COMFYUI_MCP_DIR": "D:/path/to/my-comfyui-mcp"
       }
     }
   }
 }
 ```
 
-stdio 默认只允许 `COMFYUI_MCP_DIR/uploads` 下的本地文件通过 `comfyui.asset.upload` 上传。使用系统路径分隔符扩展授权目录：
-
-```powershell
-$env:COMFYUI_MCP_UPLOAD_ROOTS = "D:/media;E:/shared-assets"
-```
-
-固定工具按独立逻辑端点与 scope 暴露：
-
-- 主 MCP 的 Execution / Operations / Authoring Toolset：`comfyui.capability.search` / `comfyui.capability.describe`，只搜索当前授权能力，不改变 `tools/list`。
-- Execution：6 个固定工具，包括 Catalog、`asset.upload`、`job.get`、`job.list` 和 `job.cancel`；另有最多 8 个 `comfyui.run.<server>.<workflow>` 动态工具。
-- Operations：16 个固定工具，包括 Catalog、Server、Node、Model、Queue、Log、Template、Subgraph 和可选 API 能力发现；`server.free` 需要 `comfyui:operate`。
-- Authoring：16 个固定工具，包括 Catalog、只读发现、`revision.list`、语义 `workflow.describe` 和 `workflow.dependencies.check`。
-- 独立 Admin：4 个工作流启停/删除及审计恢复工具；SQLite Workflow 切换后额外提供 `comfyui.admin.workflow.import`，默认只预览，只有 `commit=true` 且验证完整时才创建未发布 Revision，不暴露 Catalog。
-
-单端点固定工具默认不超过 16 个，硬上限 20 个；排序保持确定以稳定 Host 缓存。
-
-运行中作业不会调用 ComfyUI 的全局 `/interrupt`。`comfyui.server.health` 的 `cancel_running_supported=false` 明确暴露该上游限制。
-
-动态工作流工具的 `_execution` 参数支持：
+Snow、Claude Code 或部分 OpenAI/Anthropic 兼容网关只接受 `[A-Za-z0-9_-]+` 工具名。遇到 `Invalid tools[n].name` 时启用兼容模式：
 
 ```json
 {
-  "idempotency_key": "agent-call-42",
-  "wait": true,
-  "wait_timeout_seconds": 120
+  "env": {
+    "COMFYUI_MCP_DIR": "D:/path/to/my-comfyui-mcp",
+    "COMFYUI_MCP_PORTABLE_TOOL_NAMES": "1"
+  }
 }
 ```
 
-超时不会丢失作业。返回的 `prompt_id` 可继续传给 `comfyui.job.get`。
+启用后，外部名称从 `comfyui.job.get` 变为 `comfyui_job_get`，服务内部仍按 canonical 名称分发。OMP 等支持点号名称的 Host 无需启用。
 
-Resource 模板同时保留旧 URI，并声明当前 canonical 对象：
+完整的 Windows、Linux、Snow、Claude Code、权限和 HTTP 配置见[安装教程](docs/INSTALLATION.zh-CN.md)。
 
-- 旧兼容：`comfyui://workflows/{server_id}/{workflow_id}`、`comfyui://assets/{server_id}/{asset_id}`、`comfyui://jobs/{server_id}/{prompt_id}`、`comfyui://outputs/{server_id}/{prompt_id}/{index}`。
-- Canonical：`comfyui://workflows/{workflow_id}`、`comfyui://revisions/{revision_id}`、`comfyui://deployments/{deployment_id}`、`comfyui://assets/{asset_id}`、`comfyui://jobs/{job_id}`、`comfyui://artifacts/{artifact_id}`。
+## 默认安全模型
 
-同一服务器上的 output Resource URI 可直接作为后续工作流的 image、mask、audio 或 video 参数。服务会校验作业所有者、输出索引和媒体类型，并注入 ComfyUI 服务端引用，不下载后再上传。
+stdio 默认使用：
+
+```text
+principal: local-stdio
+toolset: execution
+scope: comfyui:execute
+```
+
+因此默认只暴露执行所需能力。Authoring、Operations 和 Admin 必须显式配置 Toolset、Scope，并为高风险 Toolset 设置 `COMFYUI_MCP_ENABLE_HIGH_RISK=1`。
+
+危险写操作遵循以下约束：
+
+- 普通执行面与 Admin 管理面分离。
+- 变更、安装、删除和全局操作优先采用 plan/commit。
+- plan digest、幂等键、主体和对象所有权共同约束 commit。
+- 作业取消不会调用 ComfyUI 的全局 `/interrupt`。
+- 无 RuntimeController 时，restart 只返回操作要求，不执行宿主 Shell；配置 systemd 绑定后 `runtime.restart.commit` 才可执行固定 `systemctl restart <unit>`。
+- 远程上传、抓取、Host、Origin、正文大小、并发和速率均有边界。
+
+## 基本使用流程
+
+1. MCP Host 调用 `comfyui.capability.search` 查找当前授权能力。
+2. Agent 选择 `comfyui.run.<server>.<workflow>`，参数由工作流 JSON Schema 校验。
+3. 服务返回完成结果，或返回持久化 Job 标识供 `comfyui.job.get` 恢复查询。
+4. 输出以 Resource Link 暴露，可作为后续 image、mask、audio 或 video 输入。
+5. 失败时调用诊断与 retry plan/commit，而不是猜测并重复提交。
+
+动态工具的 `_execution` 示例：
+
+```json
+{
+  "prompt": "a cinematic portrait",
+  "_execution": {
+    "idempotency_key": "portrait-2026-08-05-01",
+    "wait": true,
+    "wait_timeout_seconds": 120
+  }
+}
+```
+
+超时不代表作业失败，也不会丢失作业。继续使用返回的 Job 或 `prompt_id` 查询即可。
 
 ## Streamable HTTP
 
-远程模式拒绝匿名启动。当前只实现部署方配置的预共享静态 Bearer Token。`COMFYUI_MCP_AUTH_MODE` 只接受 `static`；OAuth 2.1、JWT/JWKS 和 Token Introspection 尚未实现，服务不会发布 OAuth Protected Resource Metadata。
+远程模式拒绝匿名启动，支持：
 
-```powershell
-$env:COMFYUI_MCP_DIR = "D:/path/to/project"
-$env:COMFYUI_MCP_AUTH_MODE = "static"
-$env:COMFYUI_MCP_TOKENS = '{"replace-with-secret":{"principal_id":"agent-prod","scopes":["comfyui:execute"]}}'
-$env:COMFYUI_MCP_ALLOWED_HOSTS = "mcp.example.com"
-$env:COMFYUI_MCP_ALLOWED_ORIGINS = "https://agent.example.com"
-$env:COMFYUI_MCP_HOST = "0.0.0.0"
-$env:COMFYUI_MCP_PUBLIC_URL = "https://mcp.example.com/mcp"
-$env:COMFYUI_MCP_FETCH_HOSTS = "cdn.example.com,objects.example.com"
-comfyui-mcp-http
-```
+- `static`：部署方配置的静态 Bearer Token。
+- `introspection`：受众绑定的 RFC 7662 Token Introspection；端点必须为 HTTPS。
 
-`principal_id` 是持久化作业、资产和幂等键的稳定所有者。轮换 Token 时必须保留同一个 `principal_id`；允许旧、新 Token 在轮换窗口内同时映射到该主体。Token、主体和 scopes 的类型或值不合法时，服务拒绝启动。
+公网部署必须由反向代理终止 TLS。默认 `process` 限流模式拒绝 `workers > 1`；设置 `COMFYUI_MCP_LIMIT_MODE=external` 后使用 SQLite 共享限流后端，支持多 worker 的全局请求、并发与订阅配额。跨主机事件 fan-out 仍未交付。
 
-端点：
+详细环境变量和部署示例见[安装教程](docs/INSTALLATION.zh-CN.md#9-streamable-http-部署)。
 
-- `POST /mcp`：MCP Streamable HTTP。
-- `POST /assets?server_id=<id>&filename=<name>&purpose=image`：流式上传原始媒体正文。
-- `POST /assets/fetch`：仅从 `COMFYUI_MCP_FETCH_HOSTS` 精确白名单中的公开 HTTPS 地址抓取媒体。
-
-默认限制：MCP JSON 1 MiB、抓取 JSON 64 KiB、上传 25 MiB、每分钟 120 请求、普通请求并发 32、订阅流并发 8、每主体订阅流 2。普通池饱和时快速返回 503；订阅主体配额饱和时返回 429，不会让长期 `subscriptions/listen` 阻塞工具、资源或资产请求。可分别通过 `COMFYUI_MCP_MAX_CONCURRENT_REQUESTS`、`COMFYUI_MCP_MAX_SUBSCRIPTION_STREAMS` 和 `COMFYUI_MCP_MAX_SUBSCRIPTIONS_PER_PRINCIPAL` 调整。公网部署必须由反向代理终止 TLS，并使用外部密钥管理与集中限流。
-
-进程内限流只适用于单 worker。多 worker 部署必须同时设置：
-
-```powershell
-$env:COMFYUI_MCP_WORKERS = "4"
-$env:COMFYUI_MCP_LIMIT_MODE = "external"
-```
-
-`external` 表示部署方已在网关层提供全局限流；服务不会伪装成已实现 Redis 限流。
-
-## 独立管理面
-
-管理工具不会出现在普通 MCP 服务中。只有显式开启后才能启动：
-
-```powershell
-$env:COMFYUI_MCP_ENABLE_ADMIN = "1"
-$env:COMFYUI_MCP_DIR = "D:/path/to/project"
-comfyui-mcp-admin
-```
-
-该进程提供工作流启用/停用和带精确确认短语的永久删除。删除必须携带调用方生成的稳定 `request_id`；返回 `committed` 与 `audit_status`。`comfyui.admin.audit.get` 可查询提交状态，`comfyui.admin.audit.retry` 只补写待完成的审计结果，不重复危险操作。不要将管理进程与普通执行端共享客户端配置或远程端口。
-
-工作流导入会把输出数量和服务端可信运行时估计固化到 Revision。每个 `config.json` 服务器可设置 `experiment_trusted_seconds_per_run`；未设置时采用服务端策略默认值 300 秒。该值不接受 MCP 请求覆盖。
-
-## 保留策略与可观测性
-
-服务写入 JSON 结构化日志到 stderr。通过 `COMFYUI_MCP_LOG_LEVEL` 设置级别；日志只记录白名单上下文字段，不记录 Token 或请求正文。HTTP 进程维护请求总数、错误数、429 数和累计耗时的进程内指标快照。
-
-`comfyui.server.capabilities` 独立探测 Jobs API、Userdata v2/传统路径、node replacements、Manager queue/status/install、日志、模板和子图端点。每项结果明确区分 `supported`、`unsupported`、`unauthorized`、`temporarily_unavailable`；可选端点失败不会把整台服务器标为离线。Manager install 仅作非写入能力探测，本阶段不执行安装。
-
-`comfyui.job.list` 只在 SQLite Job store 切换完成后出现，使用所有者绑定的 keyset cursor；文件回滚后端不会扫描摘要文件。Queue、Log、Template 和 Subgraph 列表均有上限与不透明 cursor，日志和元数据输出会移除凭据、原始 prompt、工作流图和本地敏感路径。
-
-`comfyui://workflows/{workflow_id}/graph` 及其 `/nodes`、`/edges`、`/parameters`、`/outputs` 分面只返回有界语义投影，不暴露原始工作流 JSON。`comfyui.workflow.dependencies.check` 对 13 类已知模型加载器提供完整报告；未知加载器明确返回 `coverage=partial` 与 `unverified_loaders`。
-
-元数据清理是显式维护操作，不在请求路径自动删除：
-
-```powershell
-$env:COMFYUI_MCP_RUN_RETENTION_DAYS = "30"
-$env:COMFYUI_MCP_ASSET_RETENTION_DAYS = "30"
-$env:COMFYUI_MCP_MAX_HISTORY_RECORDS = "10000"
-comfyui-mcp-maintain
-```
-
-清理器保留运行中作业和幂等记录引用的作业；只要存在活动作业，就不会清理任何资产。清理过程与在线作业、资产元数据读写共享协调锁，删除前会重新检查活动状态和引用。
-
-Experiment 未提交计划按 TTL 清理；终态计划和 Variant 载荷只在完成满 7 天后压缩，确保维护任务运行后仍保留有界的 preset/Revision 固化窗口。压缩保留计划摘要、Revision/Deployment pin、评分、Promotion 和审计事实。
-
-## CLI 兼容入口
-
-原有运维和诊断命令继续可用，并与 MCP 共用同一个 ComfyUI 客户端实现：
-
-```bash
-comfyui-skill --help
-comfyui-skill list --json
-comfyui-skill info local/txt2img --json
-```
-
-## 验证
+## 开发与验证
 
 ```bash
 uv sync --locked --extra dev
 uv run ruff check src/comfyui_mcp_skills tests
 uv run mypy src/comfyui_mcp_skills
-uv run python -m pytest --cov --cov-report=term-missing -q
-uvx pip-audit
+uv run pytest -q
 uv build
 ```
 
-G6 工具选择基线使用 OMP NewAPI 回环端点中配置的 DeepSeek V4 Flash：
+当前本地交付验证：`788 passed, 1 skipped, 2 subtests passed`。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
-```bash
-uv run comfyui-mcp-eval-deepseek evals/g6-tool-selection.json --output artifacts/g6-deepseek-v4-flash-baseline.json
-```
+## 项目状态与边界
 
-CI 在 Ubuntu 与 Windows 上覆盖 Python 3.10–3.13，并验证构建后的 wheel 可独立导入及版本一致。
+已实现可靠执行、版本化工作流、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制和 RFC 7662 introspection。以下能力尚未作为正式产品能力交付：
 
-当前发布基线为 784 个测试通过、1 个跳过、覆盖率 82.01%；真实 ComfyUI 30 步推理、输出解码、Job ID 幂等恢复和队列清空均已通过，完整证据见 `artifacts/qa-review.json`。
+- Redis/NATS 多副本订阅总线。
+- 多主机共享租约与跨主机配额（SQLite 共享限流仅限同主机多进程）。
+- Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
+- MCP Tasks 扩展映射。
+- MCP Elicitation 审批。
+- Docker、Windows Service 的内置 RuntimeController 适配器（Linux systemd 已内置）。
+- 完整 recipe/subgraph 高层图编辑。
+
+Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。
+
+## License
+
+[MIT](LICENSE)

@@ -64,6 +64,17 @@ def test_dynamic_inventory_is_deterministic_and_capped_without_mutating_catalog(
     assert inventory.fixed_names == tuple(tool.name for tool in fixed_tools())
 
 
+def test_dynamic_inventory_accepts_an_explicit_bounded_budget() -> None:
+    names = [f"comfyui.run.local.workflow-{index:03d}" for index in range(200)]
+
+    inventory = ToolInventory(fixed_tools(), max_dynamic_limit=128)
+
+    assert inventory.select_dynamic(names) == tuple(sorted(names)[:128])
+    assert ToolInventory.DYNAMIC_LIMIT == 8
+    with pytest.raises(ValueError, match="max_dynamic_limit must be between 1 and 128"):
+        ToolInventory(fixed_tools(), max_dynamic_limit=129)
+
+
 def test_each_authorized_fixed_toolset_stays_within_default_budget() -> None:
     tools = fixed_tools()
 

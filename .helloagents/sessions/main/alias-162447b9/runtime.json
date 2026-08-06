@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "scope": "project-session",
+  "key": "D:\\github\\ComfyUI_MCP_Skills::main::alias-162447b9",
+  "cwd": "D:\\github\\ComfyUI_MCP_Skills",
+  "branch": "main",
+  "workspace": "main",
+  "session": "alias-162447b9",
+  "sessionMode": "active-session",
+  "updatedAt": "2026-08-04T12:48:31.311Z",
+  "turn": {
+    "cwd": "D:\\github\\ComfyUI_MCP_Skills",
+    "key": "D:\\github\\ComfyUI_MCP_Skills::main::alias-162447b9",
+    "scope": "project-session",
+    "updatedAt": "2026-08-04T12:48:31.300Z",
+    "kind": "complete",
+    "role": "main",
+    "phase": "",
+    "source": "manual",
+    "requiresDeliveryGate": false,
+    "reasonCategory": "",
+    "reason": ""
+  },
+  "route": null,
+  "artifacts": {},
+  "turnUpdatedAt": "2026-08-04T12:48:31.306Z"
+}

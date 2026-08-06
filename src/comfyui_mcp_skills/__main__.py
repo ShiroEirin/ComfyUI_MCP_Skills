@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from pathlib import Path
 
 import anyio
@@ -11,8 +12,10 @@ from mcp.server.stdio import stdio_server
 from .adapters.mcp.server import create_server
 from .application.auth_context import reset_authorization, set_authorization
 from .application.authorization import authorization_for_stdio
+from .application.runtime_control import RuntimeController
 from .infrastructure.comfyui.manager_gateway import SafeManagerGateway
 from .infrastructure.persistence.control_plane import SQLiteControlPlaneStore
+from .infrastructure.runtime.systemd import controller_from_config
 from .observability import configure_logging
 
 
@@ -49,6 +52,32 @@ def _configured_manager_origins() -> set[str]:
     }
 
 
+def _runtime_controller_provider(
+    base_dir: Path,
+) -> Callable[[str], RuntimeController | None] | None:
+    """Resolve one controller per server from config.json runtime bindings."""
+    from comfyui_mcp_skills.application.servers import ServerRegistry
+
+    registry = ServerRegistry(base_dir)
+    controllers: dict[str, RuntimeController] = {}
+    try:
+        for server in registry.list():
+            connection = registry.connection(server.server_id)
+            controller = controller_from_config(connection)
+            if controller is not None:
+                controllers[server.server_id] = controller
+    except Exception:
+        return None
+
+    if not controllers:
+        return None
+
+    def provider(server_id: str) -> RuntimeController | None:
+        return controllers.get(server_id)
+
+    return provider
+
+
 async def _run_stdio(base_dir: Path) -> None:
     authorization = authorization_for_stdio(os.environ)
     data_dir = base_dir / "data"
@@ -59,6 +88,8 @@ async def _run_stdio(base_dir: Path) -> None:
         upload_roots=_configured_upload_roots(base_dir),
         authorization=authorization,
         portable_tool_names=os.environ.get("COMFYUI_MCP_PORTABLE_TOOL_NAMES") == "1",
+        max_dynamic_tools=int(os.environ.get("COMFYUI_MCP_MAX_DYNAMIC_TOOLS", "8")),
+        runtime_controller_provider=_runtime_controller_provider(base_dir),
         manager_gateway=SafeManagerGateway(
             allowed_source_hosts=_configured_manager_hosts(),
             allowed_server_origins=_configured_manager_origins(),

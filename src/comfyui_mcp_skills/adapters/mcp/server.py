@@ -41,7 +41,9 @@ from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     EXECUTION_PROPERTY,
     JOB_SCHEMA,
+    UI_EXTENSION_ID,
     bounded_integer,
+    client_supports_apps,
     current_owner,
     current_scopes,
     decorate_tool,
@@ -64,6 +66,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     tool_result,
     validate_fixed_arguments,
     variant_page_dict,
+    with_ui_metadata,
     workflow_tool_names,
 )
 from comfyui_mcp_skills.application.asset_library import AssetLibraryService
@@ -101,7 +104,10 @@ from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.provisioning import ProvisioningWorkHandler
 from comfyui_mcp_skills.application.provisioning_ports import ManagerGateway
 from comfyui_mcp_skills.application.routing import RoutingService
-from comfyui_mcp_skills.application.runtime_control import RuntimeControlService
+from comfyui_mcp_skills.application.runtime_control import (
+    RuntimeController,
+    RuntimeControlService,
+)
 from comfyui_mcp_skills.application.servers import OwnerAwareServerRegistry, ServerRegistry
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
@@ -266,6 +272,8 @@ def create_server(
     retry_service: Any | None = None,
     owner_provider: Callable[[], str] | None = None,
     portable_tool_names: bool = False,
+    max_dynamic_tools: int = ToolInventory.DYNAMIC_LIMIT,
+    runtime_controller_provider: Callable[[str], RuntimeController | None] | None = None,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
@@ -414,7 +422,12 @@ def create_server(
         if routing_repository is not None
         else None
     )
-    runtime_controls = RuntimeControlService(servers, run_repository, gateway_factory)
+    runtime_controls = RuntimeControlService(
+        servers,
+        run_repository,
+        gateway_factory,
+        controller_provider=runtime_controller_provider,
+    )
     discovery = DiscoveryService(servers, gateway_factory)
     observation = ObservationService(servers, gateway_factory)
     workflow_graphs = WorkflowGraphService(
@@ -497,6 +510,7 @@ def create_server(
             if _tool_visible(tool.name, authorization.toolset, authorization.scopes)
         ),
         max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT,
+        max_dynamic_limit=max_dynamic_tools,
     )
 
     subscription_bus = subscription_bus or InMemorySubscriptionBus()
@@ -656,7 +670,9 @@ def create_server(
         diagnostics_available=diagnostic_service is not None,
     )
 
-    def current_tools() -> tuple[list[Tool], dict[str, Workflow], dict[str, str]]:
+    def current_tools(
+        apps_supported: bool = False,
+    ) -> tuple[list[Tool], dict[str, Workflow], dict[str, str]]:
         granted_scopes = current_scopes() if enforce_authorization else None
         active_scopes = granted_scopes or authorization.scopes
         g3_tools_enabled = repositories.workflow_store == "sqlite"
@@ -711,6 +727,11 @@ def create_server(
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
                 and _tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
+        if apps_supported:
+            canonical_tools = [
+                with_ui_metadata(tool) if tool.name == "comfyui.job.get" else tool
+                for tool in canonical_tools
+            ]
         if not portable_tool_names:
             return (
                 canonical_tools,
@@ -733,10 +754,12 @@ def create_server(
         return tools, workflow_map, canonical_by_external
 
     async def list_tools(
-        _ctx: ServerRequestContext[dict[str, object]],
+        ctx: ServerRequestContext[dict[str, object]],
         _params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
-        tools, _mapping, _canonical_names = current_tools()
+        tools, _mapping, _canonical_names = current_tools(
+            apps_supported=client_supports_apps(ctx)
+        )
         return ListToolsResult(tools=tools, ttl_ms=5_000, cache_scope="private")
 
     async def complete_reference(
@@ -779,7 +802,9 @@ def create_server(
             if enforce_authorization and current_scopes() is None
             else current_owner()
         )
-        tools, workflow_map, canonical_by_external = current_tools()
+        tools, workflow_map, canonical_by_external = current_tools(
+            apps_supported=client_supports_apps(ctx)
+        )
         requested_name = params.name
         visible_names = {tool.name for tool in tools}
         if requested_name not in visible_names:
@@ -1401,6 +1426,15 @@ def create_server(
                     owner_id,
                 )
                 return tool_result(result)
+            if params.name == "comfyui.runtime.restart.commit":
+                validate_fixed_arguments(arguments, {"server_id", "plan_digest"})
+                result = await anyio.to_thread.run_sync(
+                    runtime_controls.restart_commit,
+                    required_string(arguments, "server_id", max_length=128),
+                    required_string(arguments, "plan_digest", max_length=128),
+                    owner_id,
+                )
+                return tool_result(result)
             if params.name == "comfyui.log.read":
                 validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
                 server_id = required_string(arguments, "server_id", max_length=128)
@@ -1531,6 +1565,16 @@ def create_server(
                     "details": {},
                 }
             return tool_result(error, error=True)
+        except RuntimeError as exc:
+            return tool_result(
+                {
+                    "code": "OPERATION_UNAVAILABLE",
+                    "message": str(exc),
+                    "retryable": False,
+                    "details": {},
+                },
+                error=True,
+            )
         except Exception:
             logger.exception("Unexpected MCP tool failure", extra={"tool": params.name})
             return tool_result(
@@ -1543,7 +1587,7 @@ def create_server(
                 error=True,
             )
 
-    return Server(
+    server = Server(
         "ComfyUI MCP Skills",
         version=__version__,
         on_list_tools=list_tools,
@@ -1557,3 +1601,5 @@ def create_server(
         lifespan=lifespan,
         on_subscriptions_listen=authorized_listen,
     )
+    server.extensions[UI_EXTENSION_ID] = {}
+    return server

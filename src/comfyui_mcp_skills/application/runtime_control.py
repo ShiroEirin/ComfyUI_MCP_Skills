@@ -28,11 +28,13 @@ class RuntimeControlService:
         gateway_factory: Callable[[dict[str, Any]], ComfyUIGateway],
         *,
         controller: RuntimeController | None = None,
+        controller_provider: Callable[[str], RuntimeController | None] | None = None,
     ) -> None:
         self._servers = servers
         self._runs = runs
         self._gateway_factory = gateway_factory
         self._controller = controller
+        self._controller_provider = controller_provider
 
     def queue_remove(
         self,
@@ -147,6 +149,31 @@ class RuntimeControlService:
             "plan_digest": digest,
             "resource_uri": "comfyui://plans/runtime_plan_" + digest,
             "status": "operation_required",
+        }
+
+    def restart_commit(self, server_id: str, plan_digest: str, owner_id: str) -> dict[str, Any]:
+        """Execute a controller restart only for a valid, owner-bound restart plan."""
+        server_id = validate_identifier(server_id, field="server_id")
+        plan_digest = validate_identifier(plan_digest, field="plan_digest")
+        plan = self.restart_plan(server_id, owner_id)
+        if plan["plan_digest"] != plan_digest:
+            raise PermissionError("restart plan digest does not match the current server state")
+        controller = (
+            self._controller_provider(server_id)
+            if self._controller_provider is not None
+            else self._controller
+        )
+        if controller is None:
+            raise RuntimeError("no runtime controller is configured")
+        result = controller.restart(server_id)
+        return {
+            "operation": "runtime.restart.commit",
+            "server_id": server_id,
+            "plan_digest": plan_digest,
+            "owner_id": owner_id,
+            "affected_jobs": plan["affected_jobs"],
+            "impact_coverage": plan["impact_coverage"],
+            "controller": result,
         }
 
     def _affected(

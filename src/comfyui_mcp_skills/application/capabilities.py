@@ -599,6 +599,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         RiskLevel.HIGH,
         ("runtime", "restart", "approval", "impact"),
     ),
+    CapabilitySpec(
+        "comfyui.runtime.restart.commit",
+        "Commit a planned host restart",
+        "Execute restart only for a matching plan digest through the configured controller.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("runtime", "restart", "commit", "controller"),
+    ),
 )
 
 CAPABILITY_BY_NAME = {spec.name: spec for spec in CAPABILITY_SPECS}
@@ -614,21 +623,29 @@ class ToolInventory:
     DEFAULT_FIXED_LIMIT = 16
     HARD_FIXED_LIMIT = 32
     DYNAMIC_LIMIT = 8
+    HARD_DYNAMIC_LIMIT = 128
 
     def __init__(
         self,
         fixed: Iterable[_NamedTool],
         *,
         max_fixed_limit: int = DEFAULT_FIXED_LIMIT,
+        max_dynamic_limit: int = DYNAMIC_LIMIT,
     ) -> None:
         if type(max_fixed_limit) is not int or not 1 <= max_fixed_limit <= self.HARD_FIXED_LIMIT:
             raise ValueError("max_fixed_limit must be between 1 and 32")
+        if (
+            type(max_dynamic_limit) is not int
+            or not 1 <= max_dynamic_limit <= self.HARD_DYNAMIC_LIMIT
+        ):
+            raise ValueError("max_dynamic_limit must be between 1 and 128")
         names = tuple(tool.name for tool in fixed)
         if len(names) != len(set(names)):
             raise ValueError("fixed Tool names must be unique")
         if len(names) > max_fixed_limit:
             raise ValueError(f"fixed Toolset exceeds its limit of {max_fixed_limit}")
         self._fixed_names = names
+        self._max_dynamic_limit = max_dynamic_limit
 
     @property
     def fixed_names(self) -> tuple[str, ...]:
@@ -639,7 +656,7 @@ class ToolInventory:
         return len(self._fixed_names)
 
     def select_dynamic(self, names: Iterable[str]) -> tuple[str, ...]:
-        return tuple(sorted(set(names))[: self.DYNAMIC_LIMIT])
+        return tuple(sorted(set(names))[: self._max_dynamic_limit])
 
 
 class CapabilityCatalog:

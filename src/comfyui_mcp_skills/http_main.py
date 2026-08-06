@@ -11,10 +11,19 @@ import uvicorn
 
 from comfyui_mcp_skills.adapters.http.app import create_http_app
 from comfyui_mcp_skills.adapters.http.auth import _validate_tokens
+from comfyui_mcp_skills.application.shared_limits import SQLiteSharedLimitStore
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.observability import configure_logging
 
 _APP_FACTORY = "comfyui_mcp_skills.http_main:create_app"
+
+
+def _with_shared_store(app_options: dict[str, Any]) -> dict[str, Any]:
+    if app_options.get("limit_mode") == "external":
+        app_options["shared_limit_store"] = SQLiteSharedLimitStore(
+            Path(app_options["base_dir"]) / "data" / "shared-limits.sqlite3"
+        )
+    return app_options
 
 
 def create_app():
@@ -22,7 +31,7 @@ def create_app():
     configure_logging(os.environ.get("COMFYUI_MCP_LOG_LEVEL", "INFO"))
     _host, _port, app_options = _http_environment()
     _initialize_control_plane(app_options["base_dir"])
-    return create_http_app(**app_options)
+    return create_http_app(**_with_shared_store(app_options))
 
 
 def main() -> None:
@@ -43,7 +52,7 @@ def main() -> None:
         )
         return
     uvicorn.run(
-        create_http_app(**app_options),
+        create_http_app(**_with_shared_store(app_options)),
         host=host,
         port=port,
         log_level="info",
@@ -106,6 +115,9 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
         "max_subscriptions_per_principal": int(
             os.environ.get("COMFYUI_MCP_MAX_SUBSCRIPTIONS_PER_PRINCIPAL", "2")
         ),
+        "max_dynamic_tools": int(
+            os.environ.get("COMFYUI_MCP_MAX_DYNAMIC_TOOLS", "8")
+        ),
         "public_mcp_url": public_mcp_url,
         "auth_mode": auth_mode,
         "remote_fetch_hosts": _csv(os.environ.get("COMFYUI_MCP_FETCH_HOSTS", "")),
@@ -113,6 +125,7 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
         "manager_server_origins": _csv(os.environ.get("COMFYUI_MCP_MANAGER_ORIGINS", "")),
         "toolset": os.environ.get("COMFYUI_MCP_TOOLSET", "execution").strip().lower(),
         "enable_high_risk": os.environ.get("COMFYUI_MCP_ENABLE_HIGH_RISK", "") == "1",
+        "limit_mode": os.environ.get("COMFYUI_MCP_LIMIT_MODE", "process").strip().lower(),
     }
     return host, port, app_options
 
@@ -128,8 +141,10 @@ def _validate_worker_limits(workers: int, limit_mode: str) -> None:
         raise ValueError("COMFYUI_MCP_WORKERS must be positive")
     if limit_mode not in {"process", "external"}:
         raise ValueError("COMFYUI_MCP_LIMIT_MODE must be process or external")
-    if workers > 1:
-        raise ValueError("Multiple workers require a configured shared rate-limit backend")
+    if workers > 1 and limit_mode != "external":
+        raise ValueError(
+            "Multiple workers require COMFYUI_MCP_LIMIT_MODE=external with a shared limit store"
+        )
 
 
 def _default_allowed_hosts(host: str, port: int) -> list[str]:

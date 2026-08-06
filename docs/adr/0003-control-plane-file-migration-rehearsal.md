@@ -65,7 +65,11 @@ JSON 使用捕获 manifest 时的同一原始字节严格 UTF-8 解析，要求�
 - G0 获得可执行、可重复的源证据与备份流程。
 - 事务演练证明导入、校验和切换证据原子提交，失败不产生半切换状态。
 - 文件事实源在 G0 始终保持生产唯一写入源。
-- G1/G3 可以复用 manifest 和 backup 契约，但必须增加完整领域映射、冲突报告和生产 Repository 切换。
+- G1/G3 复用 manifest 和 backup 契约，并已实现完整领域映射、冲突报告和生产 Repository 切换。
+
+## 状态更新（1.1.0 Beta）
+
+`comfyui-mcp-migrate` 已发布为生产切换入口：要求精确确认短语与备份证据，在项目迁移锁内按 `asset`→`job`→`workflow` 分组原子切换；任一组失败时已切换组保持有效，输出 `groups` 与 `recovery.evidence` 支持续传，不再把部分切换误报为未写入。dry-run 与隔离演练保持只读。
 
 ## 非目标
 

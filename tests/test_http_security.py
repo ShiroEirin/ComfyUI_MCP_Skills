@@ -61,6 +61,64 @@ def test_safe_downloader_rejects_non_https_and_private_networks(tmp_path: Path) 
         downloader.download("https://127.0.0.1/cat.png", tmp_path)
 
 
+def test_two_app_instances_share_external_rate_limit(tmp_path: Path) -> None:
+    from comfyui_mcp_skills.application.shared_limits import SQLiteSharedLimitStore
+
+    _project(tmp_path)
+    database = tmp_path / "data" / "shared-limits.sqlite3"
+    shared = SQLiteSharedLimitStore(database)
+    options = {
+        "host": "127.0.0.1",
+        "allowed_hosts": ["testserver"],
+        "allowed_origins": ["https://agent.example"],
+        "tokens": _tokens(),
+        "upload_root": tmp_path / "uploads",
+        "limit_mode": "external",
+        "shared_limit_store": shared,
+        "requests_per_minute": 2,
+    }
+    first = create_http_app(tmp_path, **options)
+    second = create_http_app(tmp_path, **options)
+
+    with TestClient(first) as client:
+        first_status = client.post(
+            "/mcp",
+            json=_modern_mcp_request("tools/list"),
+            headers=_modern_mcp_headers("tools/list"),
+        )
+        second_status = client.post(
+            "/mcp",
+            json=_modern_mcp_request("tools/list"),
+            headers=_modern_mcp_headers("tools/list"),
+        )
+    with TestClient(second) as client:
+        third_status = client.post(
+            "/mcp",
+            json=_modern_mcp_request("tools/list"),
+            headers=_modern_mcp_headers("tools/list"),
+        )
+
+    assert first_status.status_code == 200
+    assert second_status.status_code == 200
+    assert third_status.status_code == 429
+
+
+def test_external_limit_mode_without_store_fails_closed(tmp_path: Path) -> None:
+    from comfyui_mcp_skills.application.shared_limits import SharedLimitsUnavailable
+
+    _project(tmp_path)
+    with pytest.raises(SharedLimitsUnavailable, match="shared limit store"):
+        create_http_app(
+            tmp_path,
+            host="127.0.0.1",
+            allowed_hosts=["testserver"],
+            allowed_origins=["https://agent.example"],
+            tokens=_tokens(),
+            upload_root=tmp_path / "uploads",
+            limit_mode="external",
+        )
+
+
 def test_http_upload_requires_token_and_origin(tmp_path: Path) -> None:
     _project(tmp_path)
     upload_root = tmp_path / "uploads"
@@ -324,10 +382,9 @@ def test_http_2026_is_stateless_and_rejects_missing_version_header(tmp_path: Pat
 
 
 def test_multi_worker_deployment_requires_shared_limit_backend() -> None:
-    with pytest.raises(ValueError, match="shared rate-limit backend"):
+    with pytest.raises(ValueError, match="COMFYUI_MCP_LIMIT_MODE=external"):
         _validate_worker_limits(2, "process")
-    with pytest.raises(ValueError, match="shared rate-limit backend"):
-        _validate_worker_limits(2, "external")
+    _validate_worker_limits(2, "external")
 
 
 def test_multi_worker_main_uses_uvicorn_import_factory(tmp_path: Path) -> None:
@@ -345,10 +402,35 @@ def test_multi_worker_main_uses_uvicorn_import_factory(tmp_path: Path) -> None:
         patch("comfyui_mcp_skills.http_main.configure_logging"),
         patch("comfyui_mcp_skills.http_main.uvicorn.run") as run,
     ):
-        with pytest.raises(ValueError, match="shared rate-limit backend"):
-            http_main()
+        http_main()
 
-    run.assert_not_called()
+    run.assert_called_once()
+    assert run.call_args.args[0] == "comfyui_mcp_skills.http_main:create_app"
+    assert run.call_args.kwargs["workers"] == 2
+
+
+def test_single_worker_external_mode_injects_shared_store(tmp_path: Path) -> None:
+    environment = {
+        "COMFYUI_MCP_TOKENS": (
+            '{"secret":{"principal_id":"test-principal","scopes":["comfyui:execute"]}}'
+        ),
+        "COMFYUI_MCP_WORKERS": "1",
+        "COMFYUI_MCP_LIMIT_MODE": "external",
+        "COMFYUI_MCP_DIR": str(tmp_path),
+    }
+
+    with (
+        patch.dict(os.environ, environment, clear=True),
+        patch("comfyui_mcp_skills.http_main.configure_logging"),
+        patch("comfyui_mcp_skills.http_main.uvicorn.run") as run,
+    ):
+        http_main()
+
+    run.assert_called_once()
+    app = run.call_args.args[0]
+    assert run.call_args.kwargs["workers"] == 1
+    assert isinstance(app, Starlette)
+    assert (tmp_path / "data" / "shared-limits.sqlite3").is_file()
 
 
 def test_token_rotation_preserves_principal_owner_id() -> None:

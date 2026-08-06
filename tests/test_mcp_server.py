@@ -178,6 +178,24 @@ async def test_long_workflow_tool_names_are_bounded_stable_and_unique(
 
 
 @pytest.mark.anyio
+async def test_dynamic_tool_visibility_budget_can_be_expanded(tmp_path: Path) -> None:
+    _project(tmp_path)
+    for index in range(12):
+        _add_workflow(tmp_path, f"workflow-{index:02d}")
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: FakeGateway(),
+        max_dynamic_tools=12,
+    )
+    async with Client(server) as client:
+        listed = await client.list_tools()
+
+    dynamic_names = [tool.name for tool in listed.tools if tool.name.startswith("comfyui.run.")]
+    assert len(dynamic_names) == 12
+
+
+@pytest.mark.anyio
 async def test_portable_tool_names_are_api_compatible_and_dispatch(tmp_path: Path) -> None:
     _project(tmp_path)
     gateway = FakeGateway()

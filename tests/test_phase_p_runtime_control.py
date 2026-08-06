@@ -136,6 +136,33 @@ def test_global_controls_report_impact_and_restart_requirement(tmp_path: Path) -
     assert "Global impact" in restart["operation_requirement"]
 
 
+def test_restart_commit_requires_matching_digest_and_invokes_controller(tmp_path: Path) -> None:
+    class _Controller:
+        def __init__(self) -> None:
+            self.restarted: list[str] = []
+
+        def restart(self, server_id: str) -> dict[str, Any]:
+            self.restarted.append(server_id)
+            return {"server_id": server_id, "adapter": "systemd", "completed": True}
+
+    controller = _Controller()
+    service, gateway = _service(tmp_path)
+    service._controller = controller  # type: ignore[attr-defined]
+
+    plan = service.restart_plan("local", "owner-a")
+    with pytest.raises(PermissionError, match="digest"):
+        service.restart_commit("local", "runtime_plan_" + "0" * 64, "owner-a")
+
+    committed = service.restart_commit("local", plan["plan_digest"], "owner-a")
+    assert committed["controller"]["completed"] is True
+    assert controller.restarted == ["local"]
+
+    service._controller = None  # type: ignore[attr-defined]
+    empty_plan = service.restart_plan("local", "owner-a")
+    with pytest.raises(RuntimeError, match="no runtime controller"):
+        service.restart_commit("local", empty_plan["plan_digest"], "owner-a")
+
+
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
@@ -164,6 +191,7 @@ async def test_operations_mcp_exposes_runtime_controls_and_restart_requirement(
             "comfyui.queue.clear",
             "comfyui.server.interrupt",
             "comfyui.runtime.restart.plan",
+            "comfyui.runtime.restart.commit",
         } <= names
         cleared = await client.call_tool(
             "comfyui.queue.clear", {"server_id": "local", "execute": True}
@@ -172,6 +200,12 @@ async def test_operations_mcp_exposes_runtime_controls_and_restart_requirement(
             "comfyui.server.interrupt", {"server_id": "local", "execute": True}
         )
         result = await client.call_tool("comfyui.runtime.restart.plan", {"server_id": "local"})
+        failed = await client.call_tool(
+            "comfyui.runtime.restart.commit",
+            {"server_id": "local", "plan_digest": result.structured_content["plan_digest"]},
+        )
+        assert failed.is_error is True
+        assert "no runtime controller" in str(failed.content[0])
     assert result.structured_content["approval_required"] is False
     assert result.structured_content["runtime_controller_available"] is False
     assert cleared.structured_content["executed"] is True

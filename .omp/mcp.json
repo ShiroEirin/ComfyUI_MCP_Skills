@@ -1,0 +1,20 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "comfyui-skills": {
+      "type": "stdio",
+      "command": "uv",
+      "args": [
+        "run",
+        "--project",
+        "D:/github/ComfyUI_MCP_Skills",
+        "comfyui-mcp"
+      ],
+      "env": {
+        "COMFYUI_MCP_DIR": "D:/github/comfyui-good-anima/v2mini-opt-mini/comfyui-manager/workspace"
+      },
+      "cwd": "D:/github/ComfyUI_MCP_Skills",
+      "timeout": 360000
+    }
+  }
+}
