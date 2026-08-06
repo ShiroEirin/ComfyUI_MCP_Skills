@@ -136,15 +136,25 @@ class RuntimeControlService:
             active = []
             impact_coverage = "unavailable"
         affected = [row for row in active if row.get("status") not in _TERMINAL]
+        if impact_coverage == "owner_jobs":
+            requirement = (
+                "Restart execution is not exposed in this build: it requires persistent "
+                "approval plus drain/fence coordination infrastructure that is not yet "
+                "delivered; impact enumeration is scoped to the owner's active jobs"
+            )
+        else:
+            requirement = (
+                "Restart execution is not exposed in this build: active-job enumeration "
+                "is unavailable for this server and approval plus drain/fence "
+                "coordination infrastructure is not yet delivered"
+            )
         payload = {
             "server_id": server_id,
             "owner_id": owner_id,
             "affected_jobs": affected,
             "impact_coverage": impact_coverage,
             "approval_required": True,
-            "operation_requirement": (
-                "Global impact enumeration and management approval are required before restart"
-            ),
+            "operation_requirement": requirement,
         }
         digest = hashlib.sha256(_canonical_json(payload).encode()).hexdigest()
         return {

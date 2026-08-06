@@ -134,7 +134,8 @@ def test_global_controls_report_impact_and_restart_requirement(tmp_path: Path) -
     assert restart["approval_required"] is True
     assert restart["impact_coverage"] == "owner_jobs"
     assert restart["runtime_controller_available"] is False
-    assert "Global impact" in restart["operation_requirement"]
+    assert "not exposed in this build" in restart["operation_requirement"]
+    assert "owner's active jobs" in restart["operation_requirement"]
 
 
 @pytest.fixture
