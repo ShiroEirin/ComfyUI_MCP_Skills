@@ -649,13 +649,19 @@ async def test_admin_server_survives_workflow_cutover(tmp_path: Path) -> None:
     server = create_admin_server(tmp_path, enabled=True)
     async with Client(server) as client:
         names = {tool.name for tool in (await client.list_tools()).tools}
+        exported = await client.call_tool(
+            "comfyui.admin.audit.export",
+            {"actor": "stdio-admin", "limit": 100},
+        )
 
     assert "comfyui.admin.workflow.set_enabled" not in names
     assert "comfyui.admin.workflow.delete" not in names
-    assert "comfyui.admin.audit.export" not in names
+    assert "comfyui.admin.audit.export" in names
+    assert "comfyui.admin.audit.get" in names
     assert "comfyui.admin.workflow.change.plan" in names
     assert "comfyui.admin.workflow.import" in names
-    # phase-O tools are assembled by admin_main with real services; not asserted here.
+    assert exported.structured_content["events"] == []
+    assert exported.structured_content["count"] == 0
 
 
 @pytest.mark.anyio

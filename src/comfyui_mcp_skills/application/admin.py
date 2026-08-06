@@ -164,7 +164,7 @@ class WorkflowAdmin:
     def __init__(
         self,
         base_dir: Path,
-        repository: WorkflowRepository,
+        repository: WorkflowRepository | None,
         *,
         actor: str,
         audit_log: JsonlAuditLog | None = None,
@@ -187,12 +187,15 @@ class WorkflowAdmin:
         *,
         request_id: str = "",
     ) -> dict[str, object]:
+        repository = self._repository
+        if repository is None:
+            raise ValueError("file workflow store is fenced after the workflow cutover")
         directory = self._safe_directory(server_id, workflow_id)
         target = {"server_id": server_id, "workflow_id": workflow_id}
 
         def change() -> dict[str, object]:
             with self._migration_lock, FileLock(f"{directory}.admin.lock", timeout=10):
-                workflow = self._repository.get(server_id, workflow_id)
+                workflow = repository.get(server_id, workflow_id)
                 if workflow is None:
                     raise WorkflowNotFound(f"Workflow not found: {server_id}/{workflow_id}")
                 metadata_path = directory / "schema.json"
@@ -221,6 +224,9 @@ class WorkflowAdmin:
         *,
         request_id: str = "",
     ) -> dict[str, object]:
+        repository = self._repository
+        if repository is None:
+            raise ValueError("file workflow store is fenced after the workflow cutover")
         directory = self._safe_directory(server_id, workflow_id)
         target = {"server_id": server_id, "workflow_id": workflow_id}
 
@@ -229,7 +235,7 @@ class WorkflowAdmin:
             if confirmation != expected:
                 raise ValueError(f"confirmation must equal {expected}")
             with self._migration_lock, FileLock(f"{directory}.admin.lock", timeout=10):
-                if self._repository.get(server_id, workflow_id) is None:
+                if repository.get(server_id, workflow_id) is None:
                     raise WorkflowNotFound(f"Workflow not found: {server_id}/{workflow_id}")
                 shutil.rmtree(directory)
             return {
