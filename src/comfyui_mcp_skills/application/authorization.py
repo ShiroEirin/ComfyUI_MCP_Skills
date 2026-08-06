@@ -115,6 +115,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.revision.list": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
     "comfyui.revision.diff": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
     "comfyui.workflow.describe": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+    "comfyui.workflow.list": frozenset({Scope.OBSERVE}),
     "comfyui.workflow.dependencies.check": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
 }
 _RESOURCE_SCOPES: dict[str, frozenset[Scope]] = {

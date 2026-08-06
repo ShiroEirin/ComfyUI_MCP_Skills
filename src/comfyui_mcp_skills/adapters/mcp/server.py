@@ -1359,6 +1359,26 @@ def create_server(
                     )
                 )
                 return tool_result(result)
+            if params.name == "comfyui.workflow.list":
+                validate_fixed_arguments(
+                    arguments,
+                    {"server_id", "query", "include_disabled", "limit", "cursor"},
+                )
+                server_id = optional_string(arguments, "server_id", "", max_length=128)
+                query = optional_string(arguments, "query", "", max_length=256)
+                include_disabled = optional_boolean(arguments, "include_disabled", False)
+                cursor = optional_string(arguments, "cursor", "", max_length=512)
+                limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                result = await anyio.to_thread.run_sync(
+                    lambda: catalog.list_workflows(
+                        server_id=server_id,
+                        query=query,
+                        include_disabled=include_disabled,
+                        limit=limit,
+                        cursor=cursor,
+                    )
+                )
+                return tool_result(result)
             if params.name == "comfyui.job.cancel":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id"})
                 server_id = required_string(arguments, "server_id")

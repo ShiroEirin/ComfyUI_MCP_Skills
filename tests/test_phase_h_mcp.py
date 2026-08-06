@@ -31,6 +31,7 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
 
 PHASE_H_NAMES = {
     "comfyui.job.list",
+    "comfyui.workflow.list",
     "comfyui.queue.list",
     "comfyui.log.read",
     "comfyui.server.capabilities",
@@ -154,7 +155,7 @@ def test_phase_h_publishes_exact_strict_schemas_and_safe_annotations() -> None:
     tools = {tool.name: tool for tool in phase_h_tools()}
 
     assert set(tools) == PHASE_H_NAMES
-    assert len(tools) == 8
+    assert len(tools) == 9
     assert all(tool.input_schema.get("additionalProperties") is False for tool in tools.values())
     assert all(tool.output_schema.get("additionalProperties") is False for tool in tools.values())
     assert tools["comfyui.job.list"].input_schema["properties"]["limit"] == {

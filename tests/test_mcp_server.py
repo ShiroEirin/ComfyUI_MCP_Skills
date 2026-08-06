@@ -132,6 +132,7 @@ def _add_workflow(
     *,
     parameters: dict[str, Any] | None = None,
     server_id: str = "local",
+    enabled: bool = True,
 ) -> None:
     directory = base_dir / "data" / server_id / workflow_id
     directory.mkdir(parents=True)
@@ -139,14 +140,14 @@ def _add_workflow(
         json.dumps(
             {
                 "description": f"Workflow {workflow_id}",
-                "enabled": True,
+                "enabled": enabled,
                 "parameters": parameters or {},
             }
         ),
         encoding="utf-8",
     )
     (directory / "workflow.json").write_text(
-        json.dumps({"1": {"class_type": "Test", "inputs": {}}}),
+        json.dumps({"1": {"class_type": "Test", "inputs": {"text": "default"}}}),
         encoding="utf-8",
     )
 
@@ -625,6 +626,91 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
         )
         assert invalid.is_error is True
     assert not (tmp_path / "data" / "local" / "txt2img").exists()
+
+
+@pytest.mark.anyio
+async def test_workflow_list_lists_and_filters(tmp_path: Path) -> None:
+    """workflow.list enumerates workflows with filtering and pagination."""
+    _project(tmp_path)
+    _add_workflow(
+        tmp_path,
+        "portrait",
+        parameters={
+            "prompt": {
+                "type": "string",
+                "required": True,
+                "node_id": "1",
+                "field": "text",
+            }
+        },
+    )
+    _add_workflow(
+        tmp_path,
+        "landscape",
+        parameters={
+            "prompt": {
+                "type": "string",
+                "required": True,
+                "node_id": "1",
+                "field": "text",
+            }
+        },
+        enabled=False,
+    )
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: FakeGateway(),
+        authorization=AuthorizationContext(
+            "author-a", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
+        ),
+    )
+    async with Client(server) as client:
+        all_workflows = await client.call_tool(
+            "comfyui.workflow.list", {"include_disabled": True, "limit": 50}
+        )
+        enabled_only = await client.call_tool(
+            "comfyui.workflow.list", {"limit": 50}
+        )
+        filtered = await client.call_tool(
+            "comfyui.workflow.list", {"query": "portrait", "limit": 50}
+        )
+        paged = await client.call_tool("comfyui.workflow.list", {"limit": 1})
+
+    assert all_workflows.structured_content["total"] == 3
+    assert enabled_only.structured_content["total"] == 2
+    assert all(
+        item["enabled"] is True for item in enabled_only.structured_content["items"]
+    )
+    assert filtered.structured_content["total"] == 1
+    assert filtered.structured_content["items"][0]["workflow_id"] == "portrait"
+    assert len(paged.structured_content["items"]) == 1
+    assert paged.structured_content["next_cursor"]
+    second = await _workflow_list_page(
+        server, paged.structured_content["next_cursor"]
+    )
+    assert second["total"] == 2
+    assert len(second["items"]) == 1
+
+
+async def _workflow_list_page(server: Any, cursor: str) -> dict[str, Any]:
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.workflow.list", {"limit": 2, "cursor": cursor}
+        )
+    return result.structured_content
+
+
+@pytest.mark.anyio
+async def test_workflow_list_hidden_from_execution_surface(tmp_path: Path) -> None:
+    """workflow.list requires observe scope; the default execution surface hides it."""
+    _project(tmp_path)
+    server = create_server(tmp_path, gateway_factory=lambda _config: FakeGateway())
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        with pytest.raises(MCPError):
+            await client.call_tool("comfyui.workflow.list", {})
+
+    assert "comfyui.workflow.list" not in names
 
 
 @pytest.mark.anyio

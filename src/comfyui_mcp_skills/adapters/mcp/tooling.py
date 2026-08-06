@@ -1253,6 +1253,67 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
     }
     tools = [
         Tool(
+            name="comfyui.workflow.list",
+            description=(
+                "List configured workflows with owner-bound filtering and cursor pagination."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "pattern": r"^(?!.*[\r\n])(?:|[A-Za-z0-9][A-Za-z0-9_-]{0,127})$",
+                        "default": "",
+                    },
+                    "query": {"type": "string", "maxLength": 256, "default": ""},
+                    "include_disabled": {"type": "boolean", "default": False},
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 200,
+                        "default": 50,
+                    },
+                    "cursor": observation_cursor,
+                },
+                "additionalProperties": False,
+            },
+            output_schema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "workflow_uri": {"type": "string"},
+                                "workflow_id": {"type": "string"},
+                                "server_id": {"type": "string"},
+                                "description": {"type": "string"},
+                                "enabled": {"type": "boolean"},
+                                "revision_id": {"type": "string"},
+                                "deployment_id": {"type": "string"},
+                                "published": {"type": "boolean"},
+                                "validation_status": {"type": "string"},
+                            },
+                            "required": [
+                                "workflow_uri",
+                                "workflow_id",
+                                "server_id",
+                                "enabled",
+                            ],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "next_cursor": {"type": "string"},
+                    "total": {"type": "integer", "minimum": 0},
+                },
+                "required": ["items", "next_cursor", "total"],
+                "additionalProperties": False,
+            },
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
+        Tool(
             name="comfyui.job.list",
             description="List this principal's durable jobs with owner-bound cursor pagination.",
             input_schema={

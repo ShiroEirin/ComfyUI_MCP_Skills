@@ -366,6 +366,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("schema", "deployment", "revision"),
     ),
     CapabilitySpec(
+        "comfyui.workflow.list",
+        "List workflows",
+        "List configured workflows with filtering and cursor pagination.",
+        frozenset({Toolset.AUTHORING}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("discover", "workflow", "catalog"),
+    ),
+    CapabilitySpec(
         "comfyui.workflow.dependencies.check",
         "Check workflow dependencies",
         "Compare one published Revision's bounded node and model contract to a server.",
