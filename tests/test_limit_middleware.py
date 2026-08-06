@@ -23,10 +23,15 @@ class _DenyingStore:
     def release_permit(self, mode: str, permit_id: str, permit_key: str) -> bool:
         return True
 
-    def acquire_subscription(self, mode: str, subject: str, *, maximum: int) -> bool:
+    def acquire_subscription(
+        self, mode: str, lease_id: str, subject: str, *, maximum: int, ttl_seconds: int
+    ) -> bool:
         return True
 
-    def release_subscription(self, mode: str, subject: str) -> None:
+    def renew_subscription(self, mode: str, lease_id: str, *, ttl_seconds: int) -> bool:
+        return True
+
+    def release_subscription(self, mode: str, lease_id: str) -> None:
         return None
 
     def prune_expired(self) -> int:
@@ -49,7 +54,32 @@ class _ReleaseFailingStore(_DenyingStore):
         return True
 
 
-def _app(*, store: object) -> Starlette:
+class _RecordingStore(_DenyingStore):
+    def __init__(self) -> None:
+        self.acquired: list[str] = []
+        self.renewed: list[str] = []
+        self.released: list[str] = []
+
+    def acquire_permit(
+        self, mode: str, permit_id: str, permit_key: str, *, ttl_seconds: int, maximum: int
+    ):
+        return True
+
+    def acquire_subscription(
+        self, mode: str, lease_id: str, subject: str, *, maximum: int, ttl_seconds: int
+    ) -> bool:
+        self.acquired.append(lease_id)
+        return True
+
+    def renew_subscription(self, mode: str, lease_id: str, *, ttl_seconds: int) -> bool:
+        self.renewed.append(lease_id)
+        return True
+
+    def release_subscription(self, mode: str, lease_id: str) -> None:
+        self.released.append(lease_id)
+
+
+def _app(*, store: object, renew_interval: float = 120.0) -> Starlette:
     async def ok(request):
         return JSONResponse({"ok": True})
 
@@ -61,6 +91,7 @@ def _app(*, store: object) -> Starlette:
         bearer_tokens=(),
         limit_mode="external",
         shared_limit_store=store,
+        subscription_renew_interval_seconds=renew_interval,
     )
     return application
 
@@ -110,3 +141,41 @@ def test_release_failure_still_releases_local_slot() -> None:
         )
 
     assert second.status_code == 200
+
+
+def test_long_subscription_stream_renews_lease_and_releases_on_close() -> None:
+    import anyio
+    from starlette.responses import StreamingResponse
+
+    store = _RecordingStore()
+
+    async def stream(_request):
+        async def body():
+            for _ in range(4):
+                yield b'{"jsonrpc":"2.0","id":1,"result":{}}\n'
+                await anyio.sleep(0.2)
+
+        return StreamingResponse(body(), media_type="text/event-stream")
+
+    application = Starlette(routes=[Route("/mcp", stream, methods=["POST"])])
+    application.add_middleware(
+        RequestControlMiddleware,
+        requests_per_minute=100,
+        max_concurrent_requests=1,
+        bearer_tokens=(),
+        limit_mode="external",
+        shared_limit_store=store,
+        subscription_renew_interval_seconds=0.1,
+    )
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "subscriptions/listen"},
+            headers={"mcp-protocol-version": "2026-07-28", "mcp-method": "subscriptions/listen"},
+        )
+
+    assert response.status_code == 200
+    assert len(store.acquired) == 1
+    assert len(store.renewed) >= 1
+    assert store.released == store.acquired

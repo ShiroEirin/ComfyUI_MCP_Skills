@@ -59,6 +59,7 @@ class RequestControlMiddleware:
         max_subscriptions_per_principal: int = 2,
         limit_mode: str = "process",
         shared_limit_store: SharedLimitStore | None = None,
+        subscription_renew_interval_seconds: float = 120.0,
     ) -> None:
         if limit_mode not in {"process", "external"}:
             raise ValueError("limit_mode must be process or external")
@@ -67,6 +68,7 @@ class RequestControlMiddleware:
         self._limit_mode = limit_mode
         self._shared = shared_limit_store
         self._concurrency_limit = max_concurrent_requests
+        self._renew_interval = subscription_renew_interval_seconds
         self._app = app
         self._limit = requests_per_minute
         self._requests: dict[str, deque[float]] = defaultdict(deque)
@@ -150,7 +152,8 @@ class RequestControlMiddleware:
         )
         state = scope.setdefault("state", {})
         state["request_permit_id"] = uuid.uuid4().hex
-        limit_status = await self._acquire_concurrency_slot(client, is_subscription)
+        permit_id = state["request_permit_id"]
+        limit_status = await self._acquire_concurrency_slot(client, is_subscription, permit_id)
         if limit_status is not None:
             response = JSONResponse(
                 {"code": "CONCURRENCY_LIMITED", "request_id": request_id},
@@ -175,10 +178,10 @@ class RequestControlMiddleware:
                     maximum=self._concurrency_limit,
                 )
             except SharedLimitsUnavailable as exc:
-                await self._release_concurrency_slot(client, is_subscription)
+                await self._release_concurrency_slot(client, is_subscription, permit_id)
                 raise RuntimeError(f"shared permit backend failed: {exc}") from exc
             if not admitted:
-                await self._release_concurrency_slot(client, is_subscription)
+                await self._release_concurrency_slot(client, is_subscription, permit_id)
                 response = JSONResponse(
                     {"code": "CONCURRENCY_LIMITED", "request_id": request_id},
                     status_code=503,
@@ -203,17 +206,44 @@ class RequestControlMiddleware:
                 ]
             await send(message)
 
+        async def renew_subscription_lease() -> None:
+            assert self._shared is not None
+            shared = self._shared
+            while True:
+                await anyio.sleep(self._renew_interval)
+                try:
+                    renewed = await anyio.to_thread.run_sync(
+                        lambda: shared.renew_subscription(
+                            "http", permit_id, ttl_seconds=300
+                        )
+                    )
+                    if not renewed:
+                        break
+                except SharedLimitsUnavailable as exc:
+                    logger.warning("shared subscription renewal failed: %s", exc)
+                    break
+
         try:
-            await self._app(scope, receive, send_with_request_id)
+            if is_subscription and self._limit_mode == "external":
+                async with anyio.create_task_group() as renewal_group:
+                    renewal_group.start_soon(renew_subscription_lease)
+                    try:
+                        await self._app(scope, receive, send_with_request_id)
+                    finally:
+                        renewal_group.cancel_scope.cancel()
+            else:
+                await self._app(scope, receive, send_with_request_id)
         finally:
             try:
                 if self._limit_mode == "external":
                     assert self._shared is not None
                     self._shared.release_permit("http", request_permit, client)
+                    if is_subscription:
+                        self._shared.release_subscription("http", permit_id)
             except SharedLimitsUnavailable as exc:
                 raise RuntimeError(f"shared permit backend failed: {exc}") from exc
             finally:
-                await self._release_concurrency_slot(client, is_subscription)
+                await self._release_concurrency_slot(client, is_subscription, permit_id)
             duration = time.monotonic() - started_at
             REQUEST_METRICS.record(status_code=status_code, duration_seconds=duration)
             logger.info(
@@ -228,7 +258,9 @@ class RequestControlMiddleware:
                 },
             )
 
-    async def _acquire_concurrency_slot(self, client: str, is_subscription: bool) -> int | None:
+    async def _acquire_concurrency_slot(
+        self, client: str, is_subscription: bool, lease_id: str
+    ) -> int | None:
         if not is_subscription:
             try:
                 self._concurrency.acquire_nowait()
@@ -250,7 +282,11 @@ class RequestControlMiddleware:
                     assert self._shared is not None
                     try:
                         shared_ok = self._shared.acquire_subscription(
-                            "http", client, maximum=self._max_subscriptions_per_principal
+                            "http",
+                            lease_id,
+                            client,
+                            maximum=self._max_subscriptions_per_principal,
+                            ttl_seconds=300,
                         )
                     except SharedLimitsUnavailable as exc:
                         self._subscription_concurrency.release()
@@ -266,7 +302,9 @@ class RequestControlMiddleware:
             raise
         return None
 
-    async def _release_concurrency_slot(self, client: str, is_subscription: bool) -> None:
+    async def _release_concurrency_slot(
+        self, client: str, is_subscription: bool, lease_id: str
+    ) -> None:
         if not is_subscription:
             self._concurrency.release()
             return
@@ -277,14 +315,6 @@ class RequestControlMiddleware:
                     self._active_subscriptions[client] = remaining
                 else:
                     self._active_subscriptions.pop(client)
-                    if self._limit_mode == "external":
-                        assert self._shared is not None
-                        try:
-                            self._shared.release_subscription("http", client)
-                        except SharedLimitsUnavailable as exc:
-                            raise RuntimeError(
-                                f"shared subscription backend failed: {exc}"
-                            ) from exc
             self._subscription_concurrency.release()
 
 

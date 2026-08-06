@@ -31,15 +31,18 @@ _SCHEMA = (
     )
     """,
     """
-    CREATE TABLE IF NOT EXISTS shared_subscription_counts (
+    CREATE TABLE IF NOT EXISTS shared_subscription_leases (
+        lease_id TEXT NOT NULL,
         mode TEXT NOT NULL,
         subject TEXT NOT NULL,
-        active INTEGER NOT NULL CHECK(active >= 0),
-        PRIMARY KEY (mode, subject)
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (lease_id)
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_shared_permits_expiry ON shared_permits(expires_at)",
     "CREATE INDEX IF NOT EXISTS ix_shared_rates_expiry ON shared_rate_limits(window)",
+    "CREATE INDEX IF NOT EXISTS ix_shared_subject ON shared_subscription_leases(mode, subject)",
+    "CREATE INDEX IF NOT EXISTS ix_shared_lease_expiry ON shared_subscription_leases(expires_at)",
 )
 
 
@@ -51,8 +54,11 @@ class SharedLimitStore(Protocol):
         self, mode: str, permit_id: str, permit_key: str, *, ttl_seconds: int, maximum: int
     ) -> bool: ...
     def release_permit(self, mode: str, permit_id: str, permit_key: str) -> bool: ...
-    def acquire_subscription(self, mode: str, subject: str, *, maximum: int) -> bool: ...
-    def release_subscription(self, mode: str, subject: str) -> None: ...
+    def acquire_subscription(
+        self, mode: str, lease_id: str, subject: str, *, maximum: int, ttl_seconds: int
+    ) -> bool: ...
+    def renew_subscription(self, mode: str, lease_id: str, *, ttl_seconds: int) -> bool: ...
+    def release_subscription(self, mode: str, lease_id: str) -> None: ...
     def prune_expired(self) -> int: ...
 
 
@@ -174,26 +180,41 @@ class SQLiteSharedLimitStore:
         except (OSError, sqlite3.Error) as exc:
             raise SharedLimitsUnavailable(str(exc)) from exc
 
-    def acquire_subscription(self, mode: str, subject: str, *, maximum: int) -> bool:
+    def acquire_subscription(
+        self, mode: str, lease_id: str, subject: str, *, maximum: int, ttl_seconds: int
+    ) -> bool:
+        if maximum <= 0 or ttl_seconds <= 0:
+            raise ValueError("maximum and ttl_seconds must be positive")
+        now = int(time.time())
+        expires_at = now + ttl_seconds
         try:
             connection = _open(self.database)
             try:
                 connection.execute("BEGIN IMMEDIATE")
-                row = connection.execute(
-                    "SELECT active FROM shared_subscription_counts WHERE mode=? AND subject=?",
-                    (mode, subject),
+                connection.execute(
+                    "DELETE FROM shared_subscription_leases WHERE expires_at <= ?", (now,)
+                )
+                existing = connection.execute(
+                    "SELECT 1 FROM shared_subscription_leases WHERE lease_id=?",
+                    (lease_id,),
                 ).fetchone()
-                current = int(row[0]) if row is not None else 0
-                if current >= maximum:
+                if existing is not None:
+                    connection.rollback()
+                    return True
+                active = connection.execute(
+                    "SELECT count(*) FROM shared_subscription_leases "
+                    "WHERE mode=? AND subject=?",
+                    (mode, subject),
+                ).fetchone()[0]
+                if int(active) >= maximum:
                     connection.rollback()
                     return False
                 connection.execute(
                     """
-                    INSERT INTO shared_subscription_counts(mode, subject, active)
-                    VALUES (?, ?, 1)
-                    ON CONFLICT(mode, subject) DO UPDATE SET active = active + 1
+                    INSERT INTO shared_subscription_leases(lease_id, mode, subject, expires_at)
+                    VALUES (?, ?, ?, ?)
                     """,
-                    (mode, subject),
+                    (lease_id, mode, subject, expires_at),
                 )
                 connection.commit()
                 return True
@@ -202,15 +223,34 @@ class SQLiteSharedLimitStore:
         except (OSError, sqlite3.Error) as exc:
             raise SharedLimitsUnavailable(str(exc)) from exc
 
-    def release_subscription(self, mode: str, subject: str) -> None:
+    def renew_subscription(self, mode: str, lease_id: str, *, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        now = int(time.time())
+        try:
+            connection = _open(self.database)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    "UPDATE shared_subscription_leases SET expires_at = ? "
+                    "WHERE lease_id=? AND mode=? AND expires_at > ?",
+                    (now + ttl_seconds, lease_id, mode, now),
+                )
+                connection.commit()
+                return cursor.rowcount == 1
+            finally:
+                connection.close()
+        except (OSError, sqlite3.Error) as exc:
+            raise SharedLimitsUnavailable(str(exc)) from exc
+
+    def release_subscription(self, mode: str, lease_id: str) -> None:
         try:
             connection = _open(self.database)
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute(
-                    "UPDATE shared_subscription_counts SET active = active - 1 "
-                    "WHERE mode=? AND subject=? AND active > 0",
-                    (mode, subject),
+                    "DELETE FROM shared_subscription_leases WHERE lease_id=? AND mode=?",
+                    (lease_id, mode),
                 )
                 connection.commit()
             finally:
@@ -224,11 +264,14 @@ class SQLiteSharedLimitStore:
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 now = int(time.time())
-                cursor = connection.execute(
+                permits = connection.execute(
                     "DELETE FROM shared_permits WHERE expires_at <= ?", (now,)
                 )
+                subscriptions = connection.execute(
+                    "DELETE FROM shared_subscription_leases WHERE expires_at <= ?", (now,)
+                )
                 connection.commit()
-                return cursor.rowcount
+                return permits.rowcount + subscriptions.rowcount
             finally:
                 connection.close()
         except (OSError, sqlite3.Error) as exc:

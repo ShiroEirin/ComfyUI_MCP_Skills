@@ -63,11 +63,124 @@ def test_permit_enforces_maximum_concurrency_per_key(tmp_path: Path) -> None:
 def test_subscription_quota_is_shared_and_released(tmp_path: Path) -> None:
     store = SQLiteSharedLimitStore(tmp_path / "limits.sqlite3")
 
-    assert store.acquire_subscription("http", "principal:owner", maximum=2) is True
-    assert store.acquire_subscription("http", "principal:owner", maximum=2) is True
-    assert store.acquire_subscription("http", "principal:owner", maximum=2) is False
-    store.release_subscription("http", "principal:owner")
-    assert store.acquire_subscription("http", "principal:owner", maximum=2) is True
+    assert (
+        store.acquire_subscription(
+            "http", "lease-1", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+    assert (
+        store.acquire_subscription(
+            "http", "lease-2", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+    assert (
+        store.acquire_subscription(
+            "http", "lease-3", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is False
+    )
+    store.release_subscription("http", "lease-1")
+    assert (
+        store.acquire_subscription(
+            "http", "lease-3", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+
+
+def test_abandoned_subscription_lease_expires_and_quota_recovers(tmp_path: Path) -> None:
+    store = SQLiteSharedLimitStore(tmp_path / "limits.sqlite3")
+
+    assert (
+        store.acquire_subscription(
+            "http", "crashed-worker", "principal:owner", maximum=1, ttl_seconds=1
+        )
+        is True
+    )
+    assert (
+        store.acquire_subscription(
+            "http", "next-lease", "principal:owner", maximum=1, ttl_seconds=60
+        )
+        is False
+    )
+
+    import time
+
+    time.sleep(1.1)
+    assert (
+        store.acquire_subscription(
+            "http", "next-lease", "principal:owner", maximum=1, ttl_seconds=60
+        )
+        is True
+    )
+    assert store.prune_expired() >= 0
+
+
+def test_renewal_extends_active_lease_and_expired_lease_is_rejected(tmp_path: Path) -> None:
+    store = SQLiteSharedLimitStore(tmp_path / "limits.sqlite3")
+
+    assert (
+        store.acquire_subscription(
+            "http", "lease-1", "principal:owner", maximum=1, ttl_seconds=1
+        )
+        is True
+    )
+    import time
+
+    time.sleep(1.1)
+    assert store.renew_subscription("http", "lease-1", ttl_seconds=60) is False
+    assert (
+        store.acquire_subscription(
+            "http", "lease-2", "principal:owner", maximum=1, ttl_seconds=2
+        )
+        is True
+    )
+    assert store.renew_subscription("http", "lease-2", ttl_seconds=60) is True
+    time.sleep(1.5)
+    assert store.renew_subscription("http", "lease-2", ttl_seconds=60) is True
+
+
+def test_same_subject_multi_lease_release_in_any_order(tmp_path: Path) -> None:
+    store = SQLiteSharedLimitStore(tmp_path / "limits.sqlite3")
+
+    assert (
+        store.acquire_subscription(
+            "http", "lease-a", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+    assert (
+        store.acquire_subscription(
+            "http", "lease-b", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+
+    store.release_subscription("http", "lease-a")
+    store.release_subscription("http", "lease-b")
+
+    assert (
+        store.acquire_subscription(
+            "http", "lease-c", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+    assert (
+        store.acquire_subscription(
+            "http", "lease-d", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
+    store.release_subscription("http", "lease-d")
+    store.release_subscription("http", "lease-c")
+    assert (
+        store.acquire_subscription(
+            "http", "lease-e", "principal:owner", maximum=2, ttl_seconds=60
+        )
+        is True
+    )
 
 
 def test_unreadable_database_fails_closed(tmp_path: Path) -> None:
