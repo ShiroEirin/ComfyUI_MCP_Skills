@@ -195,7 +195,7 @@ comfyui.admin.workflow.publish
 comfyui.admin.workflow.rollback
 ```
 
-file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.delete` 在 workflow aggregate cutover 前可用；**cutover 后文件仓库被封存，这两个工具不再挂载**（调用返回 unavailable），审计工具（`audit.get/retry/export`）保持可用。
+file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.delete` 在 workflow aggregate cutover 前可用；**cutover 后文件仓库被封存，这两个工具从 `tools/list` 移除**（直接构造名称调用返回 Unknown tool），审计工具（`audit.get/retry/export`）保持可用。
 
 核心不变量：
 

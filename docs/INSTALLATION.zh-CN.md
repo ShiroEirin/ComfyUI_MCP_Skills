@@ -236,7 +236,7 @@ Linux/macOS：
 export COMFYUI_MCP_UPLOAD_ROOTS="/srv/media:/mnt/shared-assets"
 ```
 
-分隔符使用操作系统的 `PATH` 分隔符。MCP 侧媒体参数只接受 `comfyui://outputs|artifacts` URI、`asset_...` 标识或显式上传（`asset.upload`）后的引用；裸文件名与 `clipspace/...` 服务端引用语义仅在旧 CLI 保留，MCP 服务不会用当前工作目录的同名文件替换。
+分隔符使用操作系统的 `PATH` 分隔符。工作流执行参数中的媒体引用只接受 `comfyui://outputs|artifacts` URI 或 `asset_...` 标识（裸文件名与 `clipspace/...` 服务端引用语义仅在旧 CLI 保留，MCP 服务不会用当前工作目录的同名文件替换）；`asset.upload` 工具本身接受本地 `local_path` 作为上传来源。
 
 HTTP 部署另设 `COMFYUI_MCP_UPLOAD_ROOT`（单数，仅 HTTP）：默认 `<COMFYUI_MCP_DIR>/.mcp-uploads`，是 HTTP 侧授权的上传根目录，与 stdio 的 `uploads/` 及 `COMFYUI_MCP_UPLOAD_ROOTS` 相互独立。
 
