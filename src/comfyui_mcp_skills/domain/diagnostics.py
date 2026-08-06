@@ -73,13 +73,6 @@ _LOG_READ = _action("comfyui.log.read", "read_redacted_log_window", "server_id")
 _RETRY_PLAN = _action(
     "comfyui.job.retry.plan", "plan_retry_from_original_arguments", "job_id", "changes"
 )
-_SERVER_FREE = _action(
-    "comfyui.server.free",
-    "release_runtime_memory",
-    "server_id",
-    "free_memory",
-    risk="approval_required",
-)
 
 
 def _regex(expression: str) -> Pattern[str]:
@@ -210,7 +203,6 @@ _RULES: tuple[DiagnosticRule, ...] = (
         110,
         10,
         (_RETRY_PLAN,),
-        (_SERVER_FREE,),
     ),
     DiagnosticRule(
         "legacy.mps_oom",
@@ -220,7 +212,6 @@ _RULES: tuple[DiagnosticRule, ...] = (
         120,
         11,
         (_RETRY_PLAN,),
-        (_SERVER_FREE,),
     ),
     DiagnosticRule(
         "legacy.cuda_driver",

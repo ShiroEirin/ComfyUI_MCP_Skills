@@ -29,6 +29,9 @@ _MAX_REQUIREMENTS = 200
 _MAX_GIT_BYTES = 512 * 1024 * 1024
 _MAX_MODEL_BYTES = 20 * 1024 * 1024 * 1024
 _TERMINAL_ITEMS = frozenset({"completed", "failed", "cancelled"})
+# Bounded unknown-observation retries before declaring a Manager queue lost, so
+# a crash between claim commit and enqueue cannot leave an item retrying forever.
+_UNKNOWN_OBSERVATION_LIMIT = 6
 _FIXED_COMMIT = re.compile(r"[0-9a-f]{40}")
 _FIXED_TAG = re.compile(r"tag:[A-Za-z0-9][A-Za-z0-9._/+\-]{0,126}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -585,7 +588,22 @@ class ProvisioningWorkHandler:
                 else False,
             }
         )
-        next_checkpoint = {**checkpoint, **public_observation, "last_observed_at": _time(now)}
+        raw_unknown_count = checkpoint.get("unknown_count")
+        unknown_count = (
+            raw_unknown_count
+            if isinstance(raw_unknown_count, int) and not isinstance(raw_unknown_count, bool)
+            else 0
+        )
+        if state == "unknown":
+            unknown_count += 1
+        else:
+            unknown_count = 0
+        next_checkpoint = {
+            **checkpoint,
+            **public_observation,
+            "last_observed_at": _time(now),
+            "unknown_count": unknown_count,
+        }
         if state in _TERMINAL_ITEMS:
             self._repository.complete_item(
                 lease,
@@ -593,6 +611,23 @@ class ProvisioningWorkHandler:
                 owner_id=owner_id,
                 item_id=item_id,
                 result=public_observation,
+                now=now,
+            )
+        elif state == "unknown" and unknown_count >= _UNKNOWN_OBSERVATION_LIMIT:
+            # The Manager never acknowledges this queue_id (likely the enqueue
+            # was lost between claim commit and the HTTP call). Fail the item
+            # with a diagnosable error instead of retrying forever.
+            self._repository.complete_item(
+                lease,
+                job_id=job_id,
+                owner_id=owner_id,
+                item_id=item_id,
+                result={
+                    **public_observation,
+                    "state": "failed",
+                    "retryable": False,
+                    "error": "manager_queue_unknown_timeout",
+                },
                 now=now,
             )
         else:

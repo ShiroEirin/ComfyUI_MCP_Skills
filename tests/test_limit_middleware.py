@@ -143,6 +143,61 @@ def test_release_failure_still_releases_local_slot() -> None:
     assert second.status_code == 200
 
 
+class _PermitDenyingRecordingStore(_RecordingStore):
+    def acquire_permit(
+        self, mode: str, permit_id: str, permit_key: str, *, ttl_seconds: int, maximum: int
+    ):
+        return False
+
+
+def test_subscription_lease_released_when_shared_permit_rejected() -> None:
+    store = _PermitDenyingRecordingStore()
+    application = _app(store=store)
+
+    with TestClient(application) as client:
+        response = client.post(
+            "/mcp",
+            json={"jsonrpc": "2.0", "id": 1, "method": "subscriptions/listen"},
+            headers={
+                "mcp-protocol-version": "2026-07-28",
+                "mcp-method": "subscriptions/listen",
+            },
+        )
+
+    assert response.status_code == 503
+    assert len(store.acquired) == 1
+    assert store.released == store.acquired
+    assert store.renewed == []
+
+
+class _PermitRaisingStore(_RecordingStore):
+    def acquire_permit(
+        self, mode: str, permit_id: str, permit_key: str, *, ttl_seconds: int, maximum: int
+    ):
+        from comfyui_mcp_skills.application.shared_limits import SharedLimitsUnavailable
+
+        raise SharedLimitsUnavailable("shared permit backend failed")
+
+
+def test_subscription_lease_released_when_shared_permit_backend_fails() -> None:
+    store = _PermitRaisingStore()
+    application = _app(store=store)
+
+    with TestClient(application) as client:
+        with pytest.raises(RuntimeError, match="shared permit backend failed"):
+            client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "subscriptions/listen"},
+                headers={
+                    "mcp-protocol-version": "2026-07-28",
+                    "mcp-method": "subscriptions/listen",
+                },
+            )
+
+    assert len(store.acquired) == 1
+    assert store.released == store.acquired
+
+
 def test_long_subscription_stream_renews_lease_and_releases_on_close() -> None:
     import anyio
     from starlette.responses import StreamingResponse

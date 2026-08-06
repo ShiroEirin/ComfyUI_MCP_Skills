@@ -680,8 +680,6 @@ def create_admin_server(
                     )
                 )
             elif params.name in PHASE_O_TOOL_NAMES:
-                if not is_authorized(authorization.scopes, scopes_for_tool(params.name)):
-                    raise MCPError(code=INVALID_PARAMS, message="Tool unavailable")
                 if params.name.startswith("comfyui.admin.server."):
                     if server_control is None:
                         raise MCPError(code=INVALID_PARAMS, message="Server control unavailable")

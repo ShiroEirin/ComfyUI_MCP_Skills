@@ -483,10 +483,16 @@ def _insert_subgraph(
             raise ValueError(f"operations[{index}] subgraph {name} definition is invalid")
         nodes = definition.get("nodes")
         boundary_inputs = definition.get("boundary_inputs")
-        if not isinstance(nodes, dict):
-            nodes = definition
-            boundary_inputs = None
+        boundary_outputs = definition.get("boundary_outputs")
         if not isinstance(nodes, dict) or not nodes or len(nodes) > 100:
+            raise ValueError(
+                f"operations[{index}] subgraph {name} definition is invalid"
+            )
+        if boundary_inputs is not None and not isinstance(boundary_inputs, dict):
+            raise ValueError(
+                f"operations[{index}] subgraph {name} definition is invalid"
+            )
+        if boundary_outputs is not None and not isinstance(boundary_outputs, list):
             raise ValueError(
                 f"operations[{index}] subgraph {name} definition is invalid"
             )

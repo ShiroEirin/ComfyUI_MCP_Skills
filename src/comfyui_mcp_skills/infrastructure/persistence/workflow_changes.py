@@ -353,7 +353,11 @@ class SQLiteWorkflowChangeRepository:
                     "coverage": "unknown",
                     "outputs": [],
                 }
+            existing_revision = schema.get("_revision")
+            if not isinstance(existing_revision, dict):
+                existing_revision = {}
             schema["_revision"] = {
+                **existing_revision,
                 "kind": "rollback",
                 "rollback_of": target_revision_id,
                 "replaces_revision_id": replaced_revision_id,

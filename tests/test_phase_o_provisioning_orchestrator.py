@@ -279,6 +279,34 @@ def test_terminal_manager_observation_completes_once() -> None:
     assert repo.finish_calls.count(True) == 1
 
 
+def test_unknown_observation_reaches_bound_and_fails_item() -> None:
+    """A lost enqueue must fail the item after bounded unknown retries."""
+    repo = _ProvisioningRepository()
+    repo.crash_after_checkpoint = True
+    manager = _Manager([{"state": "unknown", "retryable": True}] * 6)
+    handler = _handler(repo, manager)
+    orchestrator = OperationOrchestrator(repo, {PROVISIONING_WORK_TYPE: handler}, lease_seconds=30)
+
+    # enqueue returns unknown, then the durable checkpoint save crashes
+    with pytest.raises(RuntimeError, match="simulated worker crash"):
+        orchestrator.run_once("worker-1", now=_NOW)
+    assert repo.item_checkpoint["enqueue_started"] is True
+    assert repo.item_checkpoint["unknown_count"] == 1
+
+    for attempt in range(4):
+        orchestrator.run_once(
+            "worker-1", now=_NOW + timedelta(seconds=31 * (attempt + 1))
+        )
+        assert repo.item_status == "pending"
+        assert repo.item_checkpoint["unknown_count"] == attempt + 2
+
+    orchestrator.run_once("worker-1", now=_NOW + timedelta(seconds=31 * 5))
+    assert repo.item_status == "completed"
+    assert repo.item_result["state"] == "failed"
+    assert repo.item_result["error"] == "manager_queue_unknown_timeout"
+    assert len(manager.observed) == 5
+
+
 def test_provisioning_lease_transfer_rejects_stale_fencing_token(tmp_path: Path) -> None:
     store = SQLiteControlPlaneStore((tmp_path / "control-plane.sqlite3").resolve())
     store.initialize()

@@ -414,8 +414,10 @@ def test_export_audit_rejects_invalid_filters(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="outcome rejected is not recognized"):
         admin.export_audit(outcomes=["rejected"])
-    with pytest.raises(ValueError, match="after must be a UTC"):
+    with pytest.raises(ValueError, match="with a timezone"):
         admin.export_audit(after="2026-13-99T99:99:99")
+    with pytest.raises(ValueError, match="with a timezone"):
+        admin.export_audit(after="2026-08-06T10:00:00")
     with pytest.raises(ValueError, match="limit must be an integer"):
         admin.export_audit(limit=0)
     with pytest.raises(ValueError, match="cursor is invalid"):
@@ -435,3 +437,37 @@ def test_export_audit_empty_trail_and_corrupt_line(tmp_path: Path) -> None:
     path.write_text("{not-json}\n", encoding="utf-8")
     with pytest.raises(AdminAuditError, match="could not be exported"):
         admin.export_audit(limit=100)
+
+    path.write_text("[1, 2]\n", encoding="utf-8")
+    with pytest.raises(AdminAuditError, match="could not be exported"):
+        admin.export_audit(limit=100)
+
+
+def test_export_audit_after_compares_instants_not_strings(tmp_path: Path) -> None:
+    """An offset-bearing after value must filter by instant, never by string order."""
+    from datetime import datetime, timezone
+
+    log = JsonlAuditLog(tmp_path / "data" / "admin-audit.jsonl")
+    for offset_minutes, label in ((0, "five"), (30, "five-thirty")):
+        log.append(
+            {
+                "timestamp": datetime(2026, 8, 6, 5, offset_minutes, tzinfo=timezone.utc)
+                .isoformat(),
+                "request_id": f"req-{label}",
+                "actor": "exporter-admin",
+                "action": "workflow.set_enabled",
+                "target": {"server_id": "local", "workflow_id": "txt2img"},
+                "operation_key": "key",
+                "outcome": "success",
+                "error_code": None,
+            }
+        )
+
+    admin = WorkflowAdmin(tmp_path, _workflow_project(tmp_path), actor="exporter-admin")
+    # 10:00+05:00 == 05:00Z: both events (05:00Z inclusive, 05:30Z) must be returned.
+    exported = admin.export_audit(after="2026-08-06T10:00:00+05:00", limit=100)
+    assert exported["count"] == 2
+    # 05:15Z excludes the 05:00Z event but keeps 05:30Z.
+    exported = admin.export_audit(after="2026-08-06T05:15:00+00:00", limit=100)
+    assert exported["count"] == 1
+    assert exported["events"][0]["request_id"] == "req-five-thirty"

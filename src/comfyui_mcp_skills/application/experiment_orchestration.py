@@ -16,6 +16,10 @@ from comfyui_mcp_skills.domain.models import Job
 from comfyui_mcp_skills.domain.orchestration import WorkItem, WorkLease
 
 _IN_FLIGHT_VARIANTS = frozenset({"submitted", "running"})
+
+# Persistent reconcile failures reach this many consecutive attempts before the
+# variant is failed with a diagnosable error instead of retrying silently.
+_RECONCILE_ERROR_LIMIT = 3
 _JOB_TO_VARIANT = {
     "reserved": "submitted",
     "submission_unknown": "submitted",
@@ -135,7 +139,27 @@ class ExperimentAdvanceHandler:
                 job = self._reconcile_variant(context, variant, owner_id)
             except (ExecutionInProgress, ServerOffline):
                 continue
-            except Exception:
+            except Exception as exc:
+                variant_id = str(variant.get("variant_id", ""))
+                errors = dict(checkpoint.get("reconcile_errors") or {})
+                prior = errors.get(variant_id, 0)
+                errors[variant_id] = prior + 1
+                checkpoint = {**checkpoint, "reconcile_errors": errors}
+                if prior + 1 < _RECONCILE_ERROR_LIMIT:
+                    continue
+                checkpoint = self._persist_transition(
+                    lease,
+                    context,
+                    variant,
+                    counts,
+                    checkpoint,
+                    owner_id,
+                    "failed",
+                    "",
+                    now,
+                    event_type="EXPERIMENT_VARIANT_FAILED",
+                    error_code=f"RECONCILE_ERROR:{type(exc).__name__}",
+                )
                 continue
             if job is None:
                 continue

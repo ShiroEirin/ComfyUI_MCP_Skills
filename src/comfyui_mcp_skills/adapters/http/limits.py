@@ -178,9 +178,13 @@ class RequestControlMiddleware:
                     maximum=self._concurrency_limit,
                 )
             except SharedLimitsUnavailable as exc:
+                if is_subscription:
+                    self._release_shared_subscription(permit_id)
                 await self._release_concurrency_slot(client, is_subscription, permit_id)
                 raise RuntimeError(f"shared permit backend failed: {exc}") from exc
             if not admitted:
+                if is_subscription:
+                    self._release_shared_subscription(permit_id)
                 await self._release_concurrency_slot(client, is_subscription, permit_id)
                 response = JSONResponse(
                     {"code": "CONCURRENCY_LIMITED", "request_id": request_id},
@@ -257,6 +261,14 @@ class RequestControlMiddleware:
                     "client_id": client,
                 },
             )
+
+    def _release_shared_subscription(self, permit_id: str) -> None:
+        """Best-effort shared subscription lease release that never masks the caller."""
+        assert self._shared is not None
+        try:
+            self._shared.release_subscription("http", permit_id)
+        except SharedLimitsUnavailable as exc:
+            logger.warning("shared subscription release failed: %s", exc)
 
     async def _acquire_concurrency_slot(
         self, client: str, is_subscription: bool, lease_id: str

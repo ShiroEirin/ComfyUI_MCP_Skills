@@ -88,15 +88,30 @@ class JsonlAuditLog:
 
         ``cursor`` is the line index of the last returned event (1-based);
         pass it back to continue from the following line. Events are returned
-        in append order; a corrupt line raises instead of being silently
-        skipped because the audit trail must stay trustworthy.
+        in append order. ``after`` is an ISO-8601 instant with a timezone; it is
+        parsed once, normalized to UTC, and compared as an instant (inclusive),
+        so offsets never skew the filter. A corrupt line or timestamp raises
+        instead of being silently skipped because the audit trail must stay
+        trustworthy. The trail has no rotation; each page rescans from line 0
+        (O(n) per page).
         """
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
             raise ValueError("limit must be an integer between 1 and 1000")
         if isinstance(cursor, bool) or not isinstance(cursor, int) or cursor < 0:
             raise ValueError("cursor must be a non-negative integer")
-        if after and not _valid_utc_timestamp(after):
-            raise ValueError("after must be a UTC ISO-8601 timestamp")
+        after_instant = None
+        if after:
+            try:
+                parsed_after = datetime.fromisoformat(after.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise ValueError(
+                    "after must be an ISO-8601 timestamp with a timezone"
+                ) from exc
+            if parsed_after.tzinfo is None:
+                raise ValueError(
+                    "after must be an ISO-8601 timestamp with a timezone"
+                )
+            after_instant = parsed_after.astimezone(timezone.utc)
         if not self._path.exists():
             return [], ""
         events: list[dict[str, Any]] = []
@@ -112,15 +127,33 @@ class JsonlAuditLog:
                             f"audit trail is corrupt at line {line_index}"
                         ) from exc
                     if not isinstance(event, dict):
-                        continue
+                        raise ValueError(
+                            f"audit trail is corrupt at line {line_index}: expected an object"
+                        )
                     if actor and event.get("actor") != actor:
                         continue
                     if action and event.get("action") != action:
                         continue
                     if outcomes and event.get("outcome") not in outcomes:
                         continue
-                    if after and str(event.get("timestamp", "")) < after:
-                        continue
+                    if after_instant is not None:
+                        raw_timestamp = event.get("timestamp")
+                        try:
+                            event_instant = datetime.fromisoformat(
+                                str(raw_timestamp).replace("Z", "+00:00")
+                            )
+                        except ValueError as exc:
+                            raise ValueError(
+                                f"audit trail is corrupt at line {line_index}: "
+                                "invalid event timestamp"
+                            ) from exc
+                        if event_instant.tzinfo is None:
+                            raise ValueError(
+                                f"audit trail is corrupt at line {line_index}: "
+                                "event timestamp has no timezone"
+                            )
+                        if event_instant.astimezone(timezone.utc) < after_instant:
+                            continue
                     events.append(event)
                     if len(events) >= limit:
                         return events, str(line_index)
@@ -266,7 +299,7 @@ class WorkflowAdmin:
             if outcome not in {"intent", "success", "failure"}:
                 raise ValueError(f"outcome {outcome} is not recognized")
         if after and not _valid_utc_timestamp(after):
-            raise ValueError("after must be a UTC ISO-8601 timestamp")
+            raise ValueError("after must be an ISO-8601 timestamp with a timezone")
         start = 0
         if cursor:
             try:

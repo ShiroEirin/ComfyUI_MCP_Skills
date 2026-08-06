@@ -83,8 +83,6 @@ from comfyui_mcp_skills.application.authorization import (
 from comfyui_mcp_skills.application.capabilities import (
     CAPABILITY_SPECS,
     CapabilityCatalog,
-    CapabilitySpec,
-    RiskLevel,
     ToolInventory,
 )
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
@@ -199,60 +197,6 @@ PHASE_K_TOOL_NAMES = frozenset(
         "comfyui.policy.evaluate",
     }
 )
-PHASE_N_CAPABILITY_SPECS = (
-    CapabilitySpec(
-        "comfyui.job.diagnose",
-        "Diagnose a failed Job",
-        "Generate one owner-bound structured Diagnostic Report.",
-        frozenset({Toolset.EXECUTION}),
-        frozenset({Scope.EXECUTE}),
-        RiskLevel.LOW,
-        ("diagnose", "failure", "evidence"),
-    ),
-    CapabilitySpec(
-        "comfyui.server.diagnose",
-        "Diagnose a server",
-        "Generate one bounded structured server Diagnostic Report.",
-        frozenset({Toolset.OPERATIONS}),
-        frozenset({Scope.OBSERVE}),
-        RiskLevel.LOW,
-        ("diagnose", "server", "health"),
-    ),
-    CapabilitySpec(
-        "comfyui.job.retry.plan",
-        "Plan a Job retry",
-        "Create an owner-bound digest-bound retry repair plan.",
-        frozenset({Toolset.EXECUTION}),
-        frozenset({Scope.EXECUTE}),
-        RiskLevel.MEDIUM,
-        ("retry", "repair", "plan", "diff"),
-    ),
-    CapabilitySpec(
-        "comfyui.job.retry.commit",
-        "Commit a Job retry",
-        "Create one new Job from an unexpired digest-bound repair plan.",
-        frozenset({Toolset.EXECUTION}),
-        frozenset({Scope.EXECUTE}),
-        RiskLevel.MEDIUM,
-        ("retry", "repair", "commit"),
-    ),
-)
-
-
-def _tool_visible(name: str, toolset: Toolset, scopes: frozenset[Scope]) -> bool:
-    if name in PHASE_N_TOOL_NAMES:
-        required = (
-            frozenset({Scope.OBSERVE})
-            if name == "comfyui.server.diagnose"
-            else frozenset({Scope.EXECUTE})
-        )
-        admitted_toolsets = (
-            frozenset({Toolset.OPERATIONS})
-            if name == "comfyui.server.diagnose"
-            else frozenset({Toolset.EXECUTION})
-        )
-        return toolset in admitted_toolsets and bool(scopes & required)
-    return tool_visible(name, toolset, scopes)
 
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
@@ -493,6 +437,7 @@ def create_server(
         *(
             tool
             for tool in phase_h_tools(include_phase_p=True)
+            # deliberately unexposed: free semantics pending audit wiring
             if tool.name != "comfyui.server.free"
         ),
         *(phase_l_tools() if asset_library is not None else []),
@@ -519,15 +464,18 @@ def create_server(
                 and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
                 and spec.name != "comfyui.server.free"
                 and (routing is not None or spec.name not in PHASE_K_TOOL_NAMES)
+                and (
+                    spec.name not in PHASE_N_TOOL_NAMES
+                    or spec.name in available_phase_n
+                )
             ),
-            *(spec for spec in PHASE_N_CAPABILITY_SPECS if spec.name in available_phase_n),
         )
     )
     tool_inventory = ToolInventory(
         (
             tool
             for tool in fixed_surface
-            if _tool_visible(tool.name, authorization.toolset, authorization.scopes)
+            if tool_visible(tool.name, authorization.toolset, authorization.scopes)
         ),
         max_fixed_limit=ToolInventory.HARD_FIXED_LIMIT,
         max_dynamic_limit=max_dynamic_tools,
@@ -735,7 +683,7 @@ def create_server(
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
-                and _tool_visible(tool.name, authorization.toolset, active_scopes)
+                and tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
                 canonical_workflow_map = {}
@@ -745,7 +693,7 @@ def create_server(
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
-                and _tool_visible(tool.name, authorization.toolset, authorization.scopes)
+                and tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
         if apps_supported:
             canonical_tools = [

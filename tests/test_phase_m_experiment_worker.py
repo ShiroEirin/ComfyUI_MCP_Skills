@@ -900,3 +900,43 @@ def test_takeover_resumes_persisted_pre_submit_claim_once() -> None:
         "experiment:" + _EXPERIMENT_ID + ":variant:" + claimed["variant_id"]
     ]
     assert repository.variants[0]["job_id"].startswith("job_")
+
+
+class _FailingReconcileRuns(_Runs):
+    def get_by_idempotency(self, server_id: str, key: str, owner_id: str) -> Job | None:
+        del server_id, key, owner_id
+        raise RuntimeError("simulated reconcile persistence failure")
+
+
+def _work_with(checkpoint: dict[str, Any]) -> WorkItem:
+    base = _work()
+    return WorkItem(
+        base.work_item_id,
+        base.subject_uri,
+        base.work_type,
+        base.payload,
+        dict(checkpoint),
+        base.status,
+    )
+
+
+def test_reconcile_persistent_error_fails_variant_after_bound() -> None:
+    """A persistent reconcile failure must surface as a failed variant, not retry forever."""
+    repository = _Repository([_variant(1, "submitted")])
+    runs = _FailingReconcileRuns()
+    handler = ExperimentAdvanceHandler(repository, runs, _Execution(runs), _Jobs())
+    variant_id = _variant(1, "submitted")["variant_id"]
+
+    handler(_work(), _lease(), now=_NOW)
+    assert repository.variants[0]["status"] == "submitted"
+    assert repository.finishes[-1]["checkpoint"]["reconcile_errors"] == {variant_id: 1}
+
+    handler(_work_with(repository.finishes[-1]["checkpoint"]), _lease(), now=_NOW)
+    assert repository.variants[0]["status"] == "submitted"
+    assert repository.finishes[-1]["checkpoint"]["reconcile_errors"] == {variant_id: 2}
+
+    handler(_work_with(repository.finishes[-1]["checkpoint"]), _lease(), now=_NOW)
+    assert repository.variants[0]["status"] == "failed"
+    assert repository.finishes[-1]["checkpoint"]["last_error"] == (
+        "RECONCILE_ERROR:RuntimeError"
+    )

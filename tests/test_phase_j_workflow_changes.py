@@ -738,6 +738,42 @@ def test_extract_and_reuse_roundtrip_in_one_plan(tmp_path: Path) -> None:
     assert revision["3"]["inputs"]["images"] == ["rt_2", 0]
 
 
+def test_rollback_preserves_extracted_subgraph_catalog(tmp_path: Path) -> None:
+    changes, workflows = _services(tmp_path)
+
+    extracted = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "extract_subgraph", "name": "seg", "node_ids": ["2"]}],
+        object_info=OBJECT_INFO,
+    )
+    committed = changes.commit(extracted["plan_id"], extracted["plan_digest"])
+    changes.publish(committed["deployment_id"])
+    base_revision_id = workflows.describe("portrait", "local")["revision_id"]
+
+    changed = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "set_input", "node_id": "1", "field": "text", "value": "after-rollback"}],
+        object_info=OBJECT_INFO,
+    )
+    changes.commit(changed["plan_id"], changed["plan_digest"])
+
+    rolled_back = changes.rollback(
+        "portrait", "local", base_revision_id, request_id="rollback-keep-catalog"
+    )
+    catalog = _revision_catalog(rolled_back, workflows)
+    assert "seg" in catalog["extracted_subgraphs"]
+
+    reused = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "insert_subgraph", "id_prefix": "rb", "subgraph": "seg"}],
+        object_info=OBJECT_INFO,
+    )
+    assert reused["diff"]["nodes_added"] == ["rb_2"]
+
+
 def _revision_catalog(
     committed: dict[str, Any],
     workflows: SQLiteWorkflowRepository,

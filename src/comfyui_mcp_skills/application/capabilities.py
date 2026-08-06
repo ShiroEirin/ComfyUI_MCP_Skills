@@ -195,6 +195,42 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("history", "status", "workflow", "cursor"),
     ),
     CapabilitySpec(
+        "comfyui.job.diagnose",
+        "Diagnose a failed Job",
+        "Generate one owner-bound structured Diagnostic Report.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("diagnose", "failure", "evidence"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.retry.plan",
+        "Plan a Job retry",
+        "Create an owner-bound digest-bound retry repair plan.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("retry", "repair", "plan", "diff"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.retry.commit",
+        "Commit a Job retry",
+        "Create one new Job from an unexpired digest-bound repair plan.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("retry", "repair", "commit"),
+    ),
+    CapabilitySpec(
+        "comfyui.server.diagnose",
+        "Diagnose a server",
+        "Generate one bounded structured server Diagnostic Report.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("diagnose", "server", "health"),
+    ),
+    CapabilitySpec(
         "comfyui.server.list",
         "List ComfyUI servers",
         "List configured servers without credentials or private URLs.",
@@ -498,7 +534,9 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
             "Owner-bound Phase O admin control-plane operation with bounded projections.",
             frozenset({Toolset.ADMIN}),
             frozenset(
-                {Scope.PROVISION}
+                {Scope.PROVISION, Scope.AUDIT}
+                if name == "comfyui.admin.approval.get"
+                else {Scope.PROVISION}
                 if "dependency" in name or "approval" in name or "provisioning" in name
                 else {Scope.CONFIGURE}
             ),
