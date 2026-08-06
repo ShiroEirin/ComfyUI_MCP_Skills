@@ -198,7 +198,14 @@ comfyui.admin.workflow.rollback
 - rollback 创建新 Revision，不删除历史。
 - 已运行 Job 始终保留原 Revision 和 Deployment 绑定。
 
-当前边界化图操作覆盖常用参数和连接变更。完整节点增删替换、recipe 和高层 subgraph 编辑仍属于后续范围。
+当前已交付的图操作（经 `comfyui.admin.workflow.change.plan` 提交后随 Revision commit 生效）：
+
+- 节点生命周期：`add_node`、`remove_node`、`replace_node`（带连接与参数目标校验）。
+- 连接与输入：`connect`、`disconnect`、`set_input`、`expose_parameter`。
+- 内联子图：`insert_subgraph`（1–100 节点、前缀重命名、内部引用重写）。
+- 子图提取与 recipe 应用：`extract_subgraph`（存入 Revision 元数据并计入内容摘要）、`apply_recipe`（当前注册 `set_scalar_input.v1`）。
+
+仍属后续范围：`extract_subgraph` 只登记不剪除图节点；提取结果没有可检索/可实例化的全局目录；recipe 注册表只有单一标量 setter。高层"提取→目录→实例化"闭环未交付，文档不应暗示其可用。
 
 ## 8. 多服务器路由与 Policy
 
