@@ -729,6 +729,9 @@ async def test_admin_workflow_validate_returns_structured_result(tmp_path: Path)
                 }
             }
 
+        def get_models(self, folder: str) -> list[str]:
+            return []
+
     server = create_admin_server(
         tmp_path,
         enabled=True,
@@ -749,6 +752,7 @@ async def test_admin_workflow_validate_returns_structured_result(tmp_path: Path)
     assert isinstance(content["issues"], list)
     assert content["node_count"] == 1
     assert "dependencies" in content
+    assert content["dependencies"]["missing_models"] == []
 
 
 @pytest.mark.anyio
@@ -817,6 +821,56 @@ async def test_admin_workflow_validate_rejects_bad_parameter_targets(
     # target missing), so validate surfaces the failure as an error; the SQLite
     # path surfaces it as invalid_parameter_schema via the service layer.
     assert result.is_error is True
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_validate_reports_missing_models(tmp_path: Path) -> None:
+    """Model contract entries missing from the server are reported as missing."""
+    _project(tmp_path)
+    directory = tmp_path / "data" / "local" / "txt2img"
+    (directory / "schema.json").write_text(
+        json.dumps({"enabled": True, "parameters": {}}), encoding="utf-8"
+    )
+    (directory / "workflow.json").write_text(
+        json.dumps(
+            {
+                "1": {
+                    "class_type": "LoraLoaderModelOnly",
+                    "inputs": {
+                        "model": ["2", 0],
+                        "lora_name": "missing-lora.safetensors",
+                    },
+                },
+                "2": {
+                    "class_type": "CheckpointLoaderSimple",
+                    "inputs": {"ckpt_name": "base.safetensors"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _ModelsGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+        def get_models(self, folder: str) -> list[str]:
+            return []  # nothing available on the server
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ModelsGateway(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.validate",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    dependencies = result.structured_content["dependencies"]
+    assert "missing-lora.safetensors" in dependencies["missing_models"]
+    assert dependencies["is_ready"] is False
 
 
 @pytest.mark.anyio

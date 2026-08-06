@@ -1071,9 +1071,15 @@ def _validate_published_workflow(
     object_info = gateway.get_object_info()
     result = validation.validate_api(workflow.graph, object_info)
     semantic = graphs.describe(workflow.graph, object_info=object_info)
+    dependencies = dict(semantic["dependencies"])
+    missing_models = _missing_models(gateway, dependencies)
+    dependencies["missing_models"] = sorted(set(missing_models))
+    dependencies["is_ready"] = bool(
+        dependencies.get("coverage") == "complete" and not missing_models
+    )
     issues = list(result["issues"])
     try:
-        normalized = normalize_parameters(workflow.parameters)
+        normalized = normalize_parameters({"parameters": workflow.parameters})
         validate_parameter_targets(normalized, workflow.graph)
         build_input_schema(normalized)
     except (TypeError, ValueError) as exc:
@@ -1095,8 +1101,31 @@ def _validate_published_workflow(
         "unsupported_nodes": sorted(result["unsupported_nodes"]),
         "node_count": int(semantic["node_count"]),
         "edge_count": int(semantic["edge_count"]),
-        "dependencies": dict(semantic["dependencies"]),
+        "dependencies": dependencies,
     }
+
+
+def _missing_models(gateway: Any, dependencies: dict[str, Any]) -> list[str]:
+    """Compare the extracted model contract against the server's model folders."""
+    models = dependencies.get("models")
+    if not isinstance(models, list):
+        return []
+    by_folder: dict[str, list[str]] = {}
+    for item in models:
+        if not isinstance(item, dict):
+            continue
+        folder = str(item.get("folder", ""))
+        filename = str(item.get("filename", ""))
+        if folder and filename:
+            by_folder.setdefault(folder, []).append(filename)
+    missing: list[str] = []
+    for folder, filenames in by_folder.items():
+        try:
+            available = set(gateway.get_models(folder))
+        except (TypeError, ValueError, LookupError):
+            continue
+        missing.extend(filename for filename in filenames if filename not in available)
+    return missing
 
 
 def _required_string(arguments: dict[str, Any], name: str) -> str:
