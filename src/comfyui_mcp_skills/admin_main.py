@@ -11,6 +11,7 @@ import anyio
 from mcp.server.stdio import stdio_server
 
 from .adapters.mcp.admin import create_admin_server
+from .application.assets import configured_upload_roots
 from .application.config_bundles import ConfigBundleService
 from .application.provisioning import DependencyProvisioningService
 from .application.server_control import ServerControlService
@@ -59,6 +60,7 @@ async def _run(base_dir: Path, actor: str) -> None:
         enabled=True,
         actor=actor,
         repositories=repositories,
+        upload_roots=configured_upload_roots(base_dir),
         server_control=ServerControlService(provisioning),
         config_bundles=ConfigBundleService(provisioning),
         dependency_provisioning=DependencyProvisioningService(

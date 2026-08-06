@@ -18,20 +18,9 @@ from .observability import configure_logging
 
 
 def _configured_upload_roots(base_dir: Path) -> list[Path]:
-    configured = os.environ.get("COMFYUI_MCP_UPLOAD_ROOTS", "")
-    if not configured:
-        return [(base_dir / "uploads").resolve()]
-    roots: list[Path] = []
-    for value in configured.split(os.pathsep):
-        if not value.strip():
-            continue
-        root = Path(value.strip()).expanduser()
-        if not root.is_absolute():
-            root = base_dir / root
-        roots.append(root.resolve())
-    if not roots:
-        raise ValueError("COMFYUI_MCP_UPLOAD_ROOTS must contain at least one path")
-    return roots
+    from comfyui_mcp_skills.application.assets import configured_upload_roots
+
+    return configured_upload_roots(base_dir)
 
 
 def _configured_manager_hosts() -> set[str]:

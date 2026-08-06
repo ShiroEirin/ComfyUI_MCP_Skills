@@ -96,6 +96,39 @@ def _is_mpeg_audio_frame(prefix: bytes) -> bool:
     return version != 0x01 and layer != 0 and bitrate not in {0, 0x0F} and sample_rate != 0x03
 
 
+def same_file_stat(first: os.stat_result, second: os.stat_result) -> bool:
+    """Two stat results refer to the same unmodified file (dev, inode, size)."""
+    return (
+        first.st_dev == second.st_dev
+        and first.st_ino == second.st_ino
+        and first.st_size == second.st_size
+    )
+
+
+def configured_upload_roots(base_dir: Path) -> list[Path]:
+    """Resolve authorized local upload roots from the deployment environment.
+
+    Without ``COMFYUI_MCP_UPLOAD_ROOTS`` the default is ``<base_dir>/uploads``;
+    with it configured, only the configured roots are authorized.
+    """
+    import os
+
+    configured = os.environ.get("COMFYUI_MCP_UPLOAD_ROOTS", "")
+    if not configured:
+        return [(base_dir / "uploads").resolve()]
+    roots: list[Path] = []
+    for value in configured.split(os.pathsep):
+        if not value.strip():
+            continue
+        root = Path(value.strip()).expanduser()
+        if not root.is_absolute():
+            root = base_dir / root
+        roots.append(root.resolve())
+    if not roots:
+        raise ValueError("COMFYUI_MCP_UPLOAD_ROOTS must contain at least one path")
+    return roots
+
+
 class AssetService:
     def __init__(
         self,
@@ -254,8 +287,4 @@ class AssetService:
 
     @staticmethod
     def _same_file(first: os.stat_result, second: os.stat_result) -> bool:
-        return (
-            first.st_dev == second.st_dev
-            and first.st_ino == second.st_ino
-            and first.st_size == second.st_size
-        )
+        return same_file_stat(first, second)

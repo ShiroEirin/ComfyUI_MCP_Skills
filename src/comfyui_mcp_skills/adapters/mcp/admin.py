@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
@@ -75,6 +76,7 @@ from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
 )
+from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     RepositoryBundle,
@@ -107,6 +109,7 @@ def create_admin_server(
     provisioning_repository: Any = None,
     tracer: Tracer | None = None,
     meter: Meter | None = None,
+    upload_roots: list[Path] | None = None,
 ) -> Server[dict[str, object]]:
     if not enabled:
         raise PermissionError("Admin MCP requires an explicit enabled=True configuration")
@@ -239,7 +242,55 @@ def create_admin_server(
                                     "type": "object",
                                     "properties": {
                                         **identity,
-                                        "source": {"type": "object"},
+                                        "source": {
+                                            "anyOf": [
+                                                {
+                                                    "type": "object",
+                                                    "description": "Inline workflow JSON",
+                                                    "properties": {
+                                                        "kind": {"const": "inline_json"},
+                                                        "workflow": {"type": "object"},
+                                                    },
+                                                    "required": ["kind", "workflow"],
+                                                    "additionalProperties": False,
+                                                },
+                                                {
+                                                    "type": "object",
+                                                    "description": (
+                                                        "Read one workflow from ComfyUI userdata"
+                                                    ),
+                                                    "properties": {
+                                                        "kind": {"const": "server_userdata"},
+                                                        "path": {"type": "string"},
+                                                    },
+                                                    "required": ["kind", "path"],
+                                                    "additionalProperties": False,
+                                                },
+                                                {
+                                                    "type": "object",
+                                                    "description": (
+                                                        "Read one workflow JSON from an "
+                                                        "authorized local upload root"
+                                                    ),
+                                                    "properties": {
+                                                        "kind": {
+                                                            "const": "authorized_local_file"
+                                                        },
+                                                        "path": {"type": "string"},
+                                                    },
+                                                    "required": ["kind", "path"],
+                                                    "additionalProperties": False,
+                                                },
+                                                {
+                                                    "type": "object",
+                                                    "not": {"required": ["kind"]},
+                                                    "description": (
+                                                        "Legacy inline form: the workflow "
+                                                        "object itself (no kind key)"
+                                                    ),
+                                                },
+                                            ]
+                                        },
                                         "media_type": {
                                             "type": "string",
                                             "enum": ["image", "audio", "video"],
@@ -579,6 +630,49 @@ def create_admin_server(
                 source = arguments.get("source")
                 if not isinstance(source, dict):
                     raise TypeError("source must be an object")
+                kind = source.get("kind", "inline_json")
+                if kind not in {"inline_json", "server_userdata", "authorized_local_file"}:
+                    raise TypeError(
+                        "source.kind must be inline_json, server_userdata, or "
+                        "authorized_local_file"
+                    )
+                workflow_source: dict[str, Any]
+                if kind == "inline_json":
+                    if "kind" not in source:
+                        workflow_source = source  # legacy inline workflow object
+                    else:
+                        candidate = source.get("workflow")
+                        if not isinstance(candidate, dict):
+                            raise TypeError(
+                                "source.workflow must be an object for inline_json"
+                            )
+                        workflow_source = candidate
+                elif kind == "server_userdata":
+                    workflow_path = source.get("path")
+                    if not isinstance(workflow_path, str) or not _safe_userdata_path(
+                        workflow_path
+                    ):
+                        raise TypeError(
+                            "source.path must be a relative workflows/*.json path "
+                            "for server_userdata"
+                        )
+                    config = servers.connection(server_id)
+                    userdata_client = ComfyUIClient(
+                        server_url=str(config.get("url", "http://127.0.0.1:8188")),
+                        auth=str(config.get("auth", "")),
+                        comfy_api_key=str(config.get("comfy_api_key", "")),
+                        timeout=float(config.get("timeout", 30.0)),
+                    )
+                    fetched = await anyio.to_thread.run_sync(
+                        lambda: userdata_client.read_userdata_workflow(workflow_path)
+                    )
+                    if fetched is None:
+                        raise LookupError(f"userdata workflow not found: {workflow_path}")
+                    workflow_source = fetched
+                else:
+                    workflow_source = _read_authorized_local_workflow(
+                        base_dir, source, upload_roots
+                    )
                 media_type = arguments.get("media_type", "image")
                 if media_type not in {"image", "audio", "video"}:
                     raise TypeError("media_type must be image, audio, or video")
@@ -599,7 +693,7 @@ def create_admin_server(
                     replacements = {}
                 preview = await anyio.to_thread.run_sync(
                     lambda: workflow_import.preview(
-                        source,
+                        workflow_source,
                         workflow_id=workflow_id,
                         server_id=server_id,
                         object_info=object_info,
@@ -1052,6 +1146,91 @@ def create_admin_server(
         on_subscriptions_listen=authorized_listen,
         **resource_kwargs,
     )
+
+
+_USERDATA_PATH = re.compile(r"^workflows/[A-Za-z0-9][A-Za-z0-9_.-]*\.json$")
+
+
+def _safe_userdata_path(value: object) -> bool:
+    """Userdata paths must be relative workflows/*.json with safe characters."""
+    return isinstance(value, str) and _USERDATA_PATH.fullmatch(value) is not None
+
+
+def _read_authorized_local_workflow(
+    base_dir: Path, source: dict[str, Any], upload_roots: list[Path] | None = None
+) -> dict[str, Any]:
+    """Read an inline workflow JSON only from authorized upload roots.
+
+    Mirrors the AssetService read discipline: stat, open, verify the same
+    unmodified file via fstat, read with a hard size cap, and verify again
+    after reading so a swapped file can never be parsed as the workflow.
+    The roots are injected by the entry point; nothing here reads the
+    environment, so the configured-roots-only semantics cannot be widened.
+    """
+    import os
+
+    from comfyui_mcp_skills.application.assets import same_file_stat
+
+    max_bytes = 2 * 1024 * 1024
+    raw_path = source.get("path")
+    if not isinstance(raw_path, str) or not raw_path or len(raw_path) > 1024:
+        raise TypeError("source.path must be a non-empty string for authorized_local_file")
+    if upload_roots is None:
+        roots = [(base_dir / "uploads").resolve()]
+    else:
+        roots = [root.resolve() for root in upload_roots]
+    if not roots:
+        raise ValueError("no authorized upload roots are configured")
+    try:
+        resolved = Path(raw_path).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise LookupError("source.path could not be resolved") from exc
+    if not resolved.is_file() or not any(
+        _path_within(resolved, root.resolve()) for root in roots
+    ):
+        raise ValueError("source.path is outside authorized upload roots")
+    try:
+        expected = resolved.stat()
+    except OSError as exc:
+        raise LookupError("source.path could not be inspected") from exc
+    if expected.st_size > max_bytes:
+        raise ValueError("source.path exceeds the 2 MiB workflow file limit")
+    try:
+        with resolved.open("r", encoding="utf-8") as handle:
+            opened = os.fstat(handle.fileno())
+            if not same_file_stat(expected, opened):
+                raise ValueError("source.path was replaced before it could be read")
+            content = handle.read(max_bytes + 1)
+            after_read = os.fstat(handle.fileno())
+            try:
+                current = resolved.stat()
+            except FileNotFoundError as exc:
+                raise ValueError("source.path was replaced while being read") from exc
+            if (
+                len(content) > max_bytes
+                or not same_file_stat(opened, after_read)
+                or not same_file_stat(opened, current)
+            ):
+                raise ValueError("source.path was replaced while being read")
+    except (OSError, ValueError) as exc:
+        if isinstance(exc, ValueError):
+            raise
+        raise ValueError("source.path could not be read") from exc
+    try:
+        parsed = json.loads(content)
+    except ValueError as exc:
+        raise ValueError("source.path is not a valid workflow JSON file") from exc
+    if not isinstance(parsed, dict):
+        raise TypeError("source.path must contain a workflow object")
+    return parsed
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 def _validate_published_workflow(

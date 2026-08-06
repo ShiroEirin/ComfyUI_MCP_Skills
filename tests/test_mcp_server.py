@@ -927,6 +927,332 @@ async def test_admin_workflow_validate_marks_inventory_errors_not_ready(
 
 
 @pytest.mark.anyio
+async def test_admin_workflow_import_from_server_userdata(tmp_path: Path) -> None:
+    """kind=server_userdata reads the workflow from ComfyUI userdata first."""
+    import sqlite3
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    class _ImportGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+        def get_node_replacements(self) -> dict[str, Any]:
+            return {}
+
+    class _Response:
+        status_code = 200
+
+        def json(self) -> dict[str, Any]:
+            return {"1": {"class_type": "Test", "inputs": {}}}
+
+    with patch(
+        "comfyui_mcp_skills.infrastructure.comfyui.core_client.CoreClient._get",
+        return_value=_Response(),
+    ):
+        server = create_admin_server(
+            tmp_path,
+            enabled=True,
+            gateway_factory=lambda _config: _ImportGateway(),
+        )
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "comfyui.admin.workflow.import",
+                {
+                    "server_id": "local",
+                    "workflow_id": "from-server",
+                    "source": {
+                        "kind": "server_userdata",
+                        "path": "workflows/from-server.json",
+                    },
+                },
+            )
+
+    assert result.is_error is False
+    content = result.structured_content
+    assert content["workflow_id"] == "from-server"
+    assert content["source_format"] == "api"
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_import_rejects_unsafe_userdata_path(
+    tmp_path: Path,
+) -> None:
+    import sqlite3
+    from datetime import datetime, timezone
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    class _ImportGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ImportGateway(),
+    )
+    async with Client(server) as client:
+        for bad_path in (
+            "../escape.json",
+            "/absolute/path.json",
+            "workflows\\windows.json",
+            "workflows/not-json.txt",
+            "workflows/with space.json",
+        ):
+            result = await client.call_tool(
+                "comfyui.admin.workflow.import",
+                {
+                    "server_id": "local",
+                    "workflow_id": "from-server",
+                    "source": {"kind": "server_userdata", "path": bad_path},
+                },
+            )
+            assert result.is_error is True, bad_path
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_import_authorized_local_file(tmp_path: Path) -> None:
+    """kind=authorized_local_file reads only from authorized upload roots."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    _project(tmp_path)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir(exist_ok=True)
+    (uploads / "local.json").write_text(
+        json.dumps({"1": {"class_type": "Test", "inputs": {}}}), encoding="utf-8"
+    )
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    class _ImportGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+        def get_node_replacements(self) -> dict[str, Any]:
+            return {}
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ImportGateway(),
+    )
+    async with Client(server) as client:
+        ok = await client.call_tool(
+            "comfyui.admin.workflow.import",
+            {
+                "server_id": "local",
+                "workflow_id": "from-local",
+                "source": {
+                    "kind": "authorized_local_file",
+                    "path": str(uploads / "local.json"),
+                },
+            },
+        )
+        denied = await client.call_tool(
+            "comfyui.admin.workflow.import",
+            {
+                "server_id": "local",
+                "workflow_id": "from-local",
+                "source": {
+                    "kind": "authorized_local_file",
+                    "path": str(tmp_path / "config.json"),
+                },
+            },
+        )
+
+    assert ok.is_error is False
+    assert ok.structured_content["workflow_id"] == "from-local"
+    assert denied.is_error is True
+
+
+@pytest.mark.anyio
+async def test_admin_import_source_schema_validates_all_forms(
+    tmp_path: Path,
+) -> None:
+    """The import source schema accepts all four forms and rejects bad ones."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from jsonschema import Draft202012Validator
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+    server = create_admin_server(tmp_path, enabled=True)
+    async with Client(server) as client:
+        tools = {tool.name: tool for tool in (await client.list_tools()).tools}
+    source_schema = tools["comfyui.admin.workflow.import"].input_schema[
+        "properties"
+    ]["source"]
+    validator = Draft202012Validator(source_schema)
+
+    valid_forms = [
+        {"kind": "inline_json", "workflow": {"1": {}}},
+        {"kind": "server_userdata", "path": "workflows/a.json"},
+        {"kind": "authorized_local_file", "path": "local.json"},
+        {"1": {"class_type": "Test", "inputs": {}}},  # legacy bare workflow
+    ]
+    for form in valid_forms:
+        assert validator.is_valid(form), form
+
+    invalid_forms = [
+        {"kind": "inline_json"},  # missing workflow
+        {"kind": "server_userdata"},  # missing path
+        {"kind": "mystery"},  # unknown kind
+        {"kind": "inline_json", "workflow": {"1": {}}, "path": "x"},  # extra key
+    ]
+    for form in invalid_forms:
+        assert not validator.is_valid(form), form
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_import_inline_json(tmp_path: Path) -> None:
+    """kind=inline_json passes the embedded workflow object directly."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    class _ImportGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+        def get_node_replacements(self) -> dict[str, Any]:
+            return {}
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ImportGateway(),
+    )
+    async with Client(server) as client:
+        ok = await client.call_tool(
+            "comfyui.admin.workflow.import",
+            {
+                "server_id": "local",
+                "workflow_id": "inline-wf",
+                "source": {
+                    "kind": "inline_json",
+                    "workflow": {"1": {"class_type": "Test", "inputs": {}}},
+                },
+            },
+        )
+        bad = await client.call_tool(
+            "comfyui.admin.workflow.import",
+            {
+                "server_id": "local",
+                "workflow_id": "inline-wf",
+                "source": {"kind": "inline_json"},
+            },
+        )
+
+    assert ok.is_error is False
+    assert ok.structured_content["workflow_id"] == "inline-wf"
+    assert bad.is_error is True
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_import_rejects_oversized_local_file(
+    tmp_path: Path,
+) -> None:
+    """authorized_local_file reads are bounded to 2 MiB."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    _project(tmp_path)
+    uploads = tmp_path / "uploads"
+    uploads.mkdir(exist_ok=True)
+    big = uploads / "big.json"
+    big.write_text('{"padding": "' + "x" * (2 * 1024 * 1024) + '"}', encoding="utf-8")
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    class _ImportGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ImportGateway(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.import",
+            {
+                "server_id": "local",
+                "workflow_id": "from-local",
+                "source": {"kind": "authorized_local_file", "path": str(big)},
+            },
+        )
+    assert result.is_error is True
+
+
+@pytest.mark.anyio
 async def test_admin_server_survives_workflow_cutover(tmp_path: Path) -> None:
     """After the workflow cutover the admin server starts; file-backed tools hide."""
     import sqlite3
