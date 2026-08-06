@@ -37,9 +37,6 @@ class RecordingTracer:
             def set_attributes(self, values: dict[str, Any]) -> None:
                 span["attributes"].update(values)
 
-            def record_error(self, error: BaseException) -> None:
-                span["attributes"]["error"] = type(error).__name__
-
         records.append(span)
         return _Span()
 
@@ -57,7 +54,6 @@ def test_null_tracer_is_side_effect_free() -> None:
     tracer = NullTracer()
     with tracer.span("tool.call", {"tool": "x"}) as span:
         span.set_attributes({"duration_ms": 1.0})
-        span.record_error(ValueError("boom"))
     assert True
 
 
@@ -105,29 +101,6 @@ def test_otel_tracer_records_span_with_sdk() -> None:
     assert spans[0].name == "tool.call"
     assert spans[0].attributes["tool"] == "ping"
     assert spans[0].attributes["duration_ms"] == 12.5
-
-
-def test_otel_tracer_record_error_forwards_to_record_exception() -> None:
-    """record_error must work against the real SDK span API, not raise."""
-    sdk = pytest.importorskip("opentelemetry.sdk.trace")
-    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-        InMemorySpanExporter,
-    )
-
-    exporter = InMemorySpanExporter()
-    provider = sdk.TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    tracer = OtelTracer(provider.get_tracer("test"))
-    with tracer.span("tool.call", {"tool": "boom"}) as span:
-        span.record_error(ValueError("boom"))
-        span.set_attributes({"is_error": True})
-    spans = exporter.get_finished_spans()
-    assert len(spans) == 1
-    assert spans[0].attributes["is_error"] is True
-    exceptions = [event for event in spans[0].events if event.name == "exception"]
-    assert len(exceptions) == 1
-    assert exceptions[0].attributes["exception.type"] == "ValueError"
 
 
 def test_recording_tracer_captures_server_tool_calls(tmp_path: Path) -> None:
@@ -193,7 +166,6 @@ def test_recording_tracer_captures_errors(tmp_path: Path) -> None:
     call = recorder.spans[0]
     assert call["attributes"]["tool"] == "comfyui.unknown.tool"
     assert call["attributes"].get("is_error") is True
-    assert "error" in call["attributes"]
     assert "duration_ms" in call["attributes"]
 
 
@@ -343,7 +315,7 @@ def test_server_otel_tracer_survives_tool_errors(tmp_path: Path) -> None:
     assert spans[0].attributes["tool"] == "comfyui.unknown.tool"
     assert spans[0].attributes.get("is_error") is True
     exceptions = [event for event in spans[0].events if event.name == "exception"]
-    assert len(exceptions) >= 1
+    assert len(exceptions) == 1
 
 
 class RecordingMeter:

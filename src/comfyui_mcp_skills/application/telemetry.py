@@ -20,8 +20,6 @@ OTEL_SERVICE_NAME_ENV = "COMFYUI_MCP_OTEL_SERVICE_NAME"
 class Span(Protocol):
     def set_attributes(self, attributes: dict[str, Any]) -> None: ...
 
-    def record_error(self, error: BaseException) -> None: ...
-
 
 class Tracer(Protocol):
     @contextmanager
@@ -51,9 +49,6 @@ class Meter(Protocol):
 class _NullSpan:
     def set_attributes(self, attributes: dict[str, Any]) -> None:
         del attributes
-
-    def record_error(self, error: BaseException) -> None:
-        del error
 
 
 class NullTracer:
@@ -114,8 +109,9 @@ class OtelMeter:
 class _OtelSpan:
     """Adapter exposing our Span protocol over a native OpenTelemetry span.
 
-    The SDK API is ``record_exception``; we forward ``record_error`` so callers
-    never touch SDK-specific names.
+    Exception recording is delegated to the SDK: ``start_as_current_span``
+    records an ``exception`` event automatically when an exception escapes the
+    span block, so the wrapper never records manually and never duplicates.
     """
 
     def __init__(self, span: Any) -> None:
@@ -123,9 +119,6 @@ class _OtelSpan:
 
     def set_attributes(self, attributes: dict[str, Any]) -> None:
         self._span.set_attributes(attributes)
-
-    def record_error(self, error: BaseException) -> None:
-        self._span.record_exception(error)
 
 
 class OtelTracer:

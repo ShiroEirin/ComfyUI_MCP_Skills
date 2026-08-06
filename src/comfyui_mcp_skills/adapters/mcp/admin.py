@@ -494,9 +494,8 @@ def create_admin_server(
             try:
                 result = await _dispatch_tool_call(ctx, params)
                 failed = bool(result.is_error)
-            except BaseException as exc:
+            except BaseException:
                 failed = True
-                span.record_error(exc)
                 raise
             finally:
                 elapsed = time.perf_counter() - started
