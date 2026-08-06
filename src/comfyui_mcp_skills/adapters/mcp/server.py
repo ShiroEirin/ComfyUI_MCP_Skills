@@ -918,6 +918,8 @@ def create_server(
                     "idempotency_key",
                     "wait",
                     "wait_timeout_seconds",
+                    "priority",
+                    "partial_execution_targets",
                 }
                 if unexpected_options:
                     raise ValueError(
@@ -936,6 +938,33 @@ def create_server(
                 timeout_seconds = float(timeout_raw)
                 if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 300:
                     raise ValueError("wait_timeout_seconds must be between 0 and 300")
+                priority_raw = execution_options.get("priority")
+                priority: float | None = None
+                if priority_raw is not None:
+                    if isinstance(priority_raw, bool) or not isinstance(
+                        priority_raw, (int, float)
+                    ):
+                        raise TypeError("priority must be a number")
+                    priority = float(priority_raw)
+                    if not math.isfinite(priority) or not -1000 <= priority <= 1000:
+                        raise ValueError("priority must be between -1000 and 1000")
+                targets_raw = execution_options.get("partial_execution_targets")
+                targets: tuple[str, ...] = ()
+                if targets_raw is not None:
+                    if not isinstance(targets_raw, list) or not targets_raw:
+                        raise TypeError(
+                            "partial_execution_targets must be a non-empty array"
+                        )
+                    if len(targets_raw) > 100:
+                        raise ValueError(
+                            "partial_execution_targets must not exceed 100 entries"
+                        )
+                    for item in targets_raw:
+                        if not isinstance(item, str) or not item or len(item) > 128:
+                            raise TypeError(
+                                "partial_execution_targets entries must be node IDs"
+                            )
+                    targets = tuple(dict.fromkeys(targets_raw))
                 await ctx.session.report_progress(1, None, "Submitting ComfyUI workflow")
                 job = await anyio.to_thread.run_sync(
                     lambda: execution.submit(
@@ -945,6 +974,8 @@ def create_server(
                         idempotency_key=idempotency_key,
                         owner_id=owner_id,
                         server_connection=owner_server_connection(owner_id, workflow.server_id),
+                        priority=priority,
+                        targets=targets,
                     )
                 )
                 await ctx.session.report_progress(2, None, "Workflow submitted")

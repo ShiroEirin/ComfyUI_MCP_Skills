@@ -26,12 +26,14 @@ from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteCo
 class FakeGateway:
     def __init__(self) -> None:
         self.queued: list[dict[str, Any]] = []
+        self.queue_prompt_args: list[dict[str, Any]] = []
         self.histories: dict[str, dict[str, Any]] = {}
         self.interrupted: list[str] = []
         self.uploaded: list[str] = []
 
     def queue_prompt(self, workflow: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         self.queued.append(workflow)
+        self.queue_prompt_args.append(kwargs)
         return {"prompt_id": "prompt-mcp", "client_id": "client-mcp"}
 
     def get_history(
@@ -627,6 +629,118 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
         )
         assert invalid.is_error is True
     assert not (tmp_path / "data" / "local" / "txt2img").exists()
+
+
+@pytest.mark.anyio
+async def test_dynamic_run_forwards_priority_and_partial_targets(
+    tmp_path: Path,
+) -> None:
+    """_execution.priority and partial_execution_targets reach the gateway."""
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {
+                    "priority": 5,
+                    "partial_execution_targets": ["1"],
+                },
+            },
+        )
+
+    assert result.is_error is False
+    assert gateway.queued
+    call = gateway.queue_prompt_args[-1]
+    assert call["priority"] == 5
+    assert call["targets"] == ["1"]
+
+
+@pytest.mark.anyio
+async def test_dynamic_run_rejects_unknown_partial_target(tmp_path: Path) -> None:
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {"partial_execution_targets": ["99"]},
+            },
+        )
+
+    assert result.is_error is True
+    assert "Invalid tool arguments" in str(result.content[0])
+
+
+@pytest.mark.anyio
+async def test_dynamic_run_includes_execution_options_in_digest(
+    tmp_path: Path,
+) -> None:
+    """The same idempotency key with different priority conflicts."""
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        first = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {"idempotency_key": "exec-options-1", "priority": 1},
+            },
+        )
+        conflict = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {"idempotency_key": "exec-options-1", "priority": 2},
+            },
+        )
+
+    assert first.is_error is False
+    assert conflict.is_error is True
+
+
+@pytest.mark.anyio
+async def test_dynamic_run_invalid_target_does_not_consume_idempotency_key(
+    tmp_path: Path,
+) -> None:
+    """An invalid partial target leaves the idempotency key free for retry."""
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        invalid = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {
+                    "idempotency_key": "exec-retry-1",
+                    "partial_execution_targets": ["99"],
+                },
+            },
+        )
+        retry = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {
+                    "idempotency_key": "exec-retry-1",
+                    "partial_execution_targets": ["1"],
+                },
+            },
+        )
+
+    assert invalid.is_error is True
+    assert retry.is_error is False
+    assert gateway.queue_prompt_args[-1]["targets"] == ["1"]
 
 
 @pytest.mark.anyio

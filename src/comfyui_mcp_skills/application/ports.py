@@ -38,6 +38,7 @@ class RunRepository(Protocol):
         arguments: dict[str, Any],
         owner_id: str = "",
         client_id: str = "",
+        request_digest: str | None = None,
     ) -> str | None: ...
     def get_claim(self, server_id: str, key: str, owner_id: str = "") -> dict[str, Any] | None: ...
     def release_claim(

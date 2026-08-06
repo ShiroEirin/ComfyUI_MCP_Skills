@@ -51,12 +51,14 @@ class FileRunRepository:
         arguments: dict[str, Any],
         owner_id: str = "",
         client_id: str = "",
+        request_digest: str | None = None,
     ) -> str | None:
         if not idempotency_key:
             return ""
         path = self._idempotency_path(server_id, idempotency_key, owner_id)
         path.parent.mkdir(parents=True, exist_ok=True)
-        request_digest = self.request_digest(workflow_id, arguments)
+        if request_digest is None:
+            request_digest = self.request_digest(workflow_id, arguments)
         with self._migration_lock, self._retention_lock:
             self._assert_active()
             with self._lock(path):

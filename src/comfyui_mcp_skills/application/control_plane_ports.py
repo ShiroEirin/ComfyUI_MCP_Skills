@@ -152,6 +152,8 @@ class ExecutionSubmitter(Protocol):
         deployment_id: str = "",
         content_digest: str = "",
         retry_of: str = "",
+        priority: float | None = None,
+        targets: tuple[str, ...] = (),
     ) -> Job: ...
 
 

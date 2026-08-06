@@ -154,6 +154,24 @@ EXECUTION_PROPERTY: dict[str, Any] = {
             "maximum": 300,
             "default": 120,
         },
+        "priority": {
+            "type": "number",
+            "description": "Queue priority; lower runs first, negative jumps the queue",
+            "minimum": -1000,
+            "maximum": 1000,
+        },
+        "partial_execution_targets": {
+            "type": "array",
+            "description": "Node IDs whose subgraph should be executed only",
+            "maxItems": 100,
+            "uniqueItems": True,
+            "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128,
+                "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+            },
+        },
     },
     "additionalProperties": False,
 }

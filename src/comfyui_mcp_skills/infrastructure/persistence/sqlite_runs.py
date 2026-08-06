@@ -44,10 +44,12 @@ class SQLiteRunRepository:
         arguments: dict[str, Any],
         owner_id: str = "",
         client_id: str = "",
+        request_digest: str | None = None,
     ) -> str | None:
         if not idempotency_key:
             return ""
-        digest = self.request_digest(workflow_id, arguments)
+        if request_digest is None:
+            request_digest = self.request_digest(workflow_id, arguments)
         now = datetime.now(timezone.utc)
         expires = now + timedelta(seconds=300)
         lease = secrets.token_hex(32)
@@ -63,7 +65,7 @@ class SQLiteRunRepository:
                 (owner_id, _scope(server_id), idempotency_key),
             ).fetchone()
             if row is not None:
-                if str(row[0]) != digest:
+                if str(row[0]) != request_digest:
                     return None
                 expired_reservation = str(row[1]) == "reserved" and _is_expired(row[2], now)
                 if str(row[1]) != "expired" and not expired_reservation:
@@ -86,7 +88,7 @@ class SQLiteRunRepository:
                     owner_id,
                     _scope(server_id),
                     idempotency_key,
-                    digest,
+                    request_digest,
                     client_id,
                     now.isoformat(),
                     expires.isoformat(),

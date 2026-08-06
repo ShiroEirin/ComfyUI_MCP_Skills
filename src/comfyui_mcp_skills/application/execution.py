@@ -89,6 +89,8 @@ class ExecutionService:
         content_digest: str = "",
         retry_of: str = "",
         server_connection: dict[str, Any] | None = None,
+        priority: float | None = None,
+        targets: tuple[str, ...] = (),
     ) -> Job:
         if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
             raise ValueError("idempotency_key must be a string up to 256 characters")
@@ -124,12 +126,31 @@ class ExecutionService:
         resolved = self._resolve_assets(
             server_id, workflow.parameters, workflow.graph, arguments, owner_id
         )
-        request_digest = self._runs.request_digest(workflow_id, arguments)
+        digest_arguments = arguments
+        if priority is not None or targets:
+            digest_arguments = {
+                **arguments,
+                "_execution": {
+                    **({"priority": priority} if priority is not None else {}),
+                    **(
+                        {"partial_execution_targets": list(targets)}
+                        if targets
+                        else {}
+                    ),
+                },
+            }
+        request_digest = self._runs.request_digest(workflow_id, digest_arguments)
         client_id = client_id or uuid.uuid4().hex
         connection = (
             self._servers.connection(server_id) if server_connection is None else server_connection
         )
         gateway = self._gateway_factory(connection)
+        graph = self._inject(workflow.graph, workflow.parameters, resolved)
+        if targets and any(target not in graph for target in targets):
+            raise ValueError(
+                "partial_execution_targets references a node missing from the "
+                "resolved workflow graph"
+            )
         lease_token = ""
         if idempotency_key:
             claimed = self._runs.claim(
@@ -139,6 +160,7 @@ class ExecutionService:
                 arguments,
                 owner_id=owner_id,
                 client_id=client_id,
+                request_digest=request_digest,
             )
             if claimed is None:
                 existing = self._runs.get_by_idempotency(server_id, idempotency_key, owner_id)
@@ -274,9 +296,13 @@ class ExecutionService:
                     owner_id,
                 )
                 raise
-        graph = self._inject(workflow.graph, workflow.parameters, resolved)
         try:
-            queued = gateway.queue_prompt(graph, client_id=client_id)
+            queued = gateway.queue_prompt(
+                graph,
+                client_id=client_id,
+                targets=list(targets) if targets else None,
+                priority=priority,
+            )
         except Exception as exc:
             if execution_identity is not None:
                 raise self._submission_unknown(
