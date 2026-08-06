@@ -309,7 +309,6 @@ comfyui.queue.remove
 comfyui.queue.clear
 comfyui.server.interrupt
 comfyui.runtime.restart.plan
-comfyui.runtime.restart.commit
 ```
 
 语义严格分开：
@@ -319,9 +318,8 @@ comfyui.runtime.restart.commit
 - `queue.clear`：全局队列操作，先返回影响。
 - `server.interrupt`：显式全局中断，不伪装成单 Job 取消。
 - `runtime.restart.plan`：返回运行中 Job、全局影响、审批与操作要求，不执行宿主命令。
-- `runtime.restart.commit`：仅当 `plan_digest` 匹配且已配置控制器时执行重启；无控制器返回 `OPERATION_UNAVAILABLE`。
 
-Linux/systemd 控制器为可选项：在 `config.json` 服务器记录中配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}` 后，stdio 与 HTTP 都会按服务器选择控制器；适配器只执行固定的 `systemctl restart <unit>`（无 shell、有超时），不接受命令或参数配置。配置非法或 `systemctl` 不可用时保持不可用并失败关闭，绝不回退 Shell。Docker 与 Windows Service 控制器未内置。
+重启执行闭环（approve/commit）未交付：安全执行要求服务端持久化的影响快照、单次审批与按服务器的 drain/fence 协调（所有提交路径在入队前检查、原子启用与解除），这些基础设施尚未实现，因此本版本不暴露执行工具。systemd `RuntimeController` 适配器已实现并接线（`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}`，只执行固定 `systemctl restart <unit>`，无 shell、有超时、非法配置 fail-closed），但仅在 `restart.plan` 中报告可用性，不执行重启。Docker 与 Windows Service 控制器未内置。
 
 ## 13. Resources、Prompts 与订阅
 
@@ -442,5 +440,5 @@ dependency.inspect
 - 跨主机共享租约与配额（同主机多 worker 共享限流已可用）。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Docker、Windows Service RuntimeController（systemd 已内置）。
+- Docker、Windows Service RuntimeController（systemd 适配器已实现并接线，执行闭环未交付）。
 - 完整 recipe/subgraph 高层图编辑。

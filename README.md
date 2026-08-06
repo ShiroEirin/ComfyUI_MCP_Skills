@@ -193,7 +193,7 @@ scope: comfyui:execute
 - 变更、安装、删除和全局操作优先采用 plan/commit。
 - plan digest、幂等键、主体和对象所有权共同约束 commit。
 - 作业取消不会调用 ComfyUI 的全局 `/interrupt`。
-- 无 RuntimeController 时，restart 只返回操作要求，不执行宿主 Shell；配置 systemd 绑定后 `runtime.restart.commit` 才可执行固定 `systemctl restart <unit>`。
+- `runtime.restart.plan` 只返回操作要求，不执行宿主 Shell；systemd 控制器适配器已接线并报告可用性，但重启执行闭环（审批 + drain/fence）未交付，本版本不执行重启。
 - 远程上传、抓取、Host、Origin、正文大小、并发和速率均有边界。
 
 ## 基本使用流程
@@ -251,7 +251,7 @@ uv build
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Docker、Windows Service 的内置 RuntimeController 适配器（Linux systemd 已内置）。
+- Docker、Windows Service 的内置 RuntimeController 适配器（Linux systemd 适配器已实现并接线，执行闭环未交付）。
 - 完整 recipe/subgraph 高层图编辑。
 
 Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。

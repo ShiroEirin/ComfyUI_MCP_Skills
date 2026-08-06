@@ -105,7 +105,6 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.queue.clear": frozenset({Scope.OPERATE}),
     "comfyui.server.interrupt": frozenset({Scope.OPERATE}),
     "comfyui.runtime.restart.plan": frozenset({Scope.OPERATE}),
-    "comfyui.runtime.restart.commit": frozenset({Scope.OPERATE}),
     "comfyui.node.describe": frozenset({Scope.OBSERVE}),
     "comfyui.model.list": frozenset({Scope.OBSERVE}),
     "comfyui.revision.list": frozenset({Scope.OBSERVE, Scope.AUTHOR}),

@@ -1499,29 +1499,6 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
-        Tool(
-            name="comfyui.runtime.restart.commit",
-            description=(
-                "Execute a planned host restart through the configured controller "
-                "using the plan digest from comfyui.runtime.restart.plan."
-            ),
-            input_schema={
-                "type": "object",
-                "properties": {
-                    "server_id": server_identifier,
-                    "plan_digest": public_identifier,
-                },
-                "required": ["server_id", "plan_digest"],
-                "additionalProperties": False,
-            },
-            output_schema={"type": "object"},
-            annotations=ToolAnnotations(
-                read_only_hint=False,
-                destructive_hint=True,
-                idempotent_hint=False,
-                open_world_hint=False,
-            ),
-        ),
     ]
     if not include_phase_p:
         phase_p_names = {
@@ -1529,7 +1506,6 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             "comfyui.queue.clear",
             "comfyui.server.interrupt",
             "comfyui.runtime.restart.plan",
-            "comfyui.runtime.restart.commit",
         }
         tools = [tool for tool in tools if tool.name not in phase_p_names]
     return [decorate_tool(tool) for tool in tools]

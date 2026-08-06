@@ -176,7 +176,7 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 | Asset/Artifact/Lineage | Execution Toolset + G1 Asset/Job 与相关 Artifact cutover |
 | Plan、Route、Experiment、Diagnostic、Retry | Execution Toolset + 对应 SQLite aggregate cutover |
 | Server/Config/Dependency/Provisioning | 独立 Admin + 配置、来源白名单和依赖 catalog |
-| Runtime queue/remove/clear/interrupt/restart plan + commit | Operations Toolset；restart commit 需要配置的 RuntimeController（systemd 已内置） |
+| Runtime queue/remove/clear/interrupt + restart plan | Operations Toolset；重启执行闭环（审批与 drain/fence）未交付 |
 
 ### 4.2 尚未交付
 
@@ -189,7 +189,7 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 | MCP Tasks 扩展映射 | 未交付 |
 | MCP Elicitation 审批 | 未交付 |
 | MCP App 完整界面 | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
-| Docker、Windows Service RuntimeController（systemd 已内置） | 未交付 |
+| Docker、Windows Service RuntimeController（systemd 适配器已实现，执行闭环未交付） | 未交付 |
 | 完整 recipe/subgraph 高层图编辑 | 未交付 |
 
 旧 CLI 尚未迁移的条目保留在后续路线中，不能按当前 MCP Tool 使用。
@@ -1640,7 +1640,7 @@ Published Revision + arguments + Asset URI
 - SSRF、恶意重定向、浮动 Git 来源、超大模型和未知校验和都有拒绝策略。
 
 ### 阶段 P：高级运行时控制与宿主适配器（P2）
-> 实施状态：2026-08-06 已完成当前切片。已交付 owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界，以及按服务器配置的可选 systemd `RuntimeController` 与 `runtime.restart.commit`；Docker 与 Windows Service 适配器尚未内置，无控制器时只返回操作要求。
+> 实施状态：2026-08-06 已完成当前切片。已交付 owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界，以及按服务器配置的可选 systemd `RuntimeController` 适配器（仅报告可用性）。重启执行闭环未交付：需要服务端持久化影响快照、单次审批与 drain/fence 协调基础设施。Docker 与 Windows Service 适配器尚未内置。
 
 
 交付：
@@ -1648,8 +1648,8 @@ Published Revision + arguments + Asset URI
 - `comfyui.queue.remove`
 - `comfyui.queue.clear`
 - 显式全局 `comfyui.server.interrupt`
-- 可选 Docker、systemd 和 Windows Service `RuntimeController`
-- restart plan、影响分析和 approval
+- `comfyui.runtime.restart.plan`（影响分析，不执行宿主命令）
+- 可选 systemd `RuntimeController` 适配器：实现并接线，仅在 plan 中报告可用性；执行与审批闭环未交付
 
 验收：
 
@@ -1657,6 +1657,7 @@ Published Revision + arguments + Asset URI
 - 跨主体操作必须具有管理权限。
 - 所有全局操作先返回受影响 Job。
 - 没有 RuntimeController 时只返回操作需求，不执行 Shell。
+- 重启执行不在当前版本暴露：审批、持久化影响快照与 drain/fence 协调为后续前置项。
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）

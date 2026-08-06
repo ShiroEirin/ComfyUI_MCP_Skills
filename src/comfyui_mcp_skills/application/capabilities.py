@@ -599,15 +599,6 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         RiskLevel.HIGH,
         ("runtime", "restart", "approval", "impact"),
     ),
-    CapabilitySpec(
-        "comfyui.runtime.restart.commit",
-        "Commit a planned host restart",
-        "Execute restart only for a matching plan digest through the configured controller.",
-        frozenset({Toolset.OPERATIONS}),
-        frozenset({Scope.OPERATE}),
-        RiskLevel.HIGH,
-        ("runtime", "restart", "commit", "controller"),
-    ),
 )
 
 CAPABILITY_BY_NAME = {spec.name: spec for spec in CAPABILITY_SPECS}

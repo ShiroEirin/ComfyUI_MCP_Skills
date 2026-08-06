@@ -1426,15 +1426,6 @@ def create_server(
                     owner_id,
                 )
                 return tool_result(result)
-            if params.name == "comfyui.runtime.restart.commit":
-                validate_fixed_arguments(arguments, {"server_id", "plan_digest"})
-                result = await anyio.to_thread.run_sync(
-                    runtime_controls.restart_commit,
-                    required_string(arguments, "server_id", max_length=128),
-                    required_string(arguments, "plan_digest", max_length=128),
-                    owner_id,
-                )
-                return tool_result(result)
             if params.name == "comfyui.log.read":
                 validate_fixed_arguments(arguments, {"server_id", "limit", "cursor"})
                 server_id = required_string(arguments, "server_id", max_length=128)
