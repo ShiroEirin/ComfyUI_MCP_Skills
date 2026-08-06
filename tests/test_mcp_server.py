@@ -874,6 +874,59 @@ async def test_admin_workflow_validate_reports_missing_models(tmp_path: Path) ->
 
 
 @pytest.mark.anyio
+async def test_admin_workflow_validate_marks_inventory_errors_not_ready(
+    tmp_path: Path,
+) -> None:
+    """An unreadable model inventory must never report a ready workflow."""
+    _project(tmp_path)
+    directory = tmp_path / "data" / "local" / "txt2img"
+    (directory / "schema.json").write_text(
+        json.dumps({"enabled": True, "parameters": {}}), encoding="utf-8"
+    )
+    (directory / "workflow.json").write_text(
+        json.dumps(
+            {
+                "1": {
+                    "class_type": "LoraLoaderModelOnly",
+                    "inputs": {
+                        "model": ["2", 0],
+                        "lora_name": "lora.safetensors",
+                    },
+                },
+                "2": {
+                    "class_type": "CheckpointLoaderSimple",
+                    "inputs": {"ckpt_name": "base.safetensors"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class _BrokenInventoryGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+        def get_models(self, folder: str) -> list[str]:
+            raise LookupError("inventory endpoint unavailable")
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _BrokenInventoryGateway(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.validate",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    dependencies = result.structured_content["dependencies"]
+    assert dependencies["missing_models"] == []
+    assert dependencies["folder_errors"] != []
+    assert dependencies["is_ready"] is False
+
+
+@pytest.mark.anyio
 async def test_admin_server_survives_workflow_cutover(tmp_path: Path) -> None:
     """After the workflow cutover the admin server starts; file-backed tools hide."""
     import sqlite3

@@ -1072,10 +1072,13 @@ def _validate_published_workflow(
     result = validation.validate_api(workflow.graph, object_info)
     semantic = graphs.describe(workflow.graph, object_info=object_info)
     dependencies = dict(semantic["dependencies"])
-    missing_models = _missing_models(gateway, dependencies)
+    missing_models, folder_errors = _missing_models(gateway, dependencies)
     dependencies["missing_models"] = sorted(set(missing_models))
+    dependencies["folder_errors"] = sorted(folder_errors)
     dependencies["is_ready"] = bool(
-        dependencies.get("coverage") == "complete" and not missing_models
+        dependencies.get("coverage") == "complete"
+        and not missing_models
+        and not folder_errors
     )
     issues = list(result["issues"])
     try:
@@ -1105,11 +1108,18 @@ def _validate_published_workflow(
     }
 
 
-def _missing_models(gateway: Any, dependencies: dict[str, Any]) -> list[str]:
-    """Compare the extracted model contract against the server's model folders."""
+def _missing_models(
+    gateway: Any, dependencies: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Compare the extracted model contract against the server's model folders.
+
+    A folder whose inventory cannot be read is reported as a folder error and
+    forces ``is_ready=false``; an unavailable inventory is never treated as
+    "no missing models".
+    """
     models = dependencies.get("models")
     if not isinstance(models, list):
-        return []
+        return [], []
     by_folder: dict[str, list[str]] = {}
     for item in models:
         if not isinstance(item, dict):
@@ -1119,13 +1129,20 @@ def _missing_models(gateway: Any, dependencies: dict[str, Any]) -> list[str]:
         if folder and filename:
             by_folder.setdefault(folder, []).append(filename)
     missing: list[str] = []
+    folder_errors: list[str] = []
     for folder, filenames in by_folder.items():
         try:
-            available = set(gateway.get_models(folder))
-        except (TypeError, ValueError, LookupError):
+            available = gateway.get_models(folder)
+            if not isinstance(available, list):
+                raise TypeError("models response must be an array")
+            if len(available) > 10_000:
+                raise ValueError("models response exceeds the inventory limit")
+            available_set = set(available)
+        except (TypeError, ValueError, LookupError) as exc:
+            folder_errors.append(f"{folder}: {exc}")
             continue
-        missing.extend(filename for filename in filenames if filename not in available)
-    return missing
+        missing.extend(filename for filename in filenames if filename not in available_set)
+    return missing, folder_errors
 
 
 def _required_string(arguments: dict[str, Any], name: str) -> str:
