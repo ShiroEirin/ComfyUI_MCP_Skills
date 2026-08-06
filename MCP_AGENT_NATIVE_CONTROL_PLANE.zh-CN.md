@@ -1663,7 +1663,7 @@ Published Revision + arguments + Asset URI
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）
-> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流与 MCP Apps 只读 Job 查看器；Redis/NATS 多副本总线、跨主机租约、MCP Tasks、Elicitation 和 OpenTelemetry 仍未交付。
+> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces（工具调用 span，OTLP HTTP 导出）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks、Elicitation 与 OpenTelemetry metrics/logs 仍未交付。
 
 
 已交付：
@@ -1679,7 +1679,7 @@ Published Revision + arguments + Asset URI
 - 跨主机租约与全局配额（当前限流仅限同主机多 worker）
 - 基于 MRTR `InputRequiredResult` 的 Elicitation 审批及持久化 Approval 后备
 - 评估 `io.modelcontextprotocol/tasks` 扩展映射，不替换领域 Job 或 Orchestrator
-- OpenTelemetry 导出与更完整 MCP App 图库
+- 可选 OpenTelemetry traces 已交付（工具调用 span，OTLP/HTTP，`COMFYUI_MCP_OTEL_ENDPOINT` 配置，`otel` extra 安装）；metrics/logs 导出与更完整 MCP App 图库未交付
 
 验收：
 

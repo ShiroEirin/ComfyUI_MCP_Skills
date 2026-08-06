@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -109,6 +110,7 @@ from comfyui_mcp_skills.application.runtime_control import (
     RuntimeControlService,
 )
 from comfyui_mcp_skills.application.servers import OwnerAwareServerRegistry, ServerRegistry
+from comfyui_mcp_skills.application.telemetry import Tracer, tracer_from_env
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -274,9 +276,11 @@ def create_server(
     portable_tool_names: bool = False,
     max_dynamic_tools: int = ToolInventory.DYNAMIC_LIMIT,
     runtime_controller_provider: Callable[[str], RuntimeController | None] | None = None,
+    tracer: Tracer | None = None,
 ) -> Server[dict[str, object]]:
     """Create an MCP server backed by one configured project directory."""
     base_dir = base_dir.resolve()
+    tracer = tracer or tracer_from_env()
     repositories = repositories or create_repository_bundle(base_dir)
     enforce_authorization = authorization is not None
     authorization = authorization or AuthorizationContext(
@@ -793,6 +797,31 @@ def create_server(
         )
 
     async def call_tool(
+        ctx: ServerRequestContext[dict[str, object]],
+        params: CallToolRequestParams,
+    ) -> CallToolResult:
+        owner_id = (
+            authorization.principal_id
+            if enforce_authorization and current_scopes() is None
+            else current_owner()
+        )
+        started = time.perf_counter()
+        with tracer.span(
+            "tool.call", {"tool": params.name, "owner": owner_id}
+        ) as span:
+            try:
+                result = await _dispatch_tool_call(ctx, params)
+            except BaseException as exc:
+                span.record_error(exc)
+                span.set_attributes({"is_error": True})
+                raise
+            finally:
+                span.set_attributes(
+                    {"duration_ms": (time.perf_counter() - started) * 1000.0}
+                )
+            return result
+
+    async def _dispatch_tool_call(
         ctx: ServerRequestContext[dict[str, object]],
         params: CallToolRequestParams,
     ) -> CallToolResult:

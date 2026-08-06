@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -52,6 +53,7 @@ from comfyui_mcp_skills.application.authorization import (
 )
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
+from comfyui_mcp_skills.application.telemetry import Tracer, tracer_from_env
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -92,10 +94,12 @@ def create_admin_server(
     config_bundles: Any = None,
     dependency_provisioning: Any = None,
     provisioning_repository: Any = None,
+    tracer: Tracer | None = None,
 ) -> Server[dict[str, object]]:
     if not enabled:
         raise PermissionError("Admin MCP requires an explicit enabled=True configuration")
     base_dir = base_dir.resolve()
+    tracer = tracer or tracer_from_env()
     authorization = authorization or AuthorizationContext(
         actor, frozenset({Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}), Toolset.ADMIN
     )
@@ -464,6 +468,25 @@ def create_admin_server(
         )
 
     async def call_tool(
+        ctx: ServerRequestContext[dict[str, object]], params: CallToolRequestParams
+    ) -> CallToolResult:
+        started = time.perf_counter()
+        with tracer.span(
+            "tool.call", {"tool": params.name, "owner": authorization.principal_id}
+        ) as span:
+            try:
+                result = await _dispatch_tool_call(ctx, params)
+            except BaseException as exc:
+                span.record_error(exc)
+                span.set_attributes({"is_error": True})
+                raise
+            finally:
+                span.set_attributes(
+                    {"duration_ms": (time.perf_counter() - started) * 1000.0}
+                )
+            return result
+
+    async def _dispatch_tool_call(
         ctx: ServerRequestContext[dict[str, object]], params: CallToolRequestParams
     ) -> CallToolResult:
         arguments = dict(params.arguments or {})

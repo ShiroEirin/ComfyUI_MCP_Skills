@@ -391,7 +391,24 @@ $env:COMFYUI_MCP_MANAGER_ORIGINS = "http://127.0.0.1:8188"
 
 每个 key 必须是 `node:<name>` 或 `model:<name>`；version 必须是固定 Git tag/commit，checksum 必须是 SHA-256，source_url 必须是 HTTPS 且 Host 在白名单内。模型条目使用 `source_type: "model"`，并设置安全的相对 `target_dir`。
 
-## 11. 保留策略与迁移
+## 11. 可选 OpenTelemetry 追踪
+
+默认不启用遥测，也不需要任何 OpenTelemetry 依赖。工具调用（`tool.call` span：工具名、主体、耗时、是否出错）在两种情况下被记录：
+
+1. 安装可选依赖：`pip install "comfyui-mcp-skills[otel]"`（或 `uv sync --extra otel`）。
+2. 设置 OTLP/HTTP 端点：
+
+```powershell
+$env:COMFYUI_MCP_OTEL_ENDPOINT = "http://127.0.0.1:4318/v1/traces"
+$env:COMFYUI_MCP_OTEL_SERVICE_NAME = "comfyui-mcp-prod"
+comfyui-mcp
+```
+
+- 未设置 `COMFYUI_MCP_OTEL_ENDPOINT` 时，tracer 是零开销空实现，不会导入 OpenTelemetry 包。
+- 设置了端点但未安装 `otel` extra 时，启动显式报错（fail loud），不会静默丢失 span。
+- 当前只提供 traces 信号；metrics 与 logs 导出未交付。
+
+## 12. 保留策略与迁移
 
 显式运行维护：
 
@@ -434,7 +451,7 @@ data/
 控制平面 SQLite 数据库
 ```
 
-## 12. 验证与排错
+## 13. 验证与排错
 
 源码验证：
 
