@@ -322,7 +322,7 @@ def _apply_operation(
         "connect": {"op", "source_node_id", "source_output", "target_node_id", "target_input"},
         "disconnect": {"op", "node_id", "field"},
         "expose_parameter": {"op", "node_id", "field", "name", "required"},
-        "insert_subgraph": {"op", "id_prefix", "nodes"},
+        "insert_subgraph": {"op", "id_prefix", "nodes", "subgraph"},
         "extract_subgraph": {"op", "name", "node_ids"},
         "apply_recipe": {"op", "recipe_id", "arguments"},
     }
@@ -352,7 +352,7 @@ def _apply_operation(
         graph[node_id] = _operation_node(copied, index)
         _remove_node_parameters(parameter_schema, node_id)
     elif kind == "insert_subgraph":
-        _insert_subgraph(graph, copied, index)
+        _insert_subgraph(graph, parameter_schema, copied, index)
     elif kind == "extract_subgraph":
         name = validate_identifier(_operation_string(copied, "name", index), field="subgraph_name")
         node_ids = copied.get("node_ids")
@@ -368,9 +368,7 @@ def _apply_operation(
             raise ValueError("stored subgraph catalog is invalid")
         if name in subgraphs:
             raise ValueError(f"operations[{index}] subgraph {name} already exists")
-        subgraphs[name] = {
-            node_id: _json_copy(graph[node_id], "subgraph node") for node_id in node_ids
-        }
+        subgraphs[name] = _extracted_definition(graph, node_ids)
     elif kind == "apply_recipe":
         recipe_id = _operation_string(copied, "recipe_id", index)
         recipe_arguments = copied.get("arguments")
@@ -455,11 +453,46 @@ def _remove_node_parameters(schema: dict[str, Any], node_id: str) -> None:
             del parameters[name]
 
 
-def _insert_subgraph(graph: dict[str, Any], operation: dict[str, Any], index: int) -> None:
+def _insert_subgraph(
+    graph: dict[str, Any],
+    parameter_schema: dict[str, Any],
+    operation: dict[str, Any],
+    index: int,
+) -> None:
     prefix = validate_identifier(
         _operation_string(operation, "id_prefix", index), field="subgraph_prefix"
     )
-    nodes = operation.get("nodes")
+    has_nodes = "nodes" in operation
+    has_subgraph = "subgraph" in operation
+    if has_nodes == has_subgraph:
+        raise ValueError(
+            f"operations[{index}] requires exactly one of 'nodes' or 'subgraph'"
+        )
+    if has_subgraph:
+        name = validate_identifier(
+            _operation_string(operation, "subgraph", index), field="subgraph_name"
+        )
+        revision_metadata = parameter_schema.get("_revision")
+        if not isinstance(revision_metadata, dict):
+            raise ValueError("stored revision metadata is invalid")
+        subgraphs = revision_metadata.get("extracted_subgraphs")
+        if not isinstance(subgraphs, dict) or name not in subgraphs:
+            raise ValueError(f"operations[{index}] subgraph {name} is not extracted")
+        definition = subgraphs[name]
+        if not isinstance(definition, dict):
+            raise ValueError(f"operations[{index}] subgraph {name} definition is invalid")
+        nodes = definition.get("nodes")
+        boundary_inputs = definition.get("boundary_inputs")
+        if not isinstance(nodes, dict):
+            nodes = definition
+            boundary_inputs = None
+        if not isinstance(nodes, dict) or not nodes or len(nodes) > 100:
+            raise ValueError(
+                f"operations[{index}] subgraph {name} definition is invalid"
+            )
+    else:
+        nodes = operation.get("nodes")
+        boundary_inputs = None
     if not isinstance(nodes, dict) or not nodes or len(nodes) > 100:
         raise ValueError(f"operations[{index}].nodes must contain between 1 and 100 nodes")
     mapping = {
@@ -482,6 +515,69 @@ def _insert_subgraph(graph: dict[str, Any], operation: dict[str, Any], index: in
             if _is_connection(value) and str(value[0]) in mapping:
                 node["inputs"][field] = [mapping[str(value[0])], value[1]]
         graph[mapping[str(source_id)]] = node
+    if boundary_inputs:
+        for key in boundary_inputs:
+            node_id, separator, field = key.partition(".")
+            if not separator:
+                continue
+            target = mapping.get(node_id)
+            if target is None:
+                continue
+            inputs = graph[target].get("inputs")
+            if not isinstance(inputs, dict) or not _is_connection(inputs.get(field)):
+                continue
+            del inputs[field]
+
+
+def _extracted_definition(graph: dict[str, Any], node_ids: list[str]) -> dict[str, Any]:
+    """Snapshot selected nodes with boundary contracts for later by-name reuse.
+
+    ``boundary_inputs`` records connection inputs sourced outside the selection
+    (keyed ``node_id.field``); ``boundary_outputs`` records consumers outside the
+    selection. By-name instantiation disconnects boundary inputs so the reusable
+    unit never carries stale external references.
+    """
+    selected = set(node_ids)
+    boundary_inputs: dict[str, Any] = {}
+    for node_id in node_ids:
+        inputs = graph[node_id].get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for field, value in inputs.items():
+            if _is_connection(value) and str(value[0]) not in selected:
+                boundary_inputs[f"{node_id}.{field}"] = {
+                    "source_node_id": str(value[0]),
+                    "source_output": value[1],
+                }
+    boundary_outputs: list[dict[str, Any]] = []
+    for other_id, node in graph.items():
+        if str(other_id) in selected or not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for field, value in inputs.items():
+            if _is_connection(value) and str(value[0]) in selected:
+                boundary_outputs.append(
+                    {
+                        "node_id": str(value[0]),
+                        "source_output": value[1],
+                        "target_node_id": str(other_id),
+                        "target_field": field,
+                    }
+                )
+    boundary_outputs.sort(
+        key=lambda item: (
+            item["node_id"],
+            item["target_node_id"],
+            item["target_field"],
+        )
+    )
+    return {
+        "nodes": {node_id: _json_copy(graph[node_id], "subgraph node") for node_id in node_ids},
+        "boundary_inputs": boundary_inputs,
+        "boundary_outputs": boundary_outputs,
+    }
 
 
 def _inputs(graph: dict[str, Any], node_id: str, index: int) -> dict[str, Any]:
@@ -562,6 +658,12 @@ def _semantic_diff(
         "nodes_removed": sorted(before_nodes - after_nodes, key=_node_sort_key),
         "input_changes": input_changes,
         "parameter_schema_changed": schema_before != schema_after,
+        "subgraphs_added": sorted(
+            set(_subgraph_catalog(schema_after)) - set(_subgraph_catalog(schema_before))
+        ),
+        "subgraphs_removed": sorted(
+            set(_subgraph_catalog(schema_before)) - set(_subgraph_catalog(schema_after))
+        ),
         "parameters_added": [
             {"name": name, **_public_parameter(after_parameters[name])}
             for name in sorted(after_names - before_names)
@@ -594,6 +696,14 @@ def _parameter_map(schema: dict[str, Any]) -> dict[str, dict[str, Any]]:
         for name, metadata in parameters.items()
         if isinstance(name, str) and isinstance(metadata, dict)
     }
+
+
+def _subgraph_catalog(schema: dict[str, Any]) -> dict[str, Any]:
+    revision_metadata = schema.get("_revision")
+    if not isinstance(revision_metadata, dict):
+        return {}
+    subgraphs = revision_metadata.get("extracted_subgraphs")
+    return subgraphs if isinstance(subgraphs, dict) else {}
 
 
 def _public_parameter(metadata: dict[str, Any]) -> dict[str, Any]:

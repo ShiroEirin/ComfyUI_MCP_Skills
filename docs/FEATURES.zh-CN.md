@@ -202,10 +202,12 @@ comfyui.admin.workflow.rollback
 
 - 节点生命周期：`add_node`、`remove_node`、`replace_node`（带连接与参数目标校验）。
 - 连接与输入：`connect`、`disconnect`、`set_input`、`expose_parameter`。
-- 内联子图：`insert_subgraph`（1–100 节点、前缀重命名、内部引用重写）。
-- 子图提取与 recipe 应用：`extract_subgraph`（存入 Revision 元数据并计入内容摘要）、`apply_recipe`（当前注册 `set_scalar_input.v1`）。
+- 内联子图：`insert_subgraph`（1–100 节点、前缀重命名、内部引用重写；可传显式 `nodes`，或 `subgraph` 按名引用已提取定义）。
+- 子图提取与 recipe 应用：`extract_subgraph` 把选定节点连同边界端口契约（`boundary_inputs`/`boundary_outputs`）存入 Revision 元数据并计入内容摘要；`apply_recipe` 按注册表分发（当前注册 `set_scalar_input.v1`）。
 
-仍属后续范围：`extract_subgraph` 只登记不剪除图节点；提取结果没有可检索/可实例化的全局目录；recipe 注册表只有单一标量 setter。高层"提取→目录→实例化"闭环未交付，文档不应暗示其可用。
+子图提取→复用闭环：提取定义随 Revision 持久化，同一 plan 内或已发布 Revision 均可按名实例化；按名实例化会断开定义中指向宿主图外部的连接输入（外部引用在宿主图中无效），由后续 `connect` 显式接线。`nodes` 与 `subgraph` 互斥，未提取名字在 plan 阶段被拒绝。
+
+仍属后续范围：`extract_subgraph` 只登记不剪除图节点（图内容不变，子图作为可复用单元登记）；recipe 注册表只有单一标量 setter。高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入）未交付，文档不应暗示其可用。
 
 ## 8. 多服务器路由与 Policy
 
@@ -441,4 +443,4 @@ dependency.inspect
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
 - Docker、Windows Service RuntimeController（systemd 适配器已实现并接线，执行闭环未交付）。
-- 完整 recipe/subgraph 高层图编辑。
+- 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；subgraph 提取/按名复用闭环已交付）。

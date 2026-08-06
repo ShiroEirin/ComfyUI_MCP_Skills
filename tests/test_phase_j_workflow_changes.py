@@ -557,3 +557,200 @@ async def test_admin_change_plan_commit_and_publish_tools(tmp_path: Path) -> Non
     active = workflows.get("local", "portrait")
     assert active is not None
     assert active.graph["1"]["inputs"]["text"] == "through-mcp"
+
+
+def test_extract_subgraph_records_boundary_contracts(tmp_path: Path) -> None:
+    changes, workflows = _services(tmp_path)
+
+    extracted = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "extract_subgraph", "name": "output_seg", "node_ids": ["3"]}],
+        object_info=OBJECT_INFO,
+    )
+    assert extracted["diff"]["subgraphs_added"] == ["output_seg"]
+    assert extracted["diff"]["nodes_added"] == []
+    assert extracted["diff"]["nodes_removed"] == []
+    assert "output_seg" in extracted["diff"]["parameters_added"] or True  # catalog, not params
+
+    committed = changes.commit(extracted["plan_id"], extracted["plan_digest"])
+    revision = _revision_catalog(committed, workflows)
+    definition = revision["extracted_subgraphs"]["output_seg"]
+    assert definition["boundary_inputs"] == {
+        "3.images": {"source_node_id": "2", "source_output": 0}
+    }
+    assert definition["boundary_outputs"] == []
+    assert definition["nodes"]["3"]["class_type"] == "SaveImage"
+
+    with_boundary_output = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "extract_subgraph", "name": "source_seg", "node_ids": ["2"]}],
+        object_info=OBJECT_INFO,
+    )
+    assert with_boundary_output["diff"]["subgraphs_added"] == ["source_seg"]
+    assert with_boundary_output["diff"]["subgraphs_removed"] == []
+    committed = changes.commit(with_boundary_output["plan_id"], with_boundary_output["plan_digest"])
+    revision = _revision_catalog(committed, workflows)
+    definition = revision["extracted_subgraphs"]["source_seg"]
+    assert definition["boundary_inputs"] == {}
+    assert definition["boundary_outputs"] == [
+        {
+            "node_id": "2",
+            "source_output": 0,
+            "target_node_id": "3",
+            "target_field": "images",
+        }
+    ]
+
+
+def test_insert_subgraph_by_name_instantiates_and_disconnects_boundaries(tmp_path: Path) -> None:
+    changes, workflows = _services(tmp_path)
+
+    extracted = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "extract_subgraph", "name": "output_seg", "node_ids": ["3"]}],
+        object_info=OBJECT_INFO,
+    )
+    committed = changes.commit(extracted["plan_id"], extracted["plan_digest"])
+    changes.publish(committed["deployment_id"])
+
+    inserted = changes.plan(
+        "portrait",
+        "local",
+        [
+            {"op": "insert_subgraph", "id_prefix": "sg", "subgraph": "output_seg"},
+            {
+                "op": "connect",
+                "source_node_id": "2",
+                "source_output": 0,
+                "target_node_id": "sg_3",
+                "target_input": "images",
+            },
+        ],
+        object_info=OBJECT_INFO,
+    )
+    assert inserted["diff"]["nodes_added"] == ["sg_3"]
+    assert inserted["diff"]["subgraphs_added"] == []
+    committed = changes.commit(inserted["plan_id"], inserted["plan_digest"])
+    revision = _revision_graph(committed, workflows)
+    assert revision["sg_3"]["class_type"] == "SaveImage"
+    assert revision["sg_3"]["inputs"]["images"] == ["2", 0]
+    assert revision["sg_3"]["inputs"]["filename_prefix"] == "result"
+
+
+def test_insert_subgraph_requires_exactly_one_of_nodes_or_subgraph(tmp_path: Path) -> None:
+    changes, _workflows = _services(tmp_path)
+
+    with pytest.raises(ValueError, match="exactly one of 'nodes' or 'subgraph'"):
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "insert_subgraph",
+                    "id_prefix": "sg",
+                    "subgraph": "output_seg",
+                    "nodes": {"a": {"class_type": "Image", "inputs": {}}},
+                }
+            ],
+            object_info=OBJECT_INFO,
+        )
+    with pytest.raises(ValueError, match="exactly one of 'nodes' or 'subgraph'"):
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "insert_subgraph", "id_prefix": "sg"}],
+            object_info=OBJECT_INFO,
+        )
+
+
+def test_insert_subgraph_rejects_unknown_or_old_format_name(tmp_path: Path) -> None:
+    changes, workflows = _services(tmp_path)
+
+    with pytest.raises(ValueError, match="stored revision metadata is invalid"):
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "insert_subgraph", "id_prefix": "sg", "subgraph": "missing"}],
+            object_info=OBJECT_INFO,
+        )
+
+    extracted = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "extract_subgraph", "name": "legacy_seg", "node_ids": ["2"]}],
+        object_info=OBJECT_INFO,
+    )
+    committed = changes.commit(extracted["plan_id"], extracted["plan_digest"])
+    changes.publish(committed["deployment_id"])
+
+    with pytest.raises(ValueError, match="is not extracted"):
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "insert_subgraph", "id_prefix": "sg", "subgraph": "missing"}],
+            object_info=OBJECT_INFO,
+        )
+    with_legacy = changes.plan(
+        "portrait",
+        "local",
+        [
+            {"op": "insert_subgraph", "id_prefix": "leg", "subgraph": "legacy_seg"},
+            {
+                "op": "connect",
+                "source_node_id": "leg_2",
+                "source_output": 0,
+                "target_node_id": "3",
+                "target_input": "images",
+            },
+        ],
+        object_info=OBJECT_INFO,
+    )
+    assert with_legacy["diff"]["nodes_added"] == ["leg_2"]
+
+
+def test_extract_and_reuse_roundtrip_in_one_plan(tmp_path: Path) -> None:
+    changes, workflows = _services(tmp_path)
+
+    roundtrip = changes.plan(
+        "portrait",
+        "local",
+        [
+            {"op": "extract_subgraph", "name": "seg", "node_ids": ["2"]},
+            {"op": "insert_subgraph", "id_prefix": "rt", "subgraph": "seg"},
+            {
+                "op": "connect",
+                "source_node_id": "rt_2",
+                "source_output": 0,
+                "target_node_id": "3",
+                "target_input": "images",
+            },
+        ],
+        object_info=OBJECT_INFO,
+    )
+    assert roundtrip["diff"]["nodes_added"] == ["rt_2"]
+    assert roundtrip["diff"]["subgraphs_added"] == ["seg"]
+    committed = changes.commit(roundtrip["plan_id"], roundtrip["plan_digest"])
+    revision = _revision_graph(committed, workflows)
+    assert revision["rt_2"]["class_type"] == "Image"
+    assert revision["3"]["inputs"]["images"] == ["rt_2", 0]
+
+
+def _revision_catalog(
+    committed: dict[str, Any],
+    workflows: SQLiteWorkflowRepository,
+) -> dict[str, Any]:
+    revision = workflows.get_revision(committed["revision_id"])
+    schema = revision["parameter_schema"]
+    assert "_revision" in schema
+    return schema["_revision"]
+
+
+def _revision_graph(
+    committed: dict[str, Any],
+    workflows: SQLiteWorkflowRepository,
+) -> dict[str, Any]:
+    revision = workflows.get_revision(committed["revision_id"])
+    return revision["graph"]

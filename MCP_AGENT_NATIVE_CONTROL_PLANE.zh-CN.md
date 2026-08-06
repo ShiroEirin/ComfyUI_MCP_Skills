@@ -45,7 +45,7 @@ MCP 完整能力
   + CLI 难以表达的图、资产与执行智能
 ```
 
-当前实现已经完成 G0–G6 与 H–Q 的当前后端纵向切片：可靠执行与观察内核、语义导入和边界化图级变更、资产血缘、Experiment、结构化诊断、服务器/配置/依赖供应链、多服务器路由、显式运行时控制（含可选 systemd 重启控制器）、静态 Bearer Token 与 RFC 7662 Token Introspection、基于 SQLite 的同主机多 worker 共享限流，以及 MCP Apps 只读 Job 查看器。仍未交付的是完整 recipe/subgraph 高层编辑、Docker/Windows Service RuntimeController、多副本 SubscriptionBus、跨主机租约、MCP Tasks、Elicitation 和完整 App 图库；因此“超级控制平面”定位已具备主体能力，但不能把这些宿主与多副本扩展描述为现有功能。
+当前实现已经完成 G0–G6 与 H–Q 的当前后端纵向切片：可靠执行与观察内核、语义导入和边界化图级变更（含节点生命周期与 subgraph 提取/复用闭环）、资产血缘、Experiment、结构化诊断、服务器/配置/依赖供应链、多服务器路由、显式运行时控制（含可选 systemd 重启控制器）、静态 Bearer Token 与 RFC 7662 Token Introspection、基于 SQLite 的同主机多 worker 共享限流，以及 MCP Apps 只读 Job 查看器。仍未交付的是高层分支 recipe（LoRA/ControlNet/Upscaler 插入）、Docker/Windows Service RuntimeController、多副本 SubscriptionBus、跨主机租约、MCP Tasks、Elicitation 和完整 App 图库；因此“超级控制平面”定位已具备主体能力，但不能把这些宿主与多副本扩展描述为现有功能。
 
 后续开发不能再以“一条 CLI 命令对应一个 MCP Tool”为主线，也不能把 CLI 没有的能力视为非必要范围。应从 Agent 完成目标所需的信息、决策和闭环出发设计能力。
 
@@ -190,7 +190,7 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 | MCP Elicitation 审批 | 未交付 |
 | MCP App 完整界面 | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
 | Docker、Windows Service RuntimeController（systemd 适配器已实现，执行闭环未交付） | 未交付 |
-| 完整 recipe/subgraph 高层图编辑 | 未交付 |
+| 完整 recipe/subgraph 高层图编辑 | 节点生命周期与 subgraph 提取/按名复用闭环已交付；高层分支 recipe（LoRA/ControlNet/Upscaler 插入）未交付 |
 
 旧 CLI 尚未迁移的条目保留在后续路线中，不能按当前 MCP Tool 使用。
 
@@ -1486,7 +1486,7 @@ Published Revision + arguments + Asset URI
 - 旧转换 fixture 在新服务上结果等价；Reroute、connected widget 和 control marker 各有直接回归用例。
 
 ### 阶段 J：图级编辑、diff 与发布（P0）
-> 实施状态：2026-07-31 已完成。已交付四种边界化图操作的 plan/commit、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；节点增删替换、subgraph 和高层 recipe 仍按范围留待后续阶段。
+> 实施状态：2026-07-31 完成最小闭环；2026-08-06 补齐节点生命周期与 subgraph 提取/复用闭环。已交付十一种领域操作的 plan/commit（`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`、`insert_subgraph`、`extract_subgraph`、`apply_recipe`、边界化的 recipe 注册表）、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；高层分支 recipe（LoRA/ControlNet/Upscaler 等插入）仍留待后续阶段。
 
 
 交付：
@@ -1494,7 +1494,9 @@ Published Revision + arguments + Asset URI
 - `comfyui.admin.workflow.change.plan`
 - `comfyui.admin.workflow.change.commit`
 - Revision list、diff、publish 和 rollback
-- 第一阶段仅支持 `set_input`、`connect`、`disconnect`、`expose_parameter` 四种领域操作
+- 领域操作：`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`
+- 子图：`insert_subgraph` 支持显式 `nodes` 或按名引用已提取定义（`subgraph`），提取定义带边界端口契约（`boundary_inputs`/`boundary_outputs`），按名实例化断开外部引用并随 Revision 持久化
+- recipe：注册表按 `recipe_id` 分发（当前注册 `set_scalar_input.v1`）
 - Draft Revision 与 Deployment 的 `published` 状态分离
 - Tool/Resource list changed 和 Revision subscription
 
@@ -1506,7 +1508,7 @@ Published Revision + arguments + Asset URI
 - 过期 plan 或 base revision 变化时 commit 返回冲突。
 - Deployment publish 后动态 Tool schema 更新；现有 Job 仍指向原 Revision 和 Deployment 快照。
 - rollback 创建新 Revision，不删除历史。
-- 节点增删替换、subgraph 与高层 recipe 必须在最小闭环稳定后分批加入，不属于阶段 J 首次验收。
+- 提取的子图定义含边界契约，同一 plan 内或跨已发布 Revision 均可按名实例化；未提取名字与 `nodes`/`subgraph` 互斥违规在 plan 阶段被拒绝。
 
 ### 阶段 K：高级 Policy 与多服务器路由（P1）
 > 实施状态：2026-08-05 已完成当前切片。已交付多 Deployment 候选解析、确定性路由、Policy evaluate、`execution.plan/commit`、`route.explain`、摘要绑定幂等提交、调用方锁定 Server、槽位与 submission window 约束；高级历史耗时估计仍保持显式不可用，不伪造样本。

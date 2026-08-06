@@ -252,7 +252,7 @@ uv build
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
 - Docker、Windows Service 的内置 RuntimeController 适配器（Linux systemd 适配器已实现并接线，执行闭环未交付）。
-- 完整 recipe/subgraph 高层图编辑。
+- 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
 
 Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。
 
