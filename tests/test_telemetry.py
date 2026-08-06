@@ -107,6 +107,29 @@ def test_otel_tracer_records_span_with_sdk() -> None:
     assert spans[0].attributes["duration_ms"] == 12.5
 
 
+def test_otel_tracer_record_error_forwards_to_record_exception() -> None:
+    """record_error must work against the real SDK span API, not raise."""
+    sdk = pytest.importorskip("opentelemetry.sdk.trace")
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = sdk.TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    tracer = OtelTracer(provider.get_tracer("test"))
+    with tracer.span("tool.call", {"tool": "boom"}) as span:
+        span.record_error(ValueError("boom"))
+        span.set_attributes({"is_error": True})
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].attributes["is_error"] is True
+    exceptions = [event for event in spans[0].events if event.name == "exception"]
+    assert len(exceptions) == 1
+    assert exceptions[0].attributes["exception.type"] == "ValueError"
+
+
 def test_recording_tracer_captures_server_tool_calls(tmp_path: Path) -> None:
     """The MCP server wraps tool dispatch in a span end to end."""
     import json
@@ -285,6 +308,42 @@ def test_signal_endpoint_appends_paths_and_strips_legacy_suffix() -> None:
     assert _signal_endpoint("http://127.0.0.1:4318/v1/traces/", "traces") == (
         "http://127.0.0.1:4318/v1/traces"
     )
+
+
+def test_server_otel_tracer_survives_tool_errors(tmp_path: Path) -> None:
+    """A raising tool with a real SDK tracer records the exception, no masking."""
+    pytest.importorskip("opentelemetry.sdk.trace")
+    import anyio
+    from mcp.client import Client
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+    from comfyui_mcp_skills.application.telemetry import OtelTracer
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    server = create_server(tmp_path, tracer=OtelTracer(provider.get_tracer("test")))
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            await client.call_tool("comfyui.unknown.tool", {})
+
+    with pytest.raises(Exception):
+        anyio.run(exercise)
+
+    spans = exporter.get_finished_spans()
+    assert len(spans) == 1
+    assert spans[0].name == "tool.call"
+    assert spans[0].attributes["tool"] == "comfyui.unknown.tool"
+    assert spans[0].attributes.get("is_error") is True
+    exceptions = [event for event in spans[0].events if event.name == "exception"]
+    assert len(exceptions) >= 1
 
 
 class RecordingMeter:

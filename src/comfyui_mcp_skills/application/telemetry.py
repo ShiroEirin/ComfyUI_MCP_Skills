@@ -111,6 +111,23 @@ class OtelMeter:
         return self._meter.create_histogram(name, unit=unit, description=description)
 
 
+class _OtelSpan:
+    """Adapter exposing our Span protocol over a native OpenTelemetry span.
+
+    The SDK API is ``record_exception``; we forward ``record_error`` so callers
+    never touch SDK-specific names.
+    """
+
+    def __init__(self, span: Any) -> None:
+        self._span = span
+
+    def set_attributes(self, attributes: dict[str, Any]) -> None:
+        self._span.set_attributes(attributes)
+
+    def record_error(self, error: BaseException) -> None:
+        self._span.record_exception(error)
+
+
 class OtelTracer:
     """Thin adapter over an already-configured OpenTelemetry tracer."""
 
@@ -124,7 +141,7 @@ class OtelTracer:
         with self._tracer.start_as_current_span(name) as span:
             if attributes:
                 span.set_attributes(attributes)
-            yield span
+            yield _OtelSpan(span)
 
 
 def _signal_endpoint(base: str, signal: str) -> str:
