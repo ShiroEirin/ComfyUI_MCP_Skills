@@ -474,7 +474,7 @@ comfyui:operate
 
 | Tool | 用途 | 风险控制 |
 |---|---|---|
-| `comfyui.server.free` | 卸载模型、释放显存 | 参数必须至少选择一项 |
+| `comfyui.server.free` | 卸载模型、释放显存 | 参数必须至少选择一项（已定义但当前不暴露于任何服务面：审计接线未交付，分发被主服务 surface 过滤，调用返回 Unknown tool） |
 | `comfyui.queue.remove` | 删除指定排队任务 | 验证所有权或管理员权限 |
 | `comfyui.queue.clear` | 清空等待队列 | `dry_run` + 精确确认 + 审计 |
 | `comfyui.server.interrupt` | 调用全局 `/interrupt` | 明确标记为全局操作，禁止伪装成单 Job 取消 |
@@ -1438,7 +1438,7 @@ Published Revision + arguments + Asset URI
 - capability-aware Gateway 探测矩阵：`/api/jobs`、`/v2/userdata`（降级 `/userdata`）、`/node_replacements`、Manager queue/status/install
 - `comfyui.template.list`
 - `comfyui.subgraph.list` / `comfyui.subgraph.get`
-- `comfyui.server.free`
+- `comfyui.server.free`（已定义但当前不暴露：审计接线未交付，主服务与 Admin 面均过滤，调用返回 Unknown tool；登记与 capability spec 保留供条件启用）
 - 统一的 cursor 分页与脱敏组件
 - Job Resource 的 `ResourceUpdated` 发布、`subscriptions/listen` 和 `job.get`/Resource refetch 降级
 - Workflow、Revision、Deployment、Asset、Job、Artifact 的 canonical Resource templates 与旧 URI 只读别名
@@ -1448,7 +1448,7 @@ Published Revision + arguments + Asset URI
 
 - Agent 可以从零发现服务器、队列、历史、模板和可选 API。
 - 日志只返回相关窗口，并对凭据和本地敏感路径脱敏。
-- 显存释放需要 `operate`，并返回影响范围和审计状态。
+- 显存释放需要 `operate`，并返回影响范围和审计状态（`server.free` 的实现与登记保留，但审计接线未交付，因此当前不暴露于任何服务面；验收项在接线完成前不成立）。
 - ComfyUI 不支持的可选端点表示为 capability，不伪装成服务器离线。
 - capability 结果区分 `supported`、`unsupported`、`unauthorized`、`temporarily_unavailable`，不能把 401/403/5xx 都当成端点不存在。
 - 支持订阅的 Host 优先接收 Job Resource 更新；断线后 re-listen + refetch，不支持时使用带退避的 `job.get`。

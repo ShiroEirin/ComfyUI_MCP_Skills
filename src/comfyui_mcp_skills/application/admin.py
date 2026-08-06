@@ -130,30 +130,30 @@ class JsonlAuditLog:
                         raise ValueError(
                             f"audit trail is corrupt at line {line_index}: expected an object"
                         )
+                    raw_timestamp = event.get("timestamp")
+                    try:
+                        event_instant = datetime.fromisoformat(
+                            str(raw_timestamp).replace("Z", "+00:00")
+                        )
+                    except ValueError as exc:
+                        raise ValueError(
+                            f"audit trail is corrupt at line {line_index}: "
+                            "invalid event timestamp"
+                        ) from exc
+                    if event_instant.tzinfo is None:
+                        raise ValueError(
+                            f"audit trail is corrupt at line {line_index}: "
+                            "event timestamp has no timezone"
+                        )
+                    event_instant = event_instant.astimezone(timezone.utc)
                     if actor and event.get("actor") != actor:
                         continue
                     if action and event.get("action") != action:
                         continue
                     if outcomes and event.get("outcome") not in outcomes:
                         continue
-                    if after_instant is not None:
-                        raw_timestamp = event.get("timestamp")
-                        try:
-                            event_instant = datetime.fromisoformat(
-                                str(raw_timestamp).replace("Z", "+00:00")
-                            )
-                        except ValueError as exc:
-                            raise ValueError(
-                                f"audit trail is corrupt at line {line_index}: "
-                                "invalid event timestamp"
-                            ) from exc
-                        if event_instant.tzinfo is None:
-                            raise ValueError(
-                                f"audit trail is corrupt at line {line_index}: "
-                                "event timestamp has no timezone"
-                            )
-                        if event_instant.astimezone(timezone.utc) < after_instant:
-                            continue
+                    if after_instant is not None and event_instant < after_instant:
+                        continue
                     events.append(event)
                     if len(events) >= limit:
                         return events, str(line_index)

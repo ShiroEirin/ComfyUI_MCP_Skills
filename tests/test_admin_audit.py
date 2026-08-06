@@ -434,7 +434,17 @@ def test_export_audit_empty_trail_and_corrupt_line(tmp_path: Path) -> None:
     assert empty["next_cursor"] == ""
 
     path = tmp_path / "data" / "admin-audit.jsonl"
-    path.write_text("{not-json}\n", encoding="utf-8")
+    path.write_text("[1, 2]\n", encoding="utf-8")
+    with pytest.raises(AdminAuditError, match="could not be exported"):
+        admin.export_audit(limit=100)
+
+    path.write_text('{"timestamp": "not-a-timestamp", "request_id": "x"}\n', encoding="utf-8")
+    with pytest.raises(AdminAuditError, match="could not be exported"):
+        admin.export_audit(limit=100)
+    with pytest.raises(AdminAuditError, match="could not be exported"):
+        admin.export_audit(actor="exporter-admin", limit=100)
+
+    path.write_text('{"request_id": "x"}\n', encoding="utf-8")
     with pytest.raises(AdminAuditError, match="could not be exported"):
         admin.export_audit(limit=100)
 
