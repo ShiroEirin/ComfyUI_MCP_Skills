@@ -146,3 +146,39 @@ def test_terminalization_rolls_back_job_artifacts_aliases_and_completeness_toget
         ).fetchone() == (artifacts[0].artifact_id,)
 
     assert repository.terminalize(completed, completed.outputs) == artifacts
+
+
+def test_terminalization_backfills_completed_job_with_empty_snapshot(
+    tmp_path: Path,
+) -> None:
+    """A reconciler-marked completed job (empty snapshot) can be collected once."""
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    repository = SQLiteAssetLibraryRepository(store)
+    runs = SQLiteRunRepository(store)
+    job = _submitted_job(store)
+    # JobReconciler marks the job completed without persisting outputs.
+    runs.save(replace(job, status="completed"))
+    completed = _completed_job(job)
+
+    artifacts = repository.terminalize(completed, completed.outputs)
+    assert len(artifacts) == 1
+
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT status FROM jobs WHERE job_id=?", (job.job_id,)
+        ).fetchone() == ("completed",)
+        assert connection.execute(
+            "SELECT count(*) FROM artifacts WHERE job_id=?", (job.job_id,)
+        ).fetchone() == (1,)
+
+    # Same snapshot again: idempotent (no duplicate artifacts).
+    again = repository.terminalize(completed, completed.outputs)
+    assert len(again) == 1
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM artifacts WHERE job_id=?", (job.job_id,)
+        ).fetchone() == (1,)
+    # A drifted snapshot after collection is still rejected.
+    with pytest.raises(RuntimeError, match="conflicts with persisted output snapshot"):
+        repository.terminalize(replace(completed, error="drifted"), completed.outputs)

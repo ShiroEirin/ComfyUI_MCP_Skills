@@ -563,10 +563,15 @@ def terminalize_job_snapshot(
         raise RuntimeError("completed Job conflicts with persisted execution facts")
     persisted_status = str(row[5])
     if persisted_status == "completed":
-        if str(row[6]) != job.error or str(row[7]) != outputs_json:
-            raise RuntimeError("completed Job conflicts with persisted output snapshot")
-        return False
-    if persisted_status in _TERMINAL_STATUSES or str(row[7]) != "[]":
+        if str(row[7]) != "[]":
+            if str(row[6]) != job.error or str(row[7]) != outputs_json:
+                raise RuntimeError("completed Job conflicts with persisted output snapshot")
+            return False
+        # Persisted terminal status with an empty snapshot means the reconciler
+        # marked the job completed before outputs were collected. Allow the
+        # first collection to backfill outputs and artifacts exactly once;
+        # afterwards the strict snapshot comparison above guards mutations.
+    elif persisted_status in _TERMINAL_STATUSES or str(row[7]) != "[]":
         raise RuntimeError("completed Job conflicts with persisted terminal state")
     updated = connection.execute(
         """UPDATE jobs SET status='completed', error=?, outputs_json=?
