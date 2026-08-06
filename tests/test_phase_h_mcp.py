@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
+import anyio
 import pytest
 from jsonschema import Draft202012Validator
 from mcp import Client
@@ -289,8 +290,9 @@ async def test_operations_tools_dispatch_redacted_bounded_results_without_list_m
     async with Client(server) as client:
         before = await client.list_tools()
         names = {tool.name for tool in before.tools}
-        assert PHASE_H_NAMES - {"comfyui.job.list", "comfyui.server.free"} <= names
-        assert {"comfyui.job.list", "comfyui.server.free"}.isdisjoint(names)
+        assert PHASE_H_NAMES - {"comfyui.job.list"} <= names
+        assert "comfyui.server.free" in names
+        assert "comfyui.job.list" not in names
 
         queue = await client.call_tool("comfyui.queue.list", {"server_id": "local", "limit": 1})
         logs = await client.call_tool("comfyui.log.read", {"server_id": "local", "limit": 1})
@@ -394,3 +396,205 @@ async def test_capability_catalog_matches_surface_without_run_cutover(
     assert "comfyui.job.list" not in names
     discovered = {item["name"] for item in found.structured_content["items"]}
     assert "comfyui.job.list" not in discovered
+
+
+@pytest.mark.anyio
+async def test_server_free_audits_success_and_failure(tmp_path: Path) -> None:
+    """server.free writes audited success/failure events to the admin trail."""
+    _project(tmp_path)
+    gateway = PhaseHGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+    async with Client(server) as client:
+        ok = await client.call_tool(
+            "comfyui.server.free",
+            {"server_id": "local", "unload_models": True},
+        )
+    assert ok.structured_content["audit_status"] == "audited"
+    assert ok.structured_content["request_id"]
+    lines = (tmp_path / "data" / "admin-audit.jsonl").read_text(encoding="utf-8").splitlines()
+    assert lines
+    first = json.loads(lines[0])
+    assert first["action"] == "server.free"
+    assert first["outcome"] == "intent"
+    assert first["actor"] == "operations-test"
+    assert first["request_id"] == ok.structured_content["request_id"]
+    outcomes = [json.loads(line)["outcome"] for line in lines]
+    assert outcomes == ["intent", "success"]
+
+    class _BrokenGateway(PhaseHGateway):
+        def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+            raise RuntimeError("free backend failed")
+
+    server2 = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _BrokenGateway(),
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+    async with Client(server2) as client:
+        bad = await client.call_tool(
+            "comfyui.server.free",
+            {"server_id": "local", "free_memory": True},
+        )
+    assert bad.is_error is True
+    lines = (tmp_path / "data" / "admin-audit.jsonl").read_text(encoding="utf-8").splitlines()
+    parsed = [json.loads(line) for line in lines]
+    outcomes = [event["outcome"] for event in parsed]
+    assert outcomes[-2:] == ["intent", "failure"]
+    assert parsed[-1]["error_code"] == "RuntimeError"
+
+
+@pytest.mark.anyio
+async def test_server_free_rejects_request_id_reuse(tmp_path: Path) -> None:
+    """A repeated server.free with the same request_id must not re-execute."""
+    _project(tmp_path)
+
+    class _CountingGateway(PhaseHGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+            self.calls += 1
+            return {"success": True, "impact": ["loaded_models"]}
+
+    gateway = _CountingGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+    async with Client(server) as client:
+        first = await client.call_tool(
+            "comfyui.server.free",
+            {"server_id": "local", "unload_models": True, "request_id": "free-request-1"},
+        )
+        second = await client.call_tool(
+            "comfyui.server.free",
+            {"server_id": "local", "unload_models": True, "request_id": "free-request-1"},
+        )
+        distinct = await client.call_tool(
+            "comfyui.server.free",
+            {"server_id": "local", "unload_models": True, "request_id": "free-request-2"},
+        )
+
+    assert first.structured_content["audit_status"] == "audited"
+    assert first.structured_content["request_id"] == "free-request-1"
+    assert second.is_error is True
+    assert "already used" in str(second.content[0])
+    assert distinct.structured_content["audit_status"] == "audited"
+    assert gateway.calls == 2
+
+
+@pytest.mark.anyio
+async def test_server_free_concurrent_same_request_id_executes_once(
+    tmp_path: Path,
+) -> None:
+    """Concurrent calls with one request_id serialize: exactly one executes."""
+    _project(tmp_path)
+
+    class _CountingGateway(PhaseHGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+            self.calls += 1
+            return {"success": True, "impact": ["loaded_models"]}
+
+    gateway = _CountingGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+
+    async def call_once() -> Any:
+        async with Client(server) as client:
+            return await client.call_tool(
+                "comfyui.server.free",
+                {"server_id": "local", "unload_models": True, "request_id": "concurrent-1"},
+            )
+
+    async def exercise() -> list[Any]:
+        async with anyio.create_task_group() as group:
+            results: list[Any] = []
+
+            async def run() -> None:
+                results.append(await call_once())
+
+            group.start_soon(run)
+            group.start_soon(run)
+
+        return results
+
+    results = await exercise()
+    outcomes = [result.is_error for result in results]
+    assert outcomes.count(True) == 1  # exactly one rejected
+    assert gateway.calls == 1
+
+
+@pytest.mark.anyio
+async def test_server_free_intent_write_failure_aborts_execution(
+    tmp_path: Path,
+) -> None:
+    """A failed intent write must prevent the destructive action entirely."""
+    _project(tmp_path)
+
+    class _CountingGateway(PhaseHGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+            self.calls += 1
+            return {"success": True, "impact": ["loaded_models"]}
+
+    gateway = _CountingGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+
+    from comfyui_mcp_skills.application.admin import JsonlAuditLog
+
+    class _FailingIntentLog(JsonlAuditLog):
+        def append(self, event: dict[str, object]) -> None:
+            raise OSError("audit write failed")
+
+    with patch(
+        "comfyui_mcp_skills.adapters.mcp.server.JsonlAuditLog",
+        lambda _path: _FailingIntentLog(tmp_path / "data" / "admin-audit.jsonl"),
+    ):
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "comfyui.server.free",
+                {"server_id": "local", "unload_models": True},
+            )
+
+    assert result.is_error is True
+    assert gateway.calls == 0

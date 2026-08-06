@@ -48,6 +48,10 @@ class JsonlAuditLog:
     def __init__(self, path: Path) -> None:
         self._path = path.resolve()
 
+    @property
+    def path(self) -> Path:
+        return self._path
+
     def append(self, event: dict[str, Any]) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with FileLock(f"{self._path}.lock", timeout=10):

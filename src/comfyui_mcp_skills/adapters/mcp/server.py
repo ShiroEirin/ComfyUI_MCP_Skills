@@ -9,6 +9,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -70,6 +71,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     with_ui_metadata,
     workflow_tool_names,
 )
+from comfyui_mcp_skills.application.admin import JsonlAuditLog
 from comfyui_mcp_skills.application.asset_library import AssetLibraryService
 from comfyui_mcp_skills.application.assets import AssetService
 from comfyui_mcp_skills.application.authorization import (
@@ -124,7 +126,11 @@ from comfyui_mcp_skills.domain.control_plane import (
     parse_legacy_resource_uri,
     validate_control_plane_id,
 )
-from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, ServerNotFound
+from comfyui_mcp_skills.domain.errors import (
+    AuditIdempotencyConflict,
+    ComfyUISkillsError,
+    ServerNotFound,
+)
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.orchestration import PROVISIONING_WORK_TYPE
@@ -200,6 +206,102 @@ PHASE_K_TOOL_NAMES = frozenset(
 
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+
+def _free_locked(
+    audit_log: JsonlAuditLog,
+    request_id: str,
+    actor: str,
+    target: dict[str, object],
+    observation: Any,
+    server_id: str,
+    unload_models: bool,
+    free_memory: bool,
+) -> dict[str, Any]:
+    """Run server.free under a request-scoped lock: check, intent, execute, terminal.
+
+    The whole sequence holds one FileLock per request_id so concurrent retries
+    with the same id serialize: exactly one wins, the rest are rejected before
+    any destructive action. A failed intent write aborts without executing; a
+    failed terminal write raises an explicit audit error instead of returning a
+    non-recoverable ``pending`` state. The lock filename is derived from the
+    caller-supplied request_id via SHA-256 so it can never affect the path.
+    """
+    import hashlib
+
+    from filelock import FileLock
+
+    lock_key = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:32]
+    lock_path = f"{audit_log.path}.{lock_key}.lock"
+    with FileLock(lock_path, timeout=10):
+        if audit_log.events_for(request_id):
+            raise AuditIdempotencyConflict(
+                f"request_id {request_id} was already used for server.free; "
+                "refusing to re-execute a destructive operation"
+            )
+        audit_log.append(
+            _audit_event(actor, "server.free", target, "intent", request_id=request_id)
+        )
+        try:
+            result = observation.free(
+                server_id, unload_models=unload_models, free_memory=free_memory
+            )
+        except Exception as exc:
+            try:
+                audit_log.append(
+                    _audit_event(
+                        actor,
+                        "server.free",
+                        target,
+                        "failure",
+                        request_id=request_id,
+                        error_code=type(exc).__name__,
+                    )
+                )
+            except Exception as audit_exc:
+                raise RuntimeError(
+                    f"server.free backend failed ({type(exc).__name__}) and its audit "
+                    f"terminal could not be persisted (request_id={request_id}): "
+                    f"{audit_exc}"
+                ) from exc
+            raise
+        try:
+            audit_log.append(
+                _audit_event(
+                    actor, "server.free", target, "success", request_id=request_id
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"server.free executed but its audit terminal could not be "
+                f"persisted (request_id={request_id}); refusing to claim audited"
+            ) from exc
+        result = dict(result)
+        result["audit_status"] = "audited"
+        result["request_id"] = request_id
+        return result
+
+
+def _audit_event(
+    actor: str,
+    action: str,
+    target: dict[str, object],
+    outcome: str,
+    *,
+    request_id: str = "",
+    error_code: str = "",
+) -> dict[str, object]:
+    """Build one event compatible with the admin audit trail (admin-audit.jsonl)."""
+    return {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "request_id": request_id or uuid.uuid4().hex,
+        "actor": actor,
+        "action": action,
+        "target": target,
+        "operation_key": action,
+        "outcome": outcome,
+        "error_code": error_code or None,
+    }
+
 
 def _portable_tool_name(name: str) -> str:
     """Project one canonical MCP tool name into provider-safe ASCII."""
@@ -434,12 +536,7 @@ def create_server(
         retry_service = RetryService(retry_repository, execution)
     fixed_surface = [
         *fixed_tools(),
-        *(
-            tool
-            for tool in phase_h_tools(include_phase_p=True)
-            # deliberately unexposed: free semantics pending audit wiring
-            if tool.name != "comfyui.server.free"
-        ),
+        *(tool for tool in phase_h_tools(include_phase_p=True)),
         *(phase_l_tools() if asset_library is not None else []),
         *(phase_k_tools() if routing is not None else []),
         *(phase_m_tools() if experiment_service is not None else []),
@@ -462,7 +559,6 @@ def create_server(
                 if (repositories.workflow_store == "sqlite" or spec.name not in G3_AUTHORING_TOOLS)
                 and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
                 and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
-                and spec.name != "comfyui.server.free"
                 and (routing is not None or spec.name not in PHASE_K_TOOL_NAMES)
                 and (
                     repositories.run_store == "sqlite" or spec.name != "comfyui.job.list"
@@ -1489,17 +1585,33 @@ def create_server(
                 )
                 return tool_result(result)
             if params.name == "comfyui.server.free":
-                validate_fixed_arguments(arguments, {"server_id", "unload_models", "free_memory"})
+                validate_fixed_arguments(
+                    arguments, {"server_id", "unload_models", "free_memory", "request_id"}
+                )
                 server_id = required_string(arguments, "server_id", max_length=128)
                 unload_models = optional_boolean(arguments, "unload_models", False)
                 free_memory = optional_boolean(arguments, "free_memory", False)
                 if not (unload_models or free_memory):
                     raise ValueError("at least one memory action must be selected")
+                audit_log = JsonlAuditLog(base_dir / "data" / "admin-audit.jsonl")
+                request_id = (
+                    optional_string(arguments, "request_id", "", max_length=128)
+                    or uuid.uuid4().hex
+                )
                 result = await anyio.to_thread.run_sync(
-                    lambda: observation.free(
+                    lambda: _free_locked(
+                        audit_log,
+                        request_id,
+                        owner_id,
+                        {
+                            "server_id": server_id,
+                            "unload_models": unload_models,
+                            "free_memory": free_memory,
+                        },
+                        observation,
                         server_id,
-                        unload_models=unload_models,
-                        free_memory=free_memory,
+                        unload_models,
+                        free_memory,
                     )
                 )
                 return tool_result(result)

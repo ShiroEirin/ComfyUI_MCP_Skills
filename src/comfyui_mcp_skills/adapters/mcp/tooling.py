@@ -1239,7 +1239,8 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                 "items": {"type": "string", "enum": ["loaded_models", "runtime_memory"]},
                 "uniqueItems": True,
             },
-            "audit_status": {"type": "string", "enum": ["not_configured"]},
+            "audit_status": {"type": "string", "enum": ["audited", "not_configured"]},
+            "request_id": {"type": "string"},
         },
         "required": [
             "server_id",
@@ -1471,6 +1472,12 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                     "server_id": server_identifier,
                     "unload_models": {"type": "boolean", "default": False},
                     "free_memory": {"type": "boolean", "default": False},
+                    "request_id": {
+                        "type": "string",
+                        "maxLength": 128,
+                        "description": "Stable caller-supplied idempotency ID; reuse is rejected",
+                        "default": "",
+                    },
                 },
                 "required": ["server_id"],
                 "anyOf": [

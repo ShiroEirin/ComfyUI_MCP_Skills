@@ -25,6 +25,13 @@ class ComfyUISkillsError(Exception):
         }
 
 
+class AuditIdempotencyConflict(ComfyUISkillsError):
+    """A caller-supplied request_id was already used for the same operation."""
+
+    code = "AUDIT_IDEMPOTENCY_CONFLICT"
+    retryable = False
+
+
 class WorkflowArgumentsError(ComfyUISkillsError):
     code = "INVALID_WORKFLOW_ARGUMENTS"
 
