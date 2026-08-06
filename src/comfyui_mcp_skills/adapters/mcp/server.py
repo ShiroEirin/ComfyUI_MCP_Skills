@@ -465,6 +465,9 @@ def create_server(
                 and spec.name != "comfyui.server.free"
                 and (routing is not None or spec.name not in PHASE_K_TOOL_NAMES)
                 and (
+                    repositories.run_store == "sqlite" or spec.name != "comfyui.job.list"
+                )
+                and (
                     spec.name not in PHASE_N_TOOL_NAMES
                     or spec.name in available_phase_n
                 )

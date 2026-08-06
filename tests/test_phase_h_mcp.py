@@ -372,3 +372,24 @@ async def test_sqlite_job_list_dispatches_filters_and_rejects_unsafe_limits(
         "cursor": "",
     }
     assert invalid.is_error is True
+
+
+@pytest.mark.anyio
+async def test_capability_catalog_matches_surface_without_run_cutover(
+    tmp_path: Path,
+) -> None:
+    """Without the run cutover, job.list must be absent from both surface and catalog."""
+    _project(tmp_path)
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: PhaseHGateway(),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        found = await client.call_tool(
+            "comfyui.capability.search", {"query": "job", "limit": 50}
+        )
+
+    assert "comfyui.job.list" not in names
+    discovered = {item["name"] for item in found.structured_content["items"]}
+    assert "comfyui.job.list" not in discovered
