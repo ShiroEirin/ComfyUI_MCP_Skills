@@ -354,7 +354,7 @@ $env:COMFYUI_MCP_LIMIT_MODE = "external"
 $env:COMFYUI_MCP_WORKERS = "2"
 ```
 
-`external` 模式使用 `<COMFYUI_MCP_DIR>/data/shared-limits.sqlite3` 作为跨进程后端：请求按来源 IP/主体共享固定窗口计数，`max_concurrent_requests` 作为按主体的共享并发许可上限（超额返回 503），订阅配额跨 worker 汇总；后端缺失或不可读时拒绝启动（fail-closed），不会回退到进程内计数。不要通过反向代理后的多个单 worker 副本规避 `process` 限制——它们不会共享限流与订阅配额。
+`external` 模式使用 `<COMFYUI_MCP_DIR>/data/shared-limits.sqlite3` 作为跨进程后端：请求按来源 IP/主体共享固定窗口计数，`max_concurrent_requests` 作为按主体的共享并发许可上限（超额返回 503），订阅配额按租约记账——每条订阅持有带 TTL 的租约，活跃期间心跳续租，流结束按租约 ID 精确释放，worker 崩溃时过期租约自动回收，不会永久占用主体配额。后端缺失或不可读时拒绝启动（fail-closed），不会回退到进程内计数。不要通过反向代理后的多个单 worker 副本规避 `process` 限制——它们不会共享限流与订阅配额。
 
 ## 10. Manager 与供应来源白名单
 
