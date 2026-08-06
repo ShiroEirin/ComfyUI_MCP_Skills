@@ -487,19 +487,24 @@ def create_admin_server(
         ctx: ServerRequestContext[dict[str, object]], params: CallToolRequestParams
     ) -> CallToolResult:
         started = time.perf_counter()
+        failed = False
         with tracer.span(
             "tool.call", {"tool": params.name, "owner": authorization.principal_id}
         ) as span:
             try:
                 result = await _dispatch_tool_call(ctx, params)
+                failed = bool(result.is_error)
             except BaseException as exc:
+                failed = True
                 span.record_error(exc)
-                span.set_attributes({"is_error": True})
-                tool_errors.add(1, {"tool": params.name, "owner": authorization.principal_id})
                 raise
             finally:
                 elapsed = time.perf_counter() - started
-                span.set_attributes({"duration_ms": elapsed * 1000.0})
+                attributes: dict[str, Any] = {"duration_ms": elapsed * 1000.0}
+                if failed:
+                    attributes["is_error"] = True
+                    tool_errors.add(1, {"tool": params.name, "owner": authorization.principal_id})
+                span.set_attributes(attributes)
                 tool_calls.add(1, {"tool": params.name, "owner": authorization.principal_id})
                 tool_duration.record(
                     elapsed, {"tool": params.name, "owner": authorization.principal_id}

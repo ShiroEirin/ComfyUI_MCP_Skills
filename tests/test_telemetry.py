@@ -80,7 +80,7 @@ def test_tracer_from_env_fails_loudly_without_sdk(
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", blocked_otel)
-    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4317")
     with pytest.raises(RuntimeError, match="not installed"):
         tracer_from_env()
     with pytest.raises(RuntimeError, match="not installed"):
@@ -181,7 +181,11 @@ def test_otel_exporters_receive_signal_specific_endpoints(
     pytest.importorskip("opentelemetry.sdk.trace")
     from unittest.mock import patch
 
+    from comfyui_mcp_skills.application import telemetry
+
     monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    telemetry._tracer_cache.clear()
+    telemetry._meter_cache.clear()
     with (
         patch(
             "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
@@ -207,7 +211,11 @@ def test_otel_exporters_strip_legacy_full_path_env(
     pytest.importorskip("opentelemetry.sdk.trace")
     from unittest.mock import patch
 
+    from comfyui_mcp_skills.application import telemetry
+
     monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318/v1/traces")
+    telemetry._tracer_cache.clear()
+    telemetry._meter_cache.clear()
     with (
         patch(
             "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
@@ -224,6 +232,36 @@ def test_otel_exporters_strip_legacy_full_path_env(
     assert metric_exporter.call_args.kwargs["endpoint"] == (
         "http://127.0.0.1:4318/v1/metrics"
     )
+
+
+def test_factories_cache_single_initialization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repeated factory calls construct exporters once and reuse the instance."""
+    pytest.importorskip("opentelemetry.sdk.trace")
+    from unittest.mock import patch
+
+    from comfyui_mcp_skills.application import telemetry
+
+    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4319")
+    telemetry._tracer_cache.clear()
+    telemetry._meter_cache.clear()
+    with (
+        patch(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+        ) as span_exporter,
+        patch(
+            "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter"
+        ) as metric_exporter,
+    ):
+        first_tracer = tracer_from_env()
+        second_tracer = tracer_from_env()
+        first_meter = meter_from_env()
+        second_meter = meter_from_env()
+    assert span_exporter.call_count == 1
+    assert metric_exporter.call_count == 1
+    assert first_tracer is second_tracer
+    assert first_meter is second_meter
 
 
 def test_signal_endpoint_appends_paths_and_strips_legacy_suffix() -> None:
@@ -379,4 +417,89 @@ def test_recording_meter_captures_errors(tmp_path: Path) -> None:
     assert len(errors) == 1
     assert errors[0][0] == 1
     assert errors[0][1]["tool"] == "comfyui.unknown.tool"
+    assert len(recorder.counters["mcp.tool.calls"]) == 1
+
+
+def test_recording_meter_counts_is_error_results(tmp_path: Path) -> None:
+    """Tool failures converted to is_error results still count as errors."""
+    import anyio
+    from mcp.client import Client
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    recorder = RecordingMeter()
+    server = create_server(tmp_path, meter=recorder)  # type: ignore[arg-type]
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            # job.get without required arguments converts to an is_error result
+            await client.call_tool("comfyui.job.get", {})
+
+    anyio.run(exercise)
+
+    errors = recorder.counters["mcp.tool.errors"]
+    assert len(errors) == 1
+    assert errors[0][1]["tool"] == "comfyui.job.get"
+    assert len(recorder.counters["mcp.tool.calls"]) == 1
+    assert len(recorder.histograms["mcp.tool.duration"]) == 1
+
+
+def test_recording_tracer_marks_is_error_results(tmp_path: Path) -> None:
+    """Span is_error is set for converted is_error results, not only raised errors."""
+    import anyio
+    from mcp.client import Client
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+
+    (tmp_path / "config.json").write_text("{}", encoding="utf-8")
+    recorder = RecordingTracer()
+    server = create_server(tmp_path, tracer=recorder)  # type: ignore[arg-type]
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            await client.call_tool("comfyui.job.get", {})
+
+    anyio.run(exercise)
+
+    assert recorder.spans
+    call = recorder.spans[0]
+    assert call["attributes"]["tool"] == "comfyui.job.get"
+    assert call["attributes"].get("is_error") is True
+    assert "duration_ms" in call["attributes"]
+
+
+def test_admin_recording_meter_counts_is_error_results(tmp_path: Path) -> None:
+    """Admin tool failures converted to is_error results count as errors too."""
+    import json
+
+    import anyio
+    from mcp.client import Client
+
+    from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
+
+    (tmp_path / "data" / "local" / "txt2img").mkdir(parents=True)
+    (tmp_path / "data" / "local" / "txt2img" / "schema.json").write_text(
+        json.dumps({"enabled": True, "parameters": {}}), encoding="utf-8"
+    )
+    (tmp_path / "data" / "local" / "txt2img" / "workflow.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    recorder = RecordingMeter()
+    server = create_admin_server(
+        tmp_path, enabled=True, meter=recorder  # type: ignore[arg-type]
+    )
+
+    async def exercise() -> None:
+        async with Client(server) as client:
+            await client.call_tool(
+                "comfyui.admin.workflow.set_enabled",
+                {"server_id": "local", "workflow_id": "txt2img", "enabled": "false"},
+            )
+
+    anyio.run(exercise)
+
+    errors = recorder.counters["mcp.tool.errors"]
+    assert len(errors) == 1
+    assert errors[0][1]["tool"] == "comfyui.admin.workflow.set_enabled"
     assert len(recorder.counters["mcp.tool.calls"]) == 1

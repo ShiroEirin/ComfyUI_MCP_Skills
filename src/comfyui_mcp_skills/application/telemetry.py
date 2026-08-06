@@ -143,22 +143,45 @@ def _signal_endpoint(base: str, signal: str) -> str:
     return f"{normalized}/v1/{signal}"
 
 
+_tracer_cache: dict[tuple[str, str], Tracer] = {}
+_meter_cache: dict[tuple[str, str], Meter] = {}
+
+
 def tracer_from_env() -> Tracer:
-    """Build the configured tracer, or a null tracer when unconfigured."""
+    """Build the configured tracer once per endpoint/service, else a null tracer.
+
+    The underlying provider, span processor, and exporter are constructed
+    exactly once per (endpoint, service name) and reused afterwards so repeated
+    server construction never leaks background exporter resources.
+    """
     endpoint = os.environ.get(OTEL_ENDPOINT_ENV, "").strip()
     if not endpoint:
         return NullTracer()
     service_name = os.environ.get(OTEL_SERVICE_NAME_ENV, "").strip() or "comfyui-mcp"
-    return _otel_tracer(_signal_endpoint(endpoint, "traces"), service_name)
+    key = (endpoint, service_name)
+    if key not in _tracer_cache:
+        _tracer_cache[key] = _otel_tracer(
+            _signal_endpoint(endpoint, "traces"), service_name
+        )
+    return _tracer_cache[key]
 
 
 def meter_from_env() -> Meter:
-    """Build the configured meter, or a null meter when unconfigured."""
+    """Build the configured meter once per endpoint/service, else a null meter.
+
+    Mirrors :func:`tracer_from_env` so a metric reader and exporter are never
+    constructed twice for the same collector configuration.
+    """
     endpoint = os.environ.get(OTEL_ENDPOINT_ENV, "").strip()
     if not endpoint:
         return NullMeter()
     service_name = os.environ.get(OTEL_SERVICE_NAME_ENV, "").strip() or "comfyui-mcp"
-    return _otel_meter(_signal_endpoint(endpoint, "metrics"), service_name)
+    key = (endpoint, service_name)
+    if key not in _meter_cache:
+        _meter_cache[key] = _otel_meter(
+            _signal_endpoint(endpoint, "metrics"), service_name
+        )
+    return _meter_cache[key]
 
 
 def _otel_tracer(endpoint: str, service_name: str) -> Tracer:
