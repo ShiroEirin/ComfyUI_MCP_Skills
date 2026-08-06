@@ -360,7 +360,7 @@ requires-dist = [
     { name = "jsonschema", specifier = ">=4.23,<5" },
     { name = "mcp", specifier = ">=2,<3" },
     { name = "mcp-types", specifier = ">=2,<3" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<2" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.14,<3" },
     { name = "opentelemetry-api", marker = "extra == 'otel'", specifier = ">=1.27,<2" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.27,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27,<2" },
