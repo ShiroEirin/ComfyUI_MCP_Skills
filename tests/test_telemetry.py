@@ -69,9 +69,22 @@ def test_tracer_from_env_returns_null_when_unconfigured(monkeypatch: pytest.Monk
 def test_tracer_from_env_fails_loudly_without_sdk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318/v1/traces")
+    """A configured endpoint with the SDK unavailable must fail loudly."""
+    import builtins
+
+    real_import = builtins.__import__
+
+    def blocked_otel(name: str, *args: object, **kwargs: object) -> object:
+        if name == "opentelemetry" or name.startswith("opentelemetry."):
+            raise ImportError("simulated missing otel extra")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_otel)
+    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
     with pytest.raises(RuntimeError, match="not installed"):
         tracer_from_env()
+    with pytest.raises(RuntimeError, match="not installed"):
+        meter_from_env()
 
 
 def test_otel_tracer_records_span_with_sdk() -> None:
@@ -161,13 +174,14 @@ def test_recording_tracer_captures_errors(tmp_path: Path) -> None:
     assert "duration_ms" in call["attributes"]
 
 
-def test_otel_exporters_receive_signal_specific_endpoints() -> None:
-    """Traces and metrics must never share one OTLP path."""
+def test_otel_exporters_receive_signal_specific_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Traces and metrics must never share one OTLP path; base URL is expanded."""
     pytest.importorskip("opentelemetry.sdk.trace")
     from unittest.mock import patch
 
-    from comfyui_mcp_skills.application import telemetry
-
+    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
     with (
         patch(
             "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
@@ -176,8 +190,34 @@ def test_otel_exporters_receive_signal_specific_endpoints() -> None:
             "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter"
         ) as metric_exporter,
     ):
-        telemetry._otel_tracer("http://127.0.0.1:4318", "svc")
-        telemetry._otel_meter("http://127.0.0.1:4318", "svc")
+        tracer_from_env()
+        meter_from_env()
+    assert span_exporter.call_args.kwargs["endpoint"] == (
+        "http://127.0.0.1:4318/v1/traces"
+    )
+    assert metric_exporter.call_args.kwargs["endpoint"] == (
+        "http://127.0.0.1:4318/v1/metrics"
+    )
+
+
+def test_otel_exporters_strip_legacy_full_path_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A legacy full /v1/traces value is normalized per signal, never shared."""
+    pytest.importorskip("opentelemetry.sdk.trace")
+    from unittest.mock import patch
+
+    monkeypatch.setenv(OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318/v1/traces")
+    with (
+        patch(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+        ) as span_exporter,
+        patch(
+            "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter"
+        ) as metric_exporter,
+    ):
+        tracer_from_env()
+        meter_from_env()
     assert span_exporter.call_args.kwargs["endpoint"] == (
         "http://127.0.0.1:4318/v1/traces"
     )

@@ -240,7 +240,7 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`835 passed, 3 skipped, 2 subtests passed`。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`840 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试；未安装 `otel` extra 的环境对应为 `836 passed, 4 skipped`，3 个 SDK 集成测试自动跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
