@@ -127,13 +127,29 @@ class OtelTracer:
             yield span
 
 
+def _signal_endpoint(base: str, signal: str) -> str:
+    """Append the OTLP/HTTP signal path to a collector base URL.
+
+    Accepts a base URL (``http://host:4318``) or a legacy full signal path
+    (``http://host:4318/v1/traces``); a legacy path is stripped before the
+    requested signal path is appended so traces and metrics never share one
+    endpoint.
+    """
+    normalized = base.rstrip("/")
+    for existing in ("/v1/traces", "/v1/metrics"):
+        if normalized.endswith(existing):
+            normalized = normalized[: -len(existing)].rstrip("/")
+            break
+    return f"{normalized}/v1/{signal}"
+
+
 def tracer_from_env() -> Tracer:
     """Build the configured tracer, or a null tracer when unconfigured."""
     endpoint = os.environ.get(OTEL_ENDPOINT_ENV, "").strip()
     if not endpoint:
         return NullTracer()
     service_name = os.environ.get(OTEL_SERVICE_NAME_ENV, "").strip() or "comfyui-mcp"
-    return _otel_tracer(endpoint, service_name)
+    return _otel_tracer(_signal_endpoint(endpoint, "traces"), service_name)
 
 
 def meter_from_env() -> Meter:
@@ -142,7 +158,7 @@ def meter_from_env() -> Meter:
     if not endpoint:
         return NullMeter()
     service_name = os.environ.get(OTEL_SERVICE_NAME_ENV, "").strip() or "comfyui-mcp"
-    return _otel_meter(endpoint, service_name)
+    return _otel_meter(_signal_endpoint(endpoint, "metrics"), service_name)
 
 
 def _otel_tracer(endpoint: str, service_name: str) -> Tracer:

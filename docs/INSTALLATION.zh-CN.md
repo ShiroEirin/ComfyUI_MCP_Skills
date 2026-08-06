@@ -399,13 +399,14 @@ $env:COMFYUI_MCP_MANAGER_ORIGINS = "http://127.0.0.1:8188"
 2. 设置 OTLP/HTTP 端点：
 
 ```powershell
-$env:COMFYUI_MCP_OTEL_ENDPOINT = "http://127.0.0.1:4318/v1/traces"
+$env:COMFYUI_MCP_OTEL_ENDPOINT = "http://127.0.0.1:4318"
 $env:COMFYUI_MCP_OTEL_SERVICE_NAME = "comfyui-mcp-prod"
 comfyui-mcp
 ```
 
-- 未设置 `COMFYUI_MCP_OTEL_ENDPOINT` 时，tracer 是零开销空实现，不会导入 OpenTelemetry 包。
-- 设置了端点但未安装 `otel` extra 时，启动显式报错（fail loud），不会静默丢失 span。
+- 未设置 `COMFYUI_MCP_OTEL_ENDPOINT` 时，tracer/meter 是零开销空实现，不会导入 OpenTelemetry 包。
+- 端点按 OTLP/HTTP base URL 配置（不含信号路径）；服务自动追加 `/v1/traces` 与 `/v1/metrics` 并分别导出，两条信号绝不共用同一路径。旧的带 `/v1/traces` 完整路径值仍被接受（自动剥离后按信号重拼）。
+- 设置了端点但未安装 `otel` extra 时，启动显式报错（fail loud），不会静默丢失 span/指标。
 - 当前只提供 traces 与 metrics 信号；logs 信号未交付。
 
 ## 12. 保留策略与迁移

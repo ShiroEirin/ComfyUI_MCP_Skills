@@ -161,6 +161,54 @@ def test_recording_tracer_captures_errors(tmp_path: Path) -> None:
     assert "duration_ms" in call["attributes"]
 
 
+def test_otel_exporters_receive_signal_specific_endpoints() -> None:
+    """Traces and metrics must never share one OTLP path."""
+    pytest.importorskip("opentelemetry.sdk.trace")
+    from unittest.mock import patch
+
+    from comfyui_mcp_skills.application import telemetry
+
+    with (
+        patch(
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter.OTLPSpanExporter"
+        ) as span_exporter,
+        patch(
+            "opentelemetry.exporter.otlp.proto.http.metric_exporter.OTLPMetricExporter"
+        ) as metric_exporter,
+    ):
+        telemetry._otel_tracer("http://127.0.0.1:4318", "svc")
+        telemetry._otel_meter("http://127.0.0.1:4318", "svc")
+    assert span_exporter.call_args.kwargs["endpoint"] == (
+        "http://127.0.0.1:4318/v1/traces"
+    )
+    assert metric_exporter.call_args.kwargs["endpoint"] == (
+        "http://127.0.0.1:4318/v1/metrics"
+    )
+
+
+def test_signal_endpoint_appends_paths_and_strips_legacy_suffix() -> None:
+    from comfyui_mcp_skills.application.telemetry import _signal_endpoint
+
+    assert _signal_endpoint("http://127.0.0.1:4318", "traces") == (
+        "http://127.0.0.1:4318/v1/traces"
+    )
+    assert _signal_endpoint("http://127.0.0.1:4318", "metrics") == (
+        "http://127.0.0.1:4318/v1/metrics"
+    )
+    assert _signal_endpoint("http://127.0.0.1:4318/", "traces") == (
+        "http://127.0.0.1:4318/v1/traces"
+    )
+    assert _signal_endpoint("http://127.0.0.1:4318/v1/traces", "metrics") == (
+        "http://127.0.0.1:4318/v1/metrics"
+    )
+    assert _signal_endpoint("http://127.0.0.1:4318/v1/metrics", "traces") == (
+        "http://127.0.0.1:4318/v1/traces"
+    )
+    assert _signal_endpoint("http://127.0.0.1:4318/v1/traces/", "traces") == (
+        "http://127.0.0.1:4318/v1/traces"
+    )
+
+
 class RecordingMeter:
     def __init__(self) -> None:
         self.counters: dict[str, list[tuple[int, dict[str, Any]]]] = {}
