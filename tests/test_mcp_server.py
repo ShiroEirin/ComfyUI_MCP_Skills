@@ -773,6 +773,53 @@ async def test_admin_workflow_validate_missing_workflow_errors(tmp_path: Path) -
 
 
 @pytest.mark.anyio
+async def test_admin_workflow_validate_rejects_bad_parameter_targets(
+    tmp_path: Path,
+) -> None:
+    """A parameter pointing at a missing node/field invalidates the workflow."""
+    _project(tmp_path)
+    directory = tmp_path / "data" / "local" / "txt2img"
+    schema = json.loads((directory / "schema.json").read_text(encoding="utf-8"))
+    schema["parameters"] = {
+        "broken": {
+            "type": "string",
+            "required": True,
+            "node_id": "99",
+            "field": "missing",
+        }
+    }
+    (directory / "schema.json").write_text(
+        json.dumps(schema, ensure_ascii=False), encoding="utf-8"
+    )
+
+    class _ObjectInfoGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "CLIPTextEncode": {
+                    "input": {"required": {"text": ["STRING"]}},
+                    "input_order": {"required": ["text"]},
+                    "output": ["CONDITIONING"],
+                }
+            }
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ObjectInfoGateway(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.validate",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    content = result.structured_content
+    assert result.is_error is True
+    serialized = json.dumps(content) if content is not None else ""
+    assert "missing input" in serialized or "invalid_parameter_schema" in serialized
+
+
+@pytest.mark.anyio
 async def test_admin_server_survives_workflow_cutover(tmp_path: Path) -> None:
     """After the workflow cutover the admin server starts; file-backed tools hide."""
     import sqlite3

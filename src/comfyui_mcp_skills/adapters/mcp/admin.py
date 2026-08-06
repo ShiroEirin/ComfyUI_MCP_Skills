@@ -66,6 +66,11 @@ from comfyui_mcp_skills.application.workflow_graph import (
 )
 from comfyui_mcp_skills.application.workflow_import import WorkflowImportService
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError
+from comfyui_mcp_skills.domain.workflow_schema import (
+    build_input_schema,
+    normalize_parameters,
+    validate_parameter_targets,
+)
 from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
@@ -1066,11 +1071,27 @@ def _validate_published_workflow(
     object_info = gateway.get_object_info()
     result = validation.validate_api(workflow.graph, object_info)
     semantic = graphs.describe(workflow.graph, object_info=object_info)
+    issues = list(result["issues"])
+    try:
+        normalized = normalize_parameters(workflow.parameters)
+        validate_parameter_targets(normalized, workflow.graph)
+        build_input_schema(normalized)
+    except (TypeError, ValueError) as exc:
+        issues.append(
+            {
+                "code": "invalid_parameter_schema",
+                "message": str(exc),
+                "node_id": "",
+                "field": "",
+            }
+        )
     return {
         "workflow_id": workflow_id,
         "server_id": server_id,
-        "valid": bool(result["valid"]),
-        "issues": list(result["issues"]),
+        "valid": bool(result["valid"]) and not any(
+            issue.get("code") == "invalid_parameter_schema" for issue in issues
+        ),
+        "issues": issues,
         "unsupported_nodes": sorted(result["unsupported_nodes"]),
         "node_count": int(semantic["node_count"]),
         "edge_count": int(semantic["edge_count"]),
