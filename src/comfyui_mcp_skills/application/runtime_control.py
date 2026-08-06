@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, Protocol
 
 from comfyui_mcp_skills.application.ports import ComfyUIGateway, RunRepository
@@ -16,6 +17,36 @@ from comfyui_mcp_skills.domain.models import Job
 
 class RuntimeController(Protocol):
     def restart(self, server_id: str) -> dict[str, Any]: ...
+
+
+def controller_provider_from_config(
+    base_dir: Path,
+) -> Callable[[str], RuntimeController | None] | None:
+    """Resolve one controller per server from config.json runtime bindings.
+
+    Shared by the stdio and HTTP entry points so adapter resolution never
+    drifts between them. Any malformed binding fails the whole provider closed
+    (no controller), matching the fail-closed adapter contract.
+    """
+    from comfyui_mcp_skills.infrastructure.runtime.systemd import controller_from_config
+
+    registry = ServerRegistry(base_dir)
+    controllers: dict[str, RuntimeController] = {}
+    try:
+        for server in registry.list():
+            connection = registry.connection(server.server_id)
+            controller = controller_from_config(connection)
+            if controller is not None:
+                controllers[server.server_id] = controller
+    except Exception:
+        return None
+    if not controllers:
+        return None
+
+    def provider(server_id: str) -> RuntimeController | None:
+        return controllers.get(server_id)
+
+    return provider
 
 
 class RuntimeControlService:

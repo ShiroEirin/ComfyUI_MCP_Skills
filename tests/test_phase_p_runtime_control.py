@@ -178,3 +178,62 @@ async def test_operations_mcp_exposes_runtime_controls_and_restart_requirement(
     assert result.structured_content["runtime_controller_available"] is False
     assert cleared.structured_content["executed"] is True
     assert interrupted.structured_content["executed"] is True
+
+
+def test_controller_provider_from_config_resolves_adapters(tmp_path: Path) -> None:
+    from comfyui_mcp_skills.application.runtime_control import (
+        controller_provider_from_config,
+    )
+    from comfyui_mcp_skills.infrastructure.runtime.docker import DockerController
+    from comfyui_mcp_skills.infrastructure.runtime.systemd import SystemdController
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {"id": "local", "url": "http://127.0.0.1:8188"},
+                    {
+                        "id": "managed",
+                        "url": "http://127.0.0.1:8189",
+                        "runtime": {"adapter": "systemd", "unit": "comfyui-local.service"},
+                    },
+                    {
+                        "id": "containerized",
+                        "url": "http://127.0.0.1:8190",
+                        "runtime": {"adapter": "docker", "container": "comfyui-local"},
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    provider = controller_provider_from_config(tmp_path)
+    assert provider is not None
+    assert provider("local") is None
+    assert isinstance(provider("managed"), SystemdController)
+    assert isinstance(provider("containerized"), DockerController)
+    assert provider("missing") is None
+
+
+def test_controller_provider_from_config_fails_closed_on_bad_binding(
+    tmp_path: Path,
+) -> None:
+    from comfyui_mcp_skills.application.runtime_control import (
+        controller_provider_from_config,
+    )
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "id": "local",
+                        "url": "http://127.0.0.1:8188",
+                        "runtime": {"adapter": "systemd", "unit": "../escape.service"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert controller_provider_from_config(tmp_path) is None

@@ -225,7 +225,7 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "comfyui.server.diagnose",
         "Diagnose a server",
         "Generate one bounded structured server Diagnostic Report.",
-        frozenset({Toolset.OPERATIONS}),
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING}),
         frozenset({Scope.OBSERVE}),
         RiskLevel.LOW,
         ("diagnose", "server", "health"),

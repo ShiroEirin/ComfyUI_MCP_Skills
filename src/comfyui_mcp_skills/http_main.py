@@ -19,11 +19,14 @@ _APP_FACTORY = "comfyui_mcp_skills.http_main:create_app"
 
 
 def _with_shared_store(app_options: dict[str, Any]) -> dict[str, Any]:
-    if app_options.get("limit_mode") == "external":
-        app_options["shared_limit_store"] = SQLiteSharedLimitStore(
+    if app_options.get("limit_mode") != "external":
+        return app_options
+    return {
+        **app_options,
+        "shared_limit_store": SQLiteSharedLimitStore(
             Path(app_options["base_dir"]) / "data" / "shared-limits.sqlite3"
-        )
-    return app_options
+        ),
+    }
 
 
 def create_app():

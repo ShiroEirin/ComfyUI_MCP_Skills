@@ -129,7 +129,8 @@ class RequestControlMiddleware:
             )
             await response(scope, receive, send)
             return
-        recent.append(now)
+        if self._limit_mode != "external":
+            recent.append(now)
         authorization = request.headers.get("authorization", "")
         candidate = bearer_token(authorization)
         if candidate:

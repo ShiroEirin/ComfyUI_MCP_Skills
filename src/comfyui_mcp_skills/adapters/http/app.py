@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.auth.settings import AuthSettings
@@ -29,7 +28,7 @@ from comfyui_mcp_skills.application.authorization import (
     Toolset,
     admitted_scopes,
 )
-from comfyui_mcp_skills.application.runtime_control import RuntimeController
+from comfyui_mcp_skills.application.runtime_control import controller_provider_from_config
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.application.shared_limits import (
     SharedLimitStore,
@@ -40,30 +39,6 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     create_repository_bundle,
 )
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_routing import SQLiteRoutingRepository
-from comfyui_mcp_skills.infrastructure.runtime.systemd import controller_from_config
-
-
-def _runtime_controller_provider(
-    base_dir: Path,
-) -> Callable[[str], RuntimeController | None] | None:
-    """Resolve one controller per server from config.json runtime bindings."""
-    registry = ServerRegistry(base_dir)
-    controllers: dict[str, RuntimeController] = {}
-    try:
-        for server in registry.list():
-            connection = registry.connection(server.server_id)
-            controller = controller_from_config(connection)
-            if controller is not None:
-                controllers[server.server_id] = controller
-    except Exception:
-        return None
-    if not controllers:
-        return None
-
-    def provider(server_id: str) -> RuntimeController | None:
-        return controllers.get(server_id)
-
-    return provider
 
 
 def create_http_app(
@@ -171,7 +146,7 @@ def create_http_app(
         ),
         owner_provider=current_owner,
         max_dynamic_tools=max_dynamic_tools,
-        runtime_controller_provider=_runtime_controller_provider(base_dir),
+        runtime_controller_provider=controller_provider_from_config(base_dir),
     )
     app = server.streamable_http_app(
         streamable_http_path="/mcp",
