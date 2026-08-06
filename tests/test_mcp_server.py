@@ -20,6 +20,7 @@ from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
 from comfyui_mcp_skills.adapters.mcp.server import create_server
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.application.authorization import AuthorizationContext, Scope, Toolset
+from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 
 
 class FakeGateway:
@@ -624,6 +625,37 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
         )
         assert invalid.is_error is True
     assert not (tmp_path / "data" / "local" / "txt2img").exists()
+
+
+@pytest.mark.anyio
+async def test_admin_server_survives_workflow_cutover(tmp_path: Path) -> None:
+    """After the workflow cutover the admin server starts; file-backed tools hide."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    server = create_admin_server(tmp_path, enabled=True)
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+
+    assert "comfyui.admin.workflow.set_enabled" not in names
+    assert "comfyui.admin.workflow.delete" not in names
+    assert "comfyui.admin.audit.export" not in names
+    assert "comfyui.admin.workflow.change.plan" in names
+    assert "comfyui.admin.workflow.import" in names
+    # phase-O tools are assembled by admin_main with real services; not asserted here.
 
 
 @pytest.mark.anyio

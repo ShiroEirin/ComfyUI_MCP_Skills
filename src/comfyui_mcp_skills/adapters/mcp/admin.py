@@ -78,6 +78,7 @@ from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import (
     SQLiteWorkflowRepository,
 )
+from comfyui_mcp_skills.infrastructure.persistence.store_fencing import LegacyStoreSwitched
 from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
     SQLiteWorkflowChangeRepository,
 )
@@ -120,11 +121,18 @@ def create_admin_server(
         actor, frozenset({Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}), Toolset.ADMIN
     )
     owner_id = authorization.principal_id
-    admin = WorkflowAdmin(
-        base_dir,
-        FileWorkflowRepository(base_dir),
-        actor=actor,
-    )
+    try:
+        admin = WorkflowAdmin(
+            base_dir,
+            FileWorkflowRepository(base_dir),
+            actor=actor,
+        )
+    except LegacyStoreSwitched:
+        # After the workflow aggregate cutover the file store is fenced; the
+        # file-backed workflow enable/delete and admin audit tools become
+        # unavailable, but the admin server itself must still start for the
+        # phase-O surface (servers/config/provisioning/approval).
+        admin = None
     repositories = repositories or create_repository_bundle(base_dir)
     provisioning_repository = provisioning_repository or getattr(repositories, "provisioning", None)
     phase_o_surface = phase_o_tools(
@@ -351,130 +359,158 @@ def create_admin_server(
                         if workflow_changes is not None
                         else []
                     ),
-                    Tool(
-                        name="comfyui.admin.workflow.set_enabled",
-                        description="Enable or disable one configured workflow.",
-                        input_schema={
-                            "type": "object",
-                            "properties": {
-                                **identity,
-                                **request_id,
-                                "enabled": {"type": "boolean"},
-                            },
-                            "required": ["server_id", "workflow_id", "enabled"],
-                            "additionalProperties": False,
-                        },
-                        output_schema={"type": "object"},
-                        annotations=ToolAnnotations(
-                            read_only_hint=False,
-                            destructive_hint=False,
-                            idempotent_hint=True,
-                            open_world_hint=False,
-                        ),
-                    ),
-                    Tool(
-                        name="comfyui.admin.workflow.delete",
-                        description=(
-                            "Permanently delete one workflow after an exact confirmation phrase. "
-                            "Supply request_id to make retries idempotent."
-                        ),
-                        input_schema={
-                            "type": "object",
-                            "properties": {
-                                **identity,
-                                **request_id,
-                                "confirmation": {"type": "string"},
-                            },
-                            "required": ["server_id", "workflow_id", "confirmation", "request_id"],
-                            "additionalProperties": False,
-                        },
-                        output_schema={"type": "object"},
-                        annotations=ToolAnnotations(
-                            read_only_hint=False,
-                            destructive_hint=True,
-                            idempotent_hint=True,
-                            open_world_hint=False,
-                        ),
-                    ),
-                    Tool(
-                        name="comfyui.admin.audit.get",
-                        description="Read the durable commit and audit status of an admin request.",
-                        input_schema={
-                            "type": "object",
-                            "properties": request_id,
-                            "required": ["request_id"],
-                            "additionalProperties": False,
-                        },
-                        output_schema={"type": "object"},
-                        annotations=ToolAnnotations(
-                            read_only_hint=True,
-                            destructive_hint=False,
-                            idempotent_hint=True,
-                            open_world_hint=False,
-                        ),
-                    ),
-                    Tool(
-                        name="comfyui.admin.audit.retry",
-                        description=(
-                            "Retry only a pending audit outcome without repeating its operation."
-                        ),
-                        input_schema={
-                            "type": "object",
-                            "properties": request_id,
-                            "required": ["request_id"],
-                            "additionalProperties": False,
-                        },
-                        output_schema={"type": "object"},
-                        annotations=ToolAnnotations(
-                            read_only_hint=False,
-                            destructive_hint=False,
-                            idempotent_hint=True,
-                            open_world_hint=False,
-                        ),
-                    ),
-                    Tool(
-                        name="comfyui.admin.audit.export",
-                        description=(
-                            "Export a bounded, filterable slice of the durable admin audit "
-                            "trail in append order."
-                        ),
-                        input_schema={
-                            "type": "object",
-                            "properties": {
-                                "actor": {"type": "string", "maxLength": 128, "default": ""},
-                                "action": {"type": "string", "maxLength": 256, "default": ""},
-                                "outcomes": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string",
-                                        "enum": ["intent", "success", "failure"],
+                    *(
+                        [
+                            Tool(
+                                name="comfyui.admin.workflow.set_enabled",
+                                description="Enable or disable one configured workflow.",
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        **identity,
+                                        **request_id,
+                                        "enabled": {"type": "boolean"},
                                     },
-                                    "maxItems": 3,
-                                    "default": [],
+                                    "required": ["server_id", "workflow_id", "enabled"],
+                                    "additionalProperties": False,
                                 },
-                                "after": {
-                                    "type": "string",
-                                    "description": "UTC ISO-8601 lower bound (inclusive)",
-                                    "maxLength": 64,
-                                    "default": "",
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=False,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.workflow.delete",
+                                description=(
+                                    "Permanently delete one workflow after an exact confirmation "
+                                    "phrase. Supply request_id to make retries idempotent."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        **identity,
+                                        **request_id,
+                                        "confirmation": {"type": "string"},
+                                    },
+                                    "required": [
+                                        "server_id",
+                                        "workflow_id",
+                                        "confirmation",
+                                        "request_id",
+                                    ],
+                                    "additionalProperties": False,
                                 },
-                                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
-                                "cursor": {
-                                    "type": "string",
-                                    "description": "Opaque next-page cursor from a prior call",
-                                    "maxLength": 64,
-                                    "default": "",
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=True,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.audit.get",
+                                description=(
+                                    "Read the durable commit and audit status of an admin request."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": request_id,
+                                    "required": ["request_id"],
+                                    "additionalProperties": False,
                                 },
-                            },
-                            "additionalProperties": False,
-                        },
-                        output_schema={"type": "object"},
-                        annotations=ToolAnnotations(
-                            read_only_hint=True,
-                            destructive_hint=False,
-                            idempotent_hint=True,
-                            open_world_hint=False,
-                        ),
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=True,
+                                    destructive_hint=False,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.audit.retry",
+                                description=(
+                                    "Retry only a pending audit outcome without repeating its "
+                                    "operation."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": request_id,
+                                    "required": ["request_id"],
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=False,
+                                    destructive_hint=False,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                            Tool(
+                                name="comfyui.admin.audit.export",
+                                description=(
+                                    "Export a bounded, filterable slice of the durable admin "
+                                    "audit trail in append order."
+                                ),
+                                input_schema={
+                                    "type": "object",
+                                    "properties": {
+                                        "actor": {
+                                            "type": "string",
+                                            "maxLength": 128,
+                                            "default": "",
+                                        },
+                                        "action": {
+                                            "type": "string",
+                                            "maxLength": 256,
+                                            "default": "",
+                                        },
+                                        "outcomes": {
+                                            "type": "array",
+                                            "items": {
+                                                "type": "string",
+                                                "enum": ["intent", "success", "failure"],
+                                            },
+                                            "maxItems": 3,
+                                            "default": [],
+                                        },
+                                        "after": {
+                                            "type": "string",
+                                            "description": "UTC ISO-8601 lower bound (inclusive)",
+                                            "maxLength": 64,
+                                            "default": "",
+                                        },
+                                        "limit": {
+                                            "type": "integer",
+                                            "minimum": 1,
+                                            "maximum": 1000,
+                                        },
+                                        "cursor": {
+                                            "type": "string",
+                                            "description": (
+                                                "Opaque next-page cursor from a prior call"
+                                            ),
+                                            "maxLength": 64,
+                                            "default": "",
+                                        },
+                                    },
+                                    "additionalProperties": False,
+                                },
+                                output_schema={"type": "object"},
+                                annotations=ToolAnnotations(
+                                    read_only_hint=True,
+                                    destructive_hint=False,
+                                    idempotent_hint=True,
+                                    open_world_hint=False,
+                                ),
+                            ),
+                        ]
+                        if admin is not None
+                        else []
                     ),
                     *phase_o_surface,
                 ]
@@ -625,6 +661,10 @@ def create_admin_server(
                     )
                 )
             elif params.name == "comfyui.admin.workflow.set_enabled":
+                if admin is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS, message="Workflow admin unavailable after cutover"
+                    )
                 _validate_keys(arguments, {"server_id", "workflow_id", "enabled", "request_id"})
                 server_id = _required_string(arguments, "server_id")
                 workflow_id = _required_string(arguments, "workflow_id")
@@ -641,6 +681,10 @@ def create_admin_server(
                     )
                 )
             elif params.name == "comfyui.admin.workflow.delete":
+                if admin is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS, message="Workflow admin unavailable after cutover"
+                    )
                 _validate_keys(
                     arguments,
                     {"server_id", "workflow_id", "confirmation", "request_id"},
@@ -658,14 +702,26 @@ def create_admin_server(
                     )
                 )
             elif params.name == "comfyui.admin.audit.get":
+                if admin is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS, message="Workflow admin unavailable after cutover"
+                    )
                 _validate_keys(arguments, {"request_id"})
                 request_id = _required_string(arguments, "request_id")
                 result = await anyio.to_thread.run_sync(lambda: admin.get_audit_status(request_id))
             elif params.name == "comfyui.admin.audit.retry":
+                if admin is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS, message="Workflow admin unavailable after cutover"
+                    )
                 _validate_keys(arguments, {"request_id"})
                 request_id = _required_string(arguments, "request_id")
                 result = await anyio.to_thread.run_sync(lambda: admin.retry_audit(request_id))
             elif params.name == "comfyui.admin.audit.export":
+                if admin is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS, message="Workflow admin unavailable after cutover"
+                    )
                 _validate_keys(
                     arguments, {"actor", "action", "outcomes", "after", "limit", "cursor"}
                 )
