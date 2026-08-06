@@ -455,7 +455,7 @@ comfyui:observe
 | `comfyui.node.compatibility` | 检查节点端口、版本和替换关系 |
 | `comfyui.server.capabilities` | 探测可选 API、Manager 和版本能力 |
 
-> 未交付（设计蓝图表）：`comfyui.workflow.list`、`comfyui.template.subgraph.list`、`comfyui.model.describe`、`comfyui.node.compatibility` 未实现。工作流列表经 Resource 目录投影，子图/节点/模型信息由 `comfyui.subgraph.list`、`comfyui.node.list/describe`、`comfyui.model.list` 提供。
+> 未交付（设计蓝图表）：`comfyui.template.subgraph.list`、`comfyui.model.describe`、`comfyui.node.compatibility` 未实现。`comfyui.workflow.list` 已实现（分页 + `query`/`include_disabled` 过滤，`describe` 附加部署事实）。子图/节点/模型信息由 `comfyui.subgraph.list`、`comfyui.node.list/describe`、`comfyui.model.list` 提供。
 
 日志要求：
 
@@ -476,7 +476,7 @@ comfyui:operate
 
 | Tool | 用途 | 风险控制 |
 |---|---|---|
-| `comfyui.server.free` | 卸载模型、释放显存 | 参数必须至少选择一项（已定义但当前不暴露于任何服务面：审计接线未交付，分发被主服务 surface 过滤，调用返回 Unknown tool） |
+| `comfyui.server.free` | 卸载模型、释放显存 | 参数必须至少选择一项（已实现：intent-first 审计 + `request_id` 幂等，`free_output` 返回审计状态） |
 | `comfyui.queue.remove` | 删除指定排队任务 | 验证所有权或管理员权限 |
 | `comfyui.queue.clear` | 清空等待队列 | `dry_run` + 精确确认 + 审计 |
 | `comfyui.server.interrupt` | 调用全局 `/interrupt` | 明确标记为全局操作，禁止伪装成单 Job 取消 |
@@ -537,7 +537,7 @@ comfyui:author
 |---|---|
 | `comfyui.admin.workflow.set_enabled` | 已实现；**workflow aggregate cutover 后隐藏**（file-backed 仓库被封存，工具不再挂载，调用返回不可用） |
 | `comfyui.admin.workflow.delete` | 已实现；**workflow aggregate cutover 后隐藏**（同上） |
-| `comfyui.admin.workflow.validate` | 验证 workflow、schema、节点和模型，不执行 |
+| `comfyui.admin.workflow.validate` | 验证 workflow、schema、节点和模型，不执行（已实现：图校验 + 语义校验 + 参数目标校验 + 缺失模型清单，库存不可读时如实报告 `is_ready=false`） |
 
 不建议提供一个带任意 `action` 字符串的万能 `workflow.manage`。导入、图变更和删除的风险及输入契约不同，应保持独立。
 
@@ -1440,7 +1440,7 @@ Published Revision + arguments + Asset URI
 - capability-aware Gateway 探测矩阵：`/api/jobs`、`/v2/userdata`（降级 `/userdata`）、`/node_replacements`、Manager queue/status/install
 - `comfyui.template.list`
 - `comfyui.subgraph.list` / `comfyui.subgraph.get`
-- `comfyui.server.free`（已定义但当前不暴露：审计接线未交付，主服务与 Admin 面均过滤，调用返回 Unknown tool；登记与 capability spec 保留供条件启用）
+- `comfyui.server.free`（已实现并暴露：intent-first 审计 + `request_id` 幂等，主服务 `operate` 面可调用）
 - 统一的 cursor 分页与脱敏组件
 - Job Resource 的 `ResourceUpdated` 发布、`subscriptions/listen` 和 `job.get`/Resource refetch 降级
 - Workflow、Revision、Deployment、Asset、Job、Artifact 的 canonical Resource templates 与旧 URI 只读别名
@@ -1450,7 +1450,7 @@ Published Revision + arguments + Asset URI
 
 - Agent 可以从零发现服务器、队列、历史、模板和可选 API。
 - 日志只返回相关窗口，并对凭据和本地敏感路径脱敏。
-- 显存释放需要 `operate`，并返回影响范围和审计状态（`server.free` 的实现与登记保留，但审计接线未交付，因此当前不暴露于任何服务面；验收项在接线完成前不成立）。
+- 显存释放需要 `operate`，并返回影响范围和审计状态（`server.free` 已实现：intent-first 审计、`request_id` 幂等，同一请求重复执行被拒绝；验收项成立）。
 - ComfyUI 不支持的可选端点表示为 capability，不伪装成服务器离线。
 - capability 结果区分 `supported`、`unsupported`、`unauthorized`、`temporarily_unavailable`，不能把 401/403/5xx 都当成端点不存在。
 - 支持订阅的 Host 优先接收 Job Resource 更新；断线后 re-listen + refetch，不支持时使用带退避的 `job.get`。

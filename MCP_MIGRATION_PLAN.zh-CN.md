@@ -956,7 +956,7 @@ mcp = ">=2,<3"
 - **M**：持久化 Experiment、参数扫描、预算、评分和 Revision 固化。
 - **N**：确定性诊断、脱敏证据、修复计划及可恢复重试 lineage。
 - **O**：owner-bound Server 配置、Config Bundle、审批和依赖供应编排。
-- **P**：队列删除/清理、服务中断和重启影响预览；未审批的即时 `server.free` 不再暴露。
+- **P**：队列删除/清理、服务中断和重启影响预览；即时 `server.free` 暴露但强制 intent-first 审计与 `request_id` 幂等（重复执行被拒绝）。
 - **Q**：OAuth introspection 主体/受众绑定、预认证限流、owner-aware Server 连接、Revision 隔离、路由 commit fencing 和发布安全收口。
 
 阶段 G–Q 的验收覆盖 owner 隔离、并发幂等、迁移升级、MCP schema、HTTP 安全边界、真实 ComfyUI 推理及输出校验。

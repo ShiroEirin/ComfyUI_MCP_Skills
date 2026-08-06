@@ -104,6 +104,8 @@ comfyui.capability.describe
 - `wait=true` 在上限内等待，并报告节点进度。
 - 等待超时不取消 Job；调用方可继续查询。
 - 同一键携带不同参数会返回冲突，而不是复用错误结果。
+- `priority`（-1000..1000）设置队列优先级，负数跳队；与 `idempotency_key` 一并纳入请求身份，同一键不同 priority 会冲突。
+- `partial_execution_targets`（节点 ID 数组，最多 100 个）只执行这些节点所需的子图；目标节点必须在注入后图内存在，否则请求被拒绝且不占用幂等键（可修正后重试）。
 
 ## 5. Job 生命周期与恢复
 
@@ -196,6 +198,15 @@ comfyui.admin.workflow.rollback
 ```
 
 file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.delete` 在 workflow aggregate cutover 前可用；**cutover 后文件仓库被封存，这两个工具从 `tools/list` 移除**（直接构造名称调用返回 Unknown tool），审计工具（`audit.get/retry/export`）保持可用。
+
+`comfyui.admin.workflow.validate` 已实现：图校验 + 语义校验 + 参数目标校验 + 输入 schema 构建，并对照模型库存报告缺失模型；模型库存不可读时如实返回 `folder_errors` 且 `is_ready=false`，绝不伪装成功。
+
+`comfyui.admin.workflow.import` 的 `source` 支持四种形态（按 `kind` 判别）：
+
+- `inline_json`：`workflow` 字段直接携带图（必填）。
+- `server_userdata`：`path` 指向服务器 userdata 下的 `workflows/*.json`（白名单正则，拒绝 `../`、绝对路径、反斜杠与空格）。
+- `authorized_local_file`：`path` 指向配置授权根内的本地文件，读取有界（2 MiB）且 stat→open→fstat 同文件校验（TOCTOU 防护）。
+- 无 `kind` 的裸 `workflow` 字段（legacy 客户端兼容）。
 
 核心不变量：
 
