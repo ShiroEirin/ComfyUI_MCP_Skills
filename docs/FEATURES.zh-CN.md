@@ -6,7 +6,7 @@
 
 | 层级 | 新项目状态 | 示例 |
 |---|---|---|
-| 默认可用 | execution Toolset + 文件仓库 | 动态执行、上传、Job 查询/取消、基础发现 |
+| 默认可用 | execution Toolset + 文件仓库 | 动态执行、上传、Job get/cancel、基础发现（`job.list` 需 run cutover） |
 | 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置 | 队列、日志、运行时、服务器/配置管理、Dependency/Provisioning |
 | 显式授权且完成对应 cutover | Authoring 或 Execution + 对应 SQLite aggregate | 工作流理解、Revision、Artifact/Lineage、Plan、Experiment、Diagnostic、Routing |
 | 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation、Docker/Windows RuntimeController |
@@ -124,6 +124,8 @@ comfyui.job.get
 comfyui.job.list
 comfyui.job.cancel
 ```
+
+`comfyui.job.list` 只在 SQLite run aggregate cutover 后暴露（文件仓库下 `job.get`/`job.cancel` 可用，历史分页列表不可用）。
 
 约束：
 
@@ -319,7 +321,7 @@ comfyui.runtime.restart.plan
 - `queue.remove`：预览并移除明确 prompt 集合。
 - `queue.clear`：全局队列操作，先返回影响。
 - `server.interrupt`：显式全局中断，不伪装成单 Job 取消。
-- `runtime.restart.plan`：返回运行中 Job、全局影响、审批与操作要求，不执行宿主命令。
+- `runtime.restart.plan`：返回调用方所有者影响范围内的运行中 Job（`impact_coverage` 如实标注枚举范围，非全局枚举），以及审批与操作要求，不执行宿主命令。
 
 重启执行闭环（approve/commit）未交付：安全执行要求服务端持久化的影响快照、单次审批与按服务器的 drain/fence 协调（所有提交路径在入队前检查、原子启用与解除），这些基础设施尚未实现，因此本版本不暴露执行工具。systemd `RuntimeController` 适配器已实现并接线（`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}`，只执行固定 `systemctl restart <unit>`，无 shell、有超时、非法配置 fail-closed），但仅在 `restart.plan` 中报告可用性，不执行重启。Docker 与 Windows Service 控制器未内置。
 

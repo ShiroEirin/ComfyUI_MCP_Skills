@@ -1391,7 +1391,7 @@ Published Revision + arguments + Asset URI
 
 验收：
 
-- 切换后的所有新 Job 都绑定 Plan 和 Revision，不存在临时 nullable `plan_id` 迁移窗口。
+- 切换后的所有新 Job 都绑定 Plan 和 Revision，不存在临时 nullable `plan_id` 迁移窗口（例外：未启用 planning 后端的局部迁移态，即 `run_store` 已切换而 planning 服务未装配时，新 Job 仍可保持 `plan_id` 为空；全量装配后新 Job 一律非空）。
 - 网络结果未知时按 client/request 映射对账，不生成第二个 Job 或重复 `/prompt`。
 - retry 保留旧 Job/Attempt 证据并建立明确关联，不覆盖上游 ID。
 
@@ -1477,7 +1477,7 @@ Published Revision + arguments + Asset URI
 验收：
 
 - Agent 无需读取原始 JSON 即可解释模型、采样、控制和输出链。
-- Editor workflow 转换返回 `converted`、`unsupported_nodes`、`dropped_fields` 和 `requires_manual_review`；只有完整保真且验证通过时才允许提交。
+- Editor workflow 转换返回 `source_format`、`unsupported_nodes`、`dropped_fields` 和 `requires_manual_review`；只有完整保真且验证通过时才允许提交。
 - 导入 preview 返回语义摘要、依赖、废弃节点和结构问题。
 - 非法节点、端口、schema 和路径在写文件前被拒绝。
 - 导入提交产生不可变 Revision，但不会自动发布未经验证的 Tool。
@@ -1514,7 +1514,7 @@ Published Revision + arguments + Asset URI
 > 实施状态：2026-08-05 已完成当前切片。已交付多 Deployment 候选解析、确定性路由、Policy evaluate、`execution.plan/commit`、`route.explain`、摘要绑定幂等提交、调用方锁定 Server、槽位与 submission window 约束；高级历史耗时估计仍保持显式不可用，不伪造样本。
 
 
-阶段 G4 已交付单服务器最小 `ExecutionPlanningService`，并保证切换后的新 Job 具有非空 `plan_id`。本阶段只扩展计划能力，不再次迁移 Job 基本形态；`legacy_migrated=true` 的历史兼容记录继续保持可解释的可空绑定。
+阶段 G4 已交付单服务器最小 `ExecutionPlanningService`，并保证切换后的新 Job 具有非空 `plan_id`。本阶段只扩展计划能力，不再次迁移 Job 基本形态；可空 `plan_id` 的两个来源——`legacy_migrated=true` 的历史兼容记录与未装配 planning 服务的局部迁移态——都保持可解释。
 
 交付：
 
