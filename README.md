@@ -26,12 +26,12 @@ ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影�
 | 资产与产物 | 上传、Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要和完整血缘 |
 | 批量实验 | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化 |
 | 多服务器路由 | 根据 Deployment、依赖、队列、显存和 Policy 生成不可变执行计划，并以摘要绑定提交 |
-| 管理与供应 | Server/Config 管理、依赖检查、审批、ComfyUI Manager 安装计划和 Provisioning 恢复 |
+| 管理与供应 | Server/Config 管理、依赖检查、审批、ComfyUI Manager 安装计划、Provisioning 恢复和审计闭环（append-only 事件 + `admin.audit.get/retry/export` 有界导出） |
 | 运行时控制 | 明确区分单作业取消、队列操作、全局 interrupt 和 restart 影响预览 |
 | MCP 原生交互 | Tools、Resources、Prompts、参数补全、资源订阅以及 provider-safe 工具名兼容模式 |
 | 远程部署 | Streamable HTTP、静态 Bearer Token、RFC 7662 Token Introspection、Host/Origin/大小/并发边界 |
 
-工作流、Revision、Plan、Job、Asset 和 Artifact 的高级能力依赖对应 SQLite aggregate cutover。全新目录默认先使用兼容文件仓库；执行本教程只保证基础工作流发现、动态执行、上传和 Job 查询，不能把高级控制平面能力当作已自动启用。
+工作流、Revision、Plan、Job 和 Asset 的高级能力依赖对应 SQLite aggregate cutover。全新目录默认先使用兼容文件仓库；执行本教程只保证基础工作流发现、动态执行、上传和 `job.get` 查询，不能把高级控制平面能力当作已自动启用。`job.list`（历史分页）只在 SQLite run cutover 后挂载。
 
 完整工具面和使用流程见[功能文档](docs/FEATURES.zh-CN.md)。
 
@@ -89,6 +89,8 @@ uv sync --locked --extra dev
 | `comfyui-mcp-maintain` | 保留策略与元数据清理 |
 | `comfyui-mcp-migration-dry-run` | 旧文件数据迁移演练 |
 | `comfyui-mcp-migrate` | 生产 aggregate 切换（需精确确认短语与备份） |
+| `comfyui-mcp-eval` | 工具选择 Eval 基线 |
+| `comfyui-mcp-eval-deepseek` | 使用 OMP 配置的 `deepseek-v4-flash` 的 Eval |
 | `comfyui-skill` | 兼容原 CLI |
 
 ## 最小项目配置
@@ -240,11 +242,11 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`851 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试；未安装 `otel` extra 的环境对应为 `845 passed, 7 skipped`——6 个 SDK 集成测试与 1 个 Windows 符号链接用例跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`856 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试；未安装 `otel` extra 的环境对应为 `850 passed, 7 skipped`——6 个 SDK 集成测试与 1 个 Windows 符号链接用例跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
-已实现可靠执行、版本化工作流、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制和 RFC 7662 introspection。以下能力尚未作为正式产品能力交付：
+已实现可靠执行、版本化工作流、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制、RFC 7662 introspection、审计闭环（append-only 事件 + 有界导出）与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，`COMFYUI_MCP_OTEL_ENDPOINT` base URL 配置，`otel` extra 安装，见[安装文档](docs/INSTALLATION.zh-CN.md)第 11 章）。workflow aggregate cutover 后，file-backed 的 `comfyui.admin.workflow.set_enabled`/`delete` 不再挂载（审计工具仍可用）。以下能力尚未作为正式产品能力交付：
 
 - Redis/NATS 多副本订阅总线。
 - 多主机共享租约与跨主机配额（SQLite 共享限流仅限同主机多进程）。

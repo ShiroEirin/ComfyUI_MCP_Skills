@@ -53,7 +53,7 @@ flowchart LR
 |---|---|
 | `comfyui_skills_cli/main.py` | Typer 入口、全局选项和命令注册 |
 | `comfyui_skills_cli/commands/*.py` | 命令参数、业务逻辑、输出和异常处理 |
-| `comfyui_skills_cli/client.py` | ComfyUI HTTP/WebSocket 客户端 |
+| `comfyui_skills_cli/utils.py` | 通过 `comfyui_mcp_skills.infrastructure.comfyui` 复用 ComfyUI HTTP/WebSocket 客户端 |
 | `comfyui_skills_cli/storage.py` | 工作流和 schema 文件读取 |
 | `comfyui_skills_cli/config.py` | `config.json` 读取和写入 |
 | `comfyui_skills_cli/output.py` | Text、JSON、NDJSON 输出 |
@@ -351,6 +351,8 @@ comfyui_skills_cli/
 
 ### 7.1 工作流作为动态工具
 
+> 实现说明：单个 MCP 端点默认投影 8 个动态工作流工具，可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 在 1–128 范围调整。
+
 每个启用的工作流优先暴露为原生 MCP 工具：
 
 ```text
@@ -407,13 +409,14 @@ comfyui.run.gpu2.video-generate
 | `comfyui.job.get` | 查询作业状态和结果 |
 | `comfyui.job.cancel` | 显式取消作业 |
 | `comfyui.asset.upload` | 上传图像、蒙版、音频或视频输入 |
-| `comfyui.server.health` | 查询指定服务器健康状态 |
+
+> 实现说明：`comfyui.server.health`、`node.list/describe`、`model.list` 等只读发现要求 `comfyui:observe` scope，实际位于 Operations/Authoring Toolset（默认执行型 stdio 仅 `comfyui:execute`，看不到这些工具）。
 
 不要再提供与动态工具功能重叠的泛化 `run_workflow`。
 
 ### 7.3 Resources
 
-建议资源 URI：
+建议资源 URI（实现状态：`comfyui://servers*`、`comfyui://models*`、`comfyui://nodes*` 未投影，节点/模型信息改由 `comfyui.node.list/describe`、`comfyui.model.list` 工具提供）：
 
 ```text
 comfyui://servers
@@ -725,7 +728,7 @@ ComfyUI 原生是异步作业系统。理想模型是 MCP Tasks 扩展，但当�
 
 ### 10.1 进度事件
 
-统一领域事件：
+统一领域事件（实现状态：未按此 dataclass 实现；MCP 侧以内部 dict 事件经 `report_progress` 转换进度通知，CLI 侧保留原有 NDJSON 输出）：
 
 ```python
 @dataclass(frozen=True)
@@ -742,7 +745,7 @@ CLI adapter 将其转换为 NDJSON；MCP adapter 将其转换为 progress notifi
 
 ## 11. 错误模型
 
-建议领域异常：
+建议领域异常（实现状态：`WorkflowNotFound`/`JobNotFound`/`AssetNotFound`/`UnsafePath` 等已落地于 `domain/errors.py`；`InvalidWorkflowArguments` 以 `WorkflowArgumentsError` 实现，`ExecutionInterrupted`/`Unauthorized`/`DependencyMissing` 未单独实现）：
 
 ```text
 WorkflowNotFound
@@ -815,20 +818,21 @@ POST /mcp
 
 - 工作流发现和执行。
 - 安全文件上传。
-- 作业查询和取消。
+- 作业查询和取消（`job.list` 历史分页需 SQLite run cutover）。
 - 输出资源读取。
-- 服务器健康状态。
-- 模型和节点的只读发现。
+
+> 实现说明：服务器健康状态与节点/模型只读发现需要 `comfyui:observe`，位于 Operations/Authoring Toolset，不在默认执行面。
 
 ### 13.2 管理型 MCP
 
 单独部署或通过独立 profile 启用：
 
-- 工作流导入、启停和删除。
+- 工作流导入、图变更、发布与回滚（SQLite workflow cutover 后；file-backed 启停/删除在 cutover 后隐藏）。
 - 服务器配置。
 - 依赖安装。
-- 队列清理。
-- 完整日志访问。
+- 审批、审计与 Provisioning。
+
+> 实现说明：队列清理（`queue.clear/remove` 需 `comfyui:operate`）与完整日志（`log.read` 需 `comfyui:observe`）位于 Operations Toolset，不在独立 Admin 面（Admin 只含 `comfyui.admin.*` 工具）。
 
 管理工具需要：
 
@@ -1007,7 +1011,7 @@ uv build
 
 当前结果：
 
-- 784 个测试通过、1 个跳过、2 个 subtest 通过；语句覆盖率为 82.01%，超过 80% 门禁。
+- 856 个测试通过、1 个跳过、2 个 subtest 通过（含 `otel` extra；未安装 `otel` extra 的环境为 850 通过、7 跳过）；语句覆盖率超过 80% 门禁。
 - Ruff 与 Mypy 通过。
 - `pip-audit` 未发现第三方依赖已知漏洞。
 - sdist 与 wheel 构建成功；wheel 包含 MCP 和兼容 CLI 两套入口。

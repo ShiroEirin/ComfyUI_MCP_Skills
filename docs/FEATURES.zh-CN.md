@@ -110,11 +110,11 @@ comfyui.capability.describe
 典型状态：
 
 ```text
-submitted → running → completed
-                    ↘ error
-                    ↘ interrupted
-                    ↘ lost
-submitted → cancelled
+queued → submitted → running → completed
+                      ↘ error
+                      ↘ interrupted
+                      ↘ lost
+queued → cancelled
 ```
 
 关键工具：
@@ -147,12 +147,17 @@ Asset 是输入媒体；Artifact 是 Job 输出。二者拥有独立身份和血
 comfyui.asset.upload
 comfyui.asset.list
 comfyui.asset.describe
+comfyui.asset.collection.update
+comfyui.asset.metadata.extract
 comfyui.asset.import_output
 comfyui.asset.transfer.plan
 comfyui.asset.transfer.commit
+comfyui.asset.transfer.get
 comfyui.asset.delete.plan
 comfyui.asset.delete.commit
 ```
+
+Artifact 收集为惰性一次性回填：Job 首次被查询到 `completed` 时，服务端把上游输出与 Artifact 事实（media_type、MIME、resource URI、来源节点）持久化一次；之后对已收集快照做严格比对，漂移会显式报错。对账先标记完成而尚未收集的 Job 同样允许首次收集。
 
 服务记录：
 
@@ -189,6 +194,8 @@ comfyui.admin.workflow.change.commit
 comfyui.admin.workflow.publish
 comfyui.admin.workflow.rollback
 ```
+
+file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.delete` 在 workflow aggregate cutover 前可用；**cutover 后文件仓库被封存，这两个工具不再挂载**（调用返回 unavailable），审计工具（`audit.get/retry/export`）保持可用。
 
 核心不变量：
 
@@ -293,7 +300,7 @@ retry plan 保留原参数快照，所有变化都出现在 diff 中。commit �
 - Dependency inspect、plan 和 install。
 - Approval 查询与 decision plan/commit。
 - Provisioning 查询、取消和 worker 恢复。
-- 审计导出：`comfyui.admin.audit.export` 按 actor/action/outcome/时间下界有界导出 append-only 审计轨迹（JSONL，追加序），`next_cursor` 分页；损坏行显式报错不静默跳过。
+- 审计闭环：`comfyui.admin.audit.get`（按 request_id 读请求的提交与审计状态）、`comfyui.admin.audit.retry`（仅补记 pending 审计，不重复操作）、`comfyui.admin.audit.export`（按 actor/action/outcome/时间下界有界导出 append-only JSONL 轨迹，追加序，`next_cursor` 分页；损坏行显式报错不静默跳过）。workflow cutover 后审计工具保持可用。
 
 供应链安全边界：
 
@@ -322,7 +329,7 @@ comfyui.runtime.restart.plan
 - `queue.remove`：预览并移除明确 prompt 集合。
 - `queue.clear`：全局队列操作，先返回影响。
 - `server.interrupt`：显式全局中断，不伪装成单 Job 取消。
-- `runtime.restart.plan`：返回调用方所有者影响范围内的运行中 Job（`impact_coverage` 如实标注枚举范围，非全局枚举），以及审批与操作要求，不执行宿主命令。
+- `runtime.restart.plan`：返回调用方所有者影响范围内的非终态 Job（含 queued/submitted/running；`impact_coverage` 如实标注枚举范围，非全局枚举），以及审批与操作要求，不执行宿主命令。
 
 重启执行闭环（approve/commit）未交付：安全执行要求服务端持久化的影响快照、单次审批与按服务器的 drain/fence 协调（所有提交路径在入队前检查、原子启用与解除），这些基础设施尚未实现，因此本版本不暴露执行工具。systemd 与 Docker `RuntimeController` 适配器已实现并接线（`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}` 或 `runtime: {"adapter": "docker", "container": "comfyui-local"}`，只执行固定的 `systemctl restart <unit>` / `docker restart <container>`，无 shell、有超时、非法配置 fail-closed），但仅在 `restart.plan` 中报告可用性，不执行重启。Windows Service 控制器未内置。
 

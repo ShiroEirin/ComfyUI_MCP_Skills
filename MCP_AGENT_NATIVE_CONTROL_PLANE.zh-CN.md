@@ -3,7 +3,7 @@
 > 状态：G0–G6、H–Q 已完成当前定义的后端纵向切片；高级宿主集成仍有明确边界
 > 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 Beta
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
-> 更新日期：2026-08-05
+> 更新日期：2026-08-06
 
 ## 目录
 
@@ -171,7 +171,7 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 
 | 能力 | 实现条件 |
 |---|---|
-| Job list、Queue、Log、Template、Subgraph | Operations Toolset，且相关后端能力可用 |
+| Job list、Queue、Log、Template、Subgraph | `job.list` 属 Execution Toolset 且需 G1 run SQLite cutover（文件仓库下不挂载）；Queue/Log/Template/Subgraph 属 Operations Toolset |
 | Workflow describe、Revision、diff、依赖检查 | Authoring Toolset + G3 Workflow SQLite cutover |
 | Asset/Artifact/Lineage | Execution Toolset + G1 Asset/Job 与相关 Artifact cutover |
 | Plan、Route、Experiment、Diagnostic、Retry | Execution Toolset + 对应 SQLite aggregate cutover |
@@ -455,6 +455,8 @@ comfyui:observe
 | `comfyui.node.compatibility` | 检查节点端口、版本和替换关系 |
 | `comfyui.server.capabilities` | 探测可选 API、Manager 和版本能力 |
 
+> 未交付（设计蓝图表）：`comfyui.workflow.list`、`comfyui.template.subgraph.list`、`comfyui.model.describe`、`comfyui.node.compatibility` 未实现。工作流列表经 Resource 目录投影，子图/节点/模型信息由 `comfyui.subgraph.list`、`comfyui.node.list/describe`、`comfyui.model.list` 提供。
+
 日志要求：
 
 - 默认最多 100 行，硬上限 1000 行。
@@ -619,8 +621,8 @@ comfyui:provision
 | `comfyui.workflow.revision.diff` | 返回两个 Revision 的结构化差异 |
 | `comfyui.admin.workflow.revision.publish` | 将草稿 Revision 发布为动态 Tool 当前版本 |
 | `comfyui.admin.workflow.revision.rollback` | 基于历史 Revision 创建新的回滚提交 |
-| `comfyui.workflow.preset.list` | 分页列出参数 preset 及继承关系 |
-| `comfyui.admin.workflow.preset.upsert` | 创建或更新版本化 preset |
+| `comfyui.workflow.preset.list` | 分页列出参数 preset 及继承关系（未交付） |
+| `comfyui.admin.workflow.preset.upsert` | 创建或更新版本化 preset（未交付；preset 固化经 `experiment.variant.promote` 交付） |
 
 `change.plan` 输入示例：
 
@@ -678,7 +680,7 @@ set_metadata
 
 ### 5.8 执行规划与自动路由工具
 
-简单执行继续保留动态 `comfyui.run.*` 或通用 `comfyui.workflow.execute` 的单次调用体验。该快速路径必须在服务端物化不可变 Execution Plan 并自动 commit：只有单服务器、低风险、依赖与 Policy 已通过且无需审批的计划才能自动提交。需要自动路由、审批、预算或批量时，显式使用计划型接口：
+简单执行继续保留动态 `comfyui.run.*` 的单次调用体验（通用 `comfyui.workflow.execute` 未实现，不属于当前工具面）。该快速路径必须在服务端物化不可变 Execution Plan 并自动 commit：只有单服务器、低风险、依赖与 Policy 已通过且无需审批的计划才能自动提交。需要自动路由、审批、预算或批量时，显式使用计划型接口：
 
 | Tool | 用途 |
 |---|---|
@@ -725,7 +727,7 @@ set_metadata
 | `comfyui.experiment.get` | 查询实验汇总状态 |
 | `comfyui.experiment.cancel` | 停止提交新 Variant，并按策略处理已排队项 |
 | `comfyui.experiment.variant.list` | 分页读取 Variant 与关联 Job |
-| `comfyui.experiment.select` | 将选中 Variant 固化为 preset 或 Revision |
+| `comfyui.experiment.select` | 将选中 Variant 固化为 preset 或 Revision（未交付；实际为 `experiment.variant.promote`） |
 | `comfyui.experiment.variant.rate` | 回写外部 Agent 或人工评分，不由服务端隐藏调用 LLM |
 
 失败策略必须是枚举：
@@ -795,10 +797,10 @@ POLICY_DENIED
 | Tool | 用途 |
 |---|---|
 | `comfyui.policy.evaluate` | 在不执行的情况下评估计划或操作 |
-| `comfyui.policy.describe` | 读取当前主体的有效限制，不泄露其他主体策略 |
-| `comfyui.admin.policy.upsert` | 创建或更新版本化 Policy |
-| `comfyui.approval.get` | 查询审批状态 |
-| `comfyui.approval.cancel` | 撤销未使用审批 |
+| `comfyui.policy.describe` | 读取当前主体的有效限制，不泄露其他主体策略（未交付） |
+| `comfyui.admin.policy.upsert` | 创建或更新版本化 Policy（未交付） |
+| `comfyui.approval.get` | 查询审批状态（实际为 Admin 面 `comfyui.admin.approval.get`） |
+| `comfyui.approval.cancel` | 撤销未使用审批（未交付） |
 
 审批对象必须绑定：
 
@@ -817,7 +819,7 @@ POLICY_DENIED
 
 | 部署 Toolset | 主要工具 | 单端点活动面目标 |
 |---|---|---|
-| Execute | `workflow.execute`、动态 run、Job、Asset、Execution Plan | 8–16 个固定工具；动态工作流默认 8 个，可配置 1–128 |
+| Execute | 动态 run、Job、Asset、Execution Plan（`workflow.execute` 未实现） | 8–16 个固定工具；动态工作流默认 8 个，可配置 1–128 |
 | Observe/Ops | Queue、Log、Diagnostic、Runtime | 8–14 个 |
 | Authoring | Workflow、Graph、Revision、Template | 8–16 个 |
 | Admin/Provision | Server、Config、Dependency、Policy、Audit | 8–16 个 |
@@ -831,7 +833,7 @@ comfyui.capability.search
 comfyui.capability.describe
 ```
 
-它只搜索当前主体有权知道的后端能力，并返回应连接的 Toolset 或应调用的现有 Tool；不能靠搜索副作用把新 Tool 注入当前连接。小模型 Host 可显式部署 compact Toolset；`capability.invoke` 若启用，仍执行目标能力的原 schema、scope、Policy、幂等和审计，不能成为类型系统后门。
+它只搜索当前主体有权知道的后端能力，并返回应连接的 Toolset 或应调用的现有 Tool；不能靠搜索副作用把新 Tool 注入当前连接。小模型 Host 可显式部署 compact Toolset；`capability.invoke` 未实现（设计建议），若未来启用仍须执行目标能力的原 schema、scope、Policy、幂等和审计，不能成为类型系统后门。
 
 ### 5.14 通用计划与提交契约
 
@@ -1335,7 +1337,7 @@ Published Revision + arguments + Asset URI
 
 - 将 `FileRunRepository`、`FileAssetRepository` 和现有所有权/幂等记录事务导入 SQLite。
 - 以领域 `job_id`、`asset_id`、`artifact_id` 回填规范对象，保留上游 prompt/output 映射；旧 reservation 与 `submission_unknown` 按第 8.8.1 节迁移为 IdempotencyRecord 和必要的保守状态 Job。
-- JobRepository 提供基于 `(owner_id, created_at DESC, job_id)` 等复合索引的 keyset list 查询；`comfyui.job.list` MCP Tool 到阶段 H 再开放。
+- JobRepository 提供基于 `(owner_id, created_at DESC, job_id)` 等复合索引的 keyset list 查询；`comfyui.job.list` MCP Tool 到阶段 H 再开放，且仅在 run aggregate cutover 后挂载（文件仓库下不暴露）。
 - 旧 Asset、Job 和 Output Resource URI 继续只读可用并返回 `canonical_uri`。
 
 验收：
@@ -1552,6 +1554,7 @@ Published Revision + arguments + Asset URI
 - 基于消费节点与存储可达性的 direct/copy/upload 复用策略
 - `asset.import_output` 复用策略复用旧 CLI `download → 临时文件 → upload input` 作为远程兜底，但改为流式临时文件、摘要校验、大小限制和可靠清理
 - Artifact 收集统一覆盖 `images`、`gifs`、`audio`、`video`
+- Artifact 收集为惰性一次性回填：Job 首次被查询到 `completed` 时持久化输出与 Artifact 事实，之后严格快照比对；对账先标记完成而尚未收集的 Job 同样允许首次收集
 
 验收：
 

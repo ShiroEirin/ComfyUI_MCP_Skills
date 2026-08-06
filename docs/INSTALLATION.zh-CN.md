@@ -236,7 +236,9 @@ Linux/macOS：
 export COMFYUI_MCP_UPLOAD_ROOTS="/srv/media:/mnt/shared-assets"
 ```
 
-分隔符使用操作系统的 `PATH` 分隔符。裸文件名和 `clipspace/...` 视为 ComfyUI 服务端引用，不会被当前工作目录中的同名文件替换。
+分隔符使用操作系统的 `PATH` 分隔符。MCP 侧媒体参数只接受 `comfyui://outputs|artifacts` URI、`asset_...` 标识或显式上传（`asset.upload`）后的引用；裸文件名与 `clipspace/...` 服务端引用语义仅在旧 CLI 保留，MCP 服务不会用当前工作目录的同名文件替换。
+
+HTTP 部署另设 `COMFYUI_MCP_UPLOAD_ROOT`（单数，仅 HTTP）：默认 `<COMFYUI_MCP_DIR>/.mcp-uploads`，是 HTTP 侧授权的上传根目录，与 stdio 的 `uploads/` 及 `COMFYUI_MCP_UPLOAD_ROOTS` 相互独立。
 
 ## 8. 独立 Admin 管理面
 
@@ -362,6 +364,8 @@ $env:COMFYUI_MCP_WORKERS = "2"
 - **未认证请求同样消耗** per-IP 速率预算与并发槽（限流覆盖未认证流量，认证失败发生在槽内）。
 - **Introspection 模式每请求两次校验**：限流中间件为主体归因校验一次，SDK 认证再校验一次，均为网络往返。introspection 端点故障时请求最多阻塞至超时后返回 401（fail-closed，无放行），可用性随端点延迟降级。`/assets` 路由只校验一次（复用 `request.state.access_token`）。
 
+日志级别统一由 `COMFYUI_MCP_LOG_LEVEL` 控制（stdio、HTTP、Admin、维护入口均读取，默认 `INFO`）。
+
 ## 10. Manager 与供应来源白名单
 
 依赖供应和 Manager 操作必须显式授权来源：
@@ -446,8 +450,8 @@ $env:COMFYUI_MCP_MIGRATION_CONFIRM = "SWITCH FILE STORES TO SQLITE"
 comfyui-mcp-migrate
 ```
 
-- 命令先 dry-run 并冻结备份，然后在项目迁移锁内依次原子切换 `asset`、`job`、`workflow` 三组；任一组失败时已切换组保持有效，输出 `groups` 与 `writes_performed` 如实反映部分状态，并给出 `recovery.evidence` 用于带 `COMFYUI_MCP_MIGRATION_EVIDENCE` 重跑续传。
-- 未配置精确确认短语时退出码为 3 且不写任何内容。全新目录默认保留文件仓库；不要手工写入 `store_migrations`。
+- 命令先 dry-run 并冻结备份，然后依次原子切换 `asset`、`job`、`workflow` 三组（asset/job 组在项目迁移锁内，workflow 组经独立 SQLite 单事务切换）；任一组失败时已切换组保持有效，输出 `groups` 与 `writes_performed` 如实反映部分状态，并给出 `recovery.evidence` 用于带 `COMFYUI_MCP_MIGRATION_EVIDENCE` 重跑续传。切换覆盖 8 个 aggregate：asset、job、execution_attempt、idempotency_record、artifact、workflow、revision、deployment。
+- 未配置精确确认短语时退出码为 3 且不写任何内容。全新目录默认保留文件仓库；不要手工写入 `store_migrations`。迁移器对无效历史记录保守拒绝（如缺 `request_digest` 的旧 history、带无法确定性映射 outputs 的记录）——dry-run 会列出这些冲突，需要先修复或归档无效记录才能通过 preflight。
 
 
 Beta 升级前必须备份：
