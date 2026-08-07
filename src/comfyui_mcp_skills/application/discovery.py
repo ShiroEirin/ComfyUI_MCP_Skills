@@ -404,6 +404,8 @@ class DiscoveryService:
                     break
                 scanned += 1
                 name = entry.name
+                if name.startswith(".") or name == "__pycache__":
+                    continue
                 if not _PLUGIN_NAME.fullmatch(name):
                     continue
                 if not _path_is_safe_directory(entry) or not entry.is_dir():
