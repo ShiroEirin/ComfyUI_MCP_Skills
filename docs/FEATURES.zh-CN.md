@@ -78,6 +78,17 @@ comfyui.capability.describe
 
 单端点工具数量有硬上限；动态工作流也有数量边界。工具排序确定，便于 MCP Host 缓存。
 
+节点感知与建议工具（均已交付，OBSERVE 只读面，AUTHORING/ADMIN 可见）：
+
+- `comfyui.node.list` / `comfyui.node.describe` / `comfyui.model.list`：节点/模型目录（AUTHORING 与 ADMIN 面可见，供改工作流时查节点）。
+- `comfyui.node.blueprint`：目标驱动紧凑投影（≤10 节点 × ≤8 字段 × ≤8 枚举）。
+- `comfyui.model.guidance`：社区共识模型家族起点（sampler/scheduler/steps/CFG/resolution）。
+- `comfyui.job.history.suggest`：本地运行历史证据（resolved_inputs + job 状态统计，SQLite 门控）。
+- `comfyui.workflow.visualize`：已发布工作流 Mermaid 渲染（≤50 节点，SQLite 门控）；`revision.diff` 附带 mermaid 视图（added 节点高亮）。
+- `comfyui.engine.history`：引擎 `/history` 只读直连（8 MiB 有界 + 扁平投影；`job.list` 保持 owner-bound 持久执行记录契约）。
+
+修复引导：`admin.workflow.change.plan` 校验失败消息带 node/field 定位与 `comfyui.node.describe` hint。
+
 ## 4. 动态工作流工具
 
 每个已启用工作流参与动态目录。单个 MCP 端点默认投影 8 个动态工作流工具；部署者可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 在 1–128 范围内提高预算，服务仍按稳定排序选择。该配置只改变已授权动态工作流的可见数量，不扩大 Toolset/Scope 权限；其他工作流仍可通过目录和 Resource 管理。输入 schema 来自工作流 `schema.json`。Agent 只能提交声明过的参数，服务在注入节点输入前执行类型、必填项和额外字段校验。

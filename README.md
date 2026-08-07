@@ -254,7 +254,6 @@ uv build
 - MCP Elicitation 审批。
 - Windows Service 的内置 RuntimeController 适配器（Linux systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
-- `comfyui.engine.history`（引擎 `/history` 只读直连工具，**已交付**，见「本地单机部署边界」）。
 
 ### 本地单机部署边界
 
