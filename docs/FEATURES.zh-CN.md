@@ -332,7 +332,10 @@ comfyui.queue.remove
 comfyui.queue.clear
 comfyui.server.interrupt
 comfyui.runtime.restart.plan
+comfyui.engine.history
 ```
+
+`comfyui.engine.history`（已交付）：只读直连引擎 `/history`，扁平投影 `prompt_id`/`status`/`outputs_count`（可选 `created_at`），8 MiB 有界解码、`limit` ≤50、`prompt_id` 单条查询。与 `job.list` 的 owner-bound 持久执行记录契约分开——引擎历史随引擎重启即失，不混入执行记录层。
 
 语义严格分开：
 
@@ -465,4 +468,3 @@ dependency.inspect
 - MCP Elicitation 审批。
 - Windows Service RuntimeController（systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；subgraph 提取/按名复用闭环已交付）。
-- `comfyui.engine.history`（引擎 `/history` 只读直连工具，**已交付**：扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50；本地看历史的最短 MCP 路径）。`job.list` 保留 owner-bound 持久执行记录契约，不退化为引擎历史 proxy。

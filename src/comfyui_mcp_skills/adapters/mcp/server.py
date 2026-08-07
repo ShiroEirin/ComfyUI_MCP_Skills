@@ -367,25 +367,28 @@ def _engine_history_projection(
         }
         created = entry.get("created_at")
         if isinstance(created, (int, float)) and not isinstance(created, bool):
-            item["created_at"] = str(created)
+            item["_time"] = created
         elif isinstance(created, str) and created:
-            item["created_at"] = created
+            item["_time"] = created
         items.append(item)
-    timed = [item for item in items if "created_at" in item]
-    untimed = [item for item in items if "created_at" not in item]
+    timed = [item for item in items if "_time" in item]
+    untimed = [item for item in items if "_time" not in item]
 
     def _time_key(item: dict[str, Any]) -> tuple[int, float | str]:
-        value = item["created_at"]
-        if isinstance(value, str) and not value.isdigit():
-            return (1, value)  # ISO strings sort lexicographically
-        try:
+        # Sort on the raw typed value before any stringification: floats and
+        # negative timestamps must compare numerically, not lexicographically.
+        value = item["_time"]
+        if isinstance(value, (int, float)):
             return (0, float(value))
-        except (TypeError, ValueError):
-            return (2, 0.0)
+        return (1, value)  # ISO strings sort lexicographically
 
     timed.sort(key=_time_key, reverse=True)
     untimed.reverse()  # engine insertion order is oldest-first
-    return {"items": (timed + untimed)[:limit], "total": len(raw)}
+    ordered = timed + untimed
+    for item in ordered:
+        if "_time" in item:
+            item["created_at"] = str(item.pop("_time"))
+    return {"items": ordered[:limit], "total": len(raw)}
 
 
 logger = logging.getLogger(__name__)

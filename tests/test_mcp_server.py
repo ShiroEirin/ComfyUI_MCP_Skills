@@ -2007,3 +2007,47 @@ async def test_engine_history_single_prompt_lookup(tmp_path: Path) -> None:
 
     assert result.is_error is False
     assert result.structured_content["items"][0]["status"] == "running"
+
+
+@pytest.mark.anyio
+async def test_engine_history_numeric_timestamps_sort_numerically(
+    tmp_path: Path,
+) -> None:
+    """Fractional numeric created_at values must sort numerically, newest first,
+    not lexicographically."""
+    _project(tmp_path)
+
+    class _HistoryGateway(FakeGateway):
+        def get_history_bounded(self, *, prompt_id: str = "", max_items: int = 10):
+            return {
+                "prompt-a": {
+                    "prompt": {}, "outputs": {},
+                    "status": {"status_str": "success"}, "created_at": 11,
+                },
+                "prompt-b": {
+                    "prompt": {}, "outputs": {},
+                    "status": {"status_str": "success"}, "created_at": 9.5,
+                },
+                "prompt-c": {
+                    "prompt": {}, "outputs": {},
+                    "status": {"status_str": "success"}, "created_at": 10.5,
+                },
+            }
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _HistoryGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.engine.history",
+            {"server_id": "local", "limit": 10},
+        )
+
+    assert result.is_error is False
+    items = result.structured_content["items"]
+    assert [item["prompt_id"] for item in items] == ["prompt-a", "prompt-c", "prompt-b"]
+    assert [item["created_at"] for item in items] == ["11", "10.5", "9.5"]
