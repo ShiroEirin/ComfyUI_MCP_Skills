@@ -424,8 +424,10 @@ def create_admin_server(
                         name="comfyui.admin.workflow.validate",
                         description=(
                             "Validate one workflow graph, parameters, nodes, and model "
-                            "dependencies without executing it. Only published and "
-                            "enabled deployments can be validated."
+                            "dependencies without executing it. Requires a published "
+                            "deployment; enabled-only enforcement applies in SQLite "
+                            "store mode, while legacy file mode validates the stored "
+                            "schema as-is."
                         ),
                         input_schema={
                             "type": "object",
