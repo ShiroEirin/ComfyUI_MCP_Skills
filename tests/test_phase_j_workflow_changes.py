@@ -790,3 +790,46 @@ def _revision_graph(
 ) -> dict[str, Any]:
     revision = workflows.get_revision(committed["revision_id"])
     return revision["graph"]
+
+
+def test_change_plan_unknown_class_type_reports_location_and_hint(
+    tmp_path: Path,
+) -> None:
+    """P0-3: plan failures carry node location and a repair hint pointing at
+    the node catalog tool instead of a bare message list."""
+    changes, _workflows = _services(tmp_path)
+
+    with pytest.raises(ValueError, match=r"node 9 \[unknown_node_type\]") as excinfo:
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "add_node", "node_id": "9", "class_type": "FutureNode", "inputs": {}}],
+            object_info=OBJECT_INFO,
+        )
+
+    message = str(excinfo.value)
+    assert "node 9 [unknown_node_type]: Unknown node type: FutureNode" in message
+    assert "hint: 用 comfyui.node.describe FutureNode 查看正确输入" in message
+
+
+def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None:
+    """Range violations point at the offending field and suggest the describe
+    tool for the node's advertised inputs."""
+    changes, _workflows = _services(tmp_path)
+
+    with pytest.raises(ValueError, match=r"node 9 field cfg") as excinfo:
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "add_node",
+                    "node_id": "9",
+                    "class_type": "KSampler",
+                    "inputs": {"cfg": 999},
+                }
+            ],
+            object_info=OBJECT_INFO,
+        )
+
+    assert "hint: 用 comfyui.node.describe 查看该节点的输入签名与枚举值" in str(excinfo.value)

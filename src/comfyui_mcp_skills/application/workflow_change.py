@@ -149,8 +149,7 @@ class WorkflowChangeService:
         _validate_acyclic(graph)
         validation = self._validation.validate_api(graph, object_info)
         if not validation["valid"]:
-            messages = "; ".join(issue["message"] for issue in validation["issues"][:10])
-            raise ValueError(f"Workflow change is invalid: {messages}")
+            raise ValueError(_change_validation_error(validation["issues"][:10]))
         after_semantic = self._graphs.describe(graph, object_info=object_info)
         generated_parameters = after_semantic["parameters"]
         explicit = parameter_schema.get("parameters")
@@ -301,6 +300,39 @@ class WorkflowChangeService:
             request_id,
             self._actor,
         )
+
+
+def _change_validation_error(issues: list[dict[str, str]]) -> str:
+    """Format validation issues with node/field location and a repair hint.
+
+    The hint steers agents to the node catalog tool instead of guessing
+    class types or enum values from memory (see FEATURE_REQUESTS P0-3).
+    """
+    parts: list[str] = []
+    for issue in issues:
+        code = str(issue.get("code", "invalid"))
+        message = str(issue.get("message", ""))
+        node_id = issue.get("node_id", "")
+        field = issue.get("field", "")
+        location = f"node {node_id}" if node_id else "graph"
+        if field:
+            location = f"{location} field {field}"
+        parts.append(f"{location} [{code}]: {message}")
+        if code == "unknown_node_type":
+            class_type_name = message.removeprefix("Unknown node type:").strip()
+            parts.append(
+                f"hint: 用 comfyui.node.describe {class_type_name} 查看正确输入"
+            )
+        elif code in {
+            "missing_required_input",
+            "invalid_enum_value",
+            "invalid_input",
+            "unknown_input",
+            "input_type_mismatch",
+            "input_out_of_range",
+        }:
+            parts.append("hint: 用 comfyui.node.describe 查看该节点的输入签名与枚举值")
+    return "Workflow change is invalid: " + "; ".join(parts)
 
 
 def _apply_operation(
