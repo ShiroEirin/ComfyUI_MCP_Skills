@@ -232,10 +232,13 @@ def _free_locked(
 
     lock_key = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:32]
     lock_path = f"{audit_log.path}.{lock_key}.lock"
-    # filelock removes the lock file itself on release (both platforms), so no
-    # explicit unlink here: a failed acquire (timeout while a concurrent
-    # same-request_id call holds the lock) never touches the holder's file,
-    # and the events_for check below is the real serialization guarantee.
+    # Lock file lifecycle is owned by filelock: Windows release unlinks the
+    # file; Unix deliberately keeps it (flock is inode-scoped and unlink would
+    # race, py-filelock#31), so a stale .lock file is inert, bounded per
+    # request_id, and never affects mutual exclusion. No explicit unlink here:
+    # a failed acquire (timeout while a concurrent same-request_id call holds
+    # the lock) never touches the holder's file, and the events_for check is
+    # the real serialization guarantee.
     lock = FileLock(lock_path, timeout=10)
     with lock:
         if audit_log.events_for(request_id):
