@@ -311,3 +311,65 @@ def test_authoring_toolset_sees_local_plugins(tmp_path: Path) -> None:
             assert "comfyui.local.plugins" not in names
 
     anyio.run(run)
+
+
+def test_readme_cleans_windows_traversal_and_mixed_unc(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    plugin = root / "custom_nodes" / "Plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "README.md").write_text(
+        "see ..\\secret and \\\\server/share/x",
+        encoding="utf-8",
+    )
+    result = _service(root).plugins("local")
+    readme = result["plugins"][0]["readme"]
+    assert "..\\secret" not in readme
+    assert "\\\\server" not in readme
+
+
+def test_layout_counts_plugin_dirs_before_dedup(tmp_path: Path) -> None:
+    """A flat-only duplicate still makes the layout merged."""
+    root = tmp_path / "bundle"
+    nested = root / "ComfyUI" / "custom_nodes"
+    flat = root / "custom_nodes"
+    _make_plugin(nested, "MyPlugin", "nested readme")
+    _make_plugin(flat, "myplugin", "flat readme")
+
+    result = _service(root).plugins("local")
+    assert result["layout"] == "merged"
+    assert len(result["plugins"]) == 1
+    assert result["plugins"][0]["name"] == "MyPlugin"  # nested wins
+
+
+def test_scan_oserror_reports_unreadable(tmp_path: Path, monkeypatch) -> None:
+    """An OSError during iteration degrades to the fixed reason code."""
+    import os as _os
+
+    root = tmp_path / "root"
+    flat = root / "custom_nodes"
+    flat.mkdir(parents=True)
+    _make_plugin(flat, "good")
+
+    real_scandir = _os.scandir
+
+    class _ExplodingIterator:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise PermissionError(13, "denied")
+
+    def fake_scandir(path):
+        if str(path).endswith("custom_nodes"):
+            return _ExplodingIterator()
+        return real_scandir(path)
+
+    monkeypatch.setattr(_os, "scandir", fake_scandir)
+    result = _service(root).plugins("local")
+    assert result == {"available": False, "reason": "unreadable"}

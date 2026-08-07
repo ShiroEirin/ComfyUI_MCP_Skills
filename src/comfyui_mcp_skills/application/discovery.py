@@ -73,9 +73,10 @@ def _clean_readme_line(content: bytes) -> str:
     cleaned = "".join(
         char for char in first_line if char.isprintable() or char in " \t"
     )
-    # Remove drive, UNC, POSIX absolute, and traversal path fragments.
+    # Remove drive, UNC, POSIX absolute, and traversal path fragments in
+    # both separator directions (Windows backslash and POSIX slash).
     cleaned = re.sub(
-        r"(?i)(?:[a-z]:[\\/]|\\\\[a-z0-9._-]+\\|/[a-z0-9._-]+(?:/[^ \t]*)?|\.\./)+",
+        r"(?i)(?:[a-z]:[\\/]|\\\\[a-z0-9._-]+[\\/]|/[a-z0-9._-]+(?:/[^ \t]*)?|\.\.[\\/])+",
         " ",
         cleaned,
     )
@@ -407,35 +408,42 @@ class DiscoveryService:
         found_by_layout: dict[str, int] = {}
         scanned = 0
         truncated = False
-        # Lazy iteration: the shared budget is consumed per directory entry
-        # as it is visited, never by materializing the full listing.
+        # True lazy iteration via os.scandir: the shared budget is consumed
+        # per directory entry as it is visited and stops immediately; the
+        # context manager closes the scan handle on exit.
         for label, candidate in candidates:
             try:
-                iterator = candidate.iterdir()
+                with os.scandir(candidate) as iterator:
+                    for entry in iterator:
+                        if scanned >= _PLUGIN_SCAN_BUDGET:
+                            truncated = True
+                            break
+                        scanned += 1
+                        name = entry.name
+                        if name.startswith(".") or name == "__pycache__":
+                            continue
+                        if not _PLUGIN_NAME.fullmatch(name):
+                            continue
+                        entry_path = Path(entry.path)
+                        if not _path_is_safe_directory(entry_path):
+                            continue
+                        if not entry_path.is_dir():
+                            continue
+                        # Layout validity counts plugin directories before
+                        # dedup: an empty dir is invalid, a dir whose plugin
+                        # is later deduped is still a valid plugin dir.
+                        found_by_layout[label] = found_by_layout.get(label, 0) + 1
+                        key = name.casefold()
+                        if key in plugins:
+                            # Keep the first occurrence (nested scans first,
+                            # so it wins cross-layout; same-layout duplicates
+                            # keep the first-seen entry).
+                            continue
+                        plugins[key] = _plugin_entry(entry_path)
+                    if truncated:
+                        break
             except OSError:
                 return {"available": False, "reason": "unreadable"}
-            for entry in iterator:
-                if scanned >= _PLUGIN_SCAN_BUDGET:
-                    truncated = True
-                    break
-                scanned += 1
-                name = entry.name
-                if name.startswith(".") or name == "__pycache__":
-                    continue
-                if not _PLUGIN_NAME.fullmatch(name):
-                    continue
-                if not _path_is_safe_directory(entry) or not entry.is_dir():
-                    continue
-                key = name.casefold()
-                if key in plugins:
-                    # Keep the first occurrence (nested scans first, so it
-                    # wins cross-layout; same-layout duplicates keep the
-                    # first-seen entry).
-                    continue
-                plugins[key] = _plugin_entry(entry)
-                found_by_layout[label] = found_by_layout.get(label, 0) + 1
-            if truncated:
-                break
         layout = "none"
         nested_count = found_by_layout.get("nested", 0)
         flat_count = found_by_layout.get("flat", 0)
