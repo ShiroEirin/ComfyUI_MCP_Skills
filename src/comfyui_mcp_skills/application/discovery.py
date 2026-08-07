@@ -73,8 +73,14 @@ def _clean_readme_line(content: bytes) -> str:
     cleaned = "".join(
         char for char in first_line if char.isprintable() or char in " \t"
     )
-    cleaned = re.sub(r"[A-Za-z]:[\\/]|\b(?:[A-Za-z0-9_\-]+[\\/]){2,}", "", cleaned)
-    return cleaned.strip()[:_README_MAX_CHARS]
+    # Remove drive, UNC, POSIX absolute, and traversal path fragments.
+    cleaned = re.sub(
+        r"(?i)(?:[a-z]:[\\/]|\\\\[a-z0-9._-]+\\|/[a-z0-9._-]+(?:/[^ \t]*)?|\.\./)+",
+        " ",
+        cleaned,
+    )
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:_README_MAX_CHARS]
 
 
 def _plugin_entry(directory: Path) -> dict[str, Any]:
@@ -99,8 +105,22 @@ def _plugin_entry(directory: Path) -> dict[str, Any]:
             expected = readme_path.resolve(strict=True).stat()
             with readme_path.open("rb") as handle:
                 opened = os.fstat(handle.fileno())
+                # Re-check the whole chain after opening: a swapped symlink or
+                # junction must fail the containment check even if the three
+                # stat snapshots agree.
+                if not _path_is_safe_directory(directory):
+                    continue
+                try:
+                    resolved_readme = readme_path.resolve(strict=True)
+                    resolved_dir = directory.resolve(strict=True)
+                except OSError:
+                    continue
+                try:
+                    resolved_readme.relative_to(resolved_dir)
+                except ValueError:
+                    continue
                 if not same_file_stat(expected, opened):
-                    continue  # swapped while opening; skip rather than trust
+                    continue
                 content = handle.read(_README_MAX_BYTES)
                 after = os.fstat(handle.fileno())
                 current = readme_path.resolve(strict=True).stat()
@@ -359,7 +379,7 @@ class DiscoveryService:
         local_root = connection.get("local_root")
         if not isinstance(local_root, str) or not local_root.strip():
             return {"available": False, "reason": "no_local_root"}
-        root = Path(local_root).expanduser()
+        root = Path(local_root)
         if not root.exists():
             return {"available": False, "reason": "root_not_found"}
         if not root.is_dir():
@@ -367,14 +387,14 @@ class DiscoveryService:
         if not _path_is_safe_directory(root):
             return {"available": False, "reason": "root_unsafe"}
         candidates = [
-            root / "ComfyUI" / "custom_nodes",
-            root / "custom_nodes",
+            (label, path)
+            for label, path in (
+                ("nested", root / "ComfyUI" / "custom_nodes"),
+                ("flat", root / "custom_nodes"),
+            )
+            if _path_is_safe_directory(path) and path.is_dir()
         ]
-        valid_candidates: list[tuple[str, Path]] = []
-        for label, candidate in zip(("nested", "flat"), candidates, strict=True):
-            if _path_is_safe_directory(candidate) and candidate.is_dir():
-                valid_candidates.append((label, candidate))
-        if not valid_candidates:
+        if not candidates:
             return {
                 "available": True,
                 "layout": "none",
@@ -383,22 +403,18 @@ class DiscoveryService:
                 "scanned_entries": 0,
                 "truncated": False,
             }
-        layout = (
-            "merged"
-            if len(valid_candidates) == 2
-            else valid_candidates[0][0]
-        )
         plugins: dict[str, dict[str, Any]] = {}
+        found_by_layout: dict[str, int] = {}
         scanned = 0
         truncated = False
-        for label, candidate in valid_candidates:
-            if truncated:
-                break
+        # Lazy iteration: the shared budget is consumed per directory entry
+        # as it is visited, never by materializing the full listing.
+        for label, candidate in candidates:
             try:
-                entries = list(candidate.iterdir())
+                iterator = candidate.iterdir()
             except OSError:
                 return {"available": False, "reason": "unreadable"}
-            for entry in entries:
+            for entry in iterator:
                 if scanned >= _PLUGIN_SCAN_BUDGET:
                     truncated = True
                     break
@@ -411,9 +427,24 @@ class DiscoveryService:
                 if not _path_is_safe_directory(entry) or not entry.is_dir():
                     continue
                 key = name.casefold()
-                if label == "flat" and key in plugins:
-                    continue  # nested layout wins the casefolded name
+                if key in plugins:
+                    # Keep the first occurrence (nested scans first, so it
+                    # wins cross-layout; same-layout duplicates keep the
+                    # first-seen entry).
+                    continue
                 plugins[key] = _plugin_entry(entry)
+                found_by_layout[label] = found_by_layout.get(label, 0) + 1
+            if truncated:
+                break
+        layout = "none"
+        nested_count = found_by_layout.get("nested", 0)
+        flat_count = found_by_layout.get("flat", 0)
+        if nested_count and flat_count:
+            layout = "merged"
+        elif nested_count:
+            layout = "nested"
+        elif flat_count:
+            layout = "flat"
         ordered = [plugins[key] for key in sorted(plugins)]
         return {
             "available": True,

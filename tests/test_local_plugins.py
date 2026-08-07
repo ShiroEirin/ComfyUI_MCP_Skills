@@ -213,3 +213,101 @@ def test_mcp_end_to_end(tmp_path: Path) -> None:
             assert result.structured_content["available"] is False
 
     anyio.run(run)
+
+
+def test_empty_nested_falls_back_to_flat(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    nested = root / "ComfyUI" / "custom_nodes"
+    flat = root / "custom_nodes"
+    nested.mkdir(parents=True)  # exists but empty
+    _make_plugin(flat, "efficiency-nodes-comfyui", "Efficiency nodes")
+
+    result = _service(root).plugins("local")
+    assert result["layout"] == "flat"
+    assert {item["name"] for item in result["plugins"]} == {
+        "efficiency-nodes-comfyui"
+    }
+
+
+def test_both_empty_reports_none(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    (root / "ComfyUI" / "custom_nodes").mkdir(parents=True)
+    (root / "custom_nodes").mkdir(parents=True)
+
+    result = _service(root).plugins("local")
+    assert result["layout"] == "none"
+    assert result["plugins"] == []
+    assert result["total"] == 0
+
+
+def test_same_layout_casefold_duplicate_keeps_first(tmp_path: Path) -> None:
+    root = tmp_path / "bundle"
+    flat = root / "custom_nodes"
+    flat.mkdir(parents=True)
+    _make_plugin(flat, "MyPlugin", "first readme")
+    _make_plugin(flat, "myplugin", "second readme")
+
+    result = _service(root).plugins("local")
+    assert len(result["plugins"]) == 1
+    assert result["plugins"][0]["name"] == "MyPlugin"  # first-seen wins
+
+
+def test_readme_cleans_posix_unc_and_traversal(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    plugin = root / "custom_nodes" / "Plugin"
+    plugin.mkdir(parents=True)
+    (plugin / "README.md").write_text(
+        "see /etc/passwd or \\\\server\\share or C:\\evil\\x and ../up",
+        encoding="utf-8",
+    )
+    result = _service(root).plugins("local")
+    readme = result["plugins"][0]["readme"]
+    assert "/etc" not in readme
+    assert "\\\\server" not in readme
+    assert "C:" not in readme
+    assert "../" not in readme
+
+
+def test_readme_missing_is_omitted(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    (root / "custom_nodes" / "NoReadme").mkdir(parents=True)
+    result = _service(root).plugins("local")
+    assert result["plugins"][0]["name"] == "NoReadme"
+    assert "readme" not in result["plugins"][0]
+
+
+def test_authoring_toolset_sees_local_plugins(tmp_path: Path) -> None:
+    """AUTHORING (observe-capable) surfaces expose the tool; EXECUTION hides it."""
+    import sys
+
+    sys.path.insert(0, "tests")
+    from mcp import Client
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+    from comfyui_mcp_skills.application.authorization import (
+        AuthorizationContext,
+        Scope,
+        Toolset,
+    )
+    from tests.test_mcp_server import _project
+
+    _project(tmp_path)
+
+    async def run() -> None:
+        authoring = create_server(
+            tmp_path,
+            gateway_factory=lambda _config: None,
+            authorization=AuthorizationContext(
+                "author-a", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
+            ),
+        )
+        async with Client(authoring) as client:
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            assert "comfyui.local.plugins" in names
+
+        execution = create_server(tmp_path, gateway_factory=lambda _config: None)
+        async with Client(execution) as client:
+            names = {tool.name for tool in (await client.list_tools()).tools}
+            assert "comfyui.local.plugins" not in names
+
+    anyio.run(run)
