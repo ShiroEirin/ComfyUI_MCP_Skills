@@ -198,6 +198,7 @@ class WorkflowChangeService:
             outputs_after=after_semantic["outputs"],
             output_coverage_before=str(before_output_contract["coverage"]),
             output_coverage_after="complete",
+            include_mermaid=False,
         )
         now = datetime.now(timezone.utc)
         created_at = now.isoformat()
@@ -667,7 +668,7 @@ def _mermaid_label(value: object) -> str:
     """One safe Mermaid node label: stripped, bounded, quotes neutralized."""
     label = str(value).strip()
     if len(label) > _MERMAID_LABEL_MAX:
-        label = label[:_MERMAID_LABEL_MAX] + "…"
+        label = label[:_MERMAID_LABEL_MAX - 1] + "…"
     return label.replace('"', "'").replace("\\", "/")
 
 
@@ -744,6 +745,7 @@ def _semantic_diff(
     output_coverage_before: str,
     output_coverage_after: str,
     to_revision_id: str = "",
+    include_mermaid: bool = True,
 ) -> dict[str, Any]:
     before_nodes = set(graph_before)
     after_nodes = set(graph_after)
@@ -808,10 +810,11 @@ def _semantic_diff(
         "parameters_before": sorted(before_names),
         "parameters_after": sorted(after_names),
     }
-    result["mermaid"] = _graph_mermaid(
-        graph_after,
-        highlight_nodes=set(after_nodes - before_nodes),
-    )
+    if include_mermaid:
+        result["mermaid"] = _graph_mermaid(
+            graph_after,
+            highlight_nodes=set(after_nodes - before_nodes),
+        )
     if to_revision_id:
         result["to_revision_id"] = to_revision_id
     return result

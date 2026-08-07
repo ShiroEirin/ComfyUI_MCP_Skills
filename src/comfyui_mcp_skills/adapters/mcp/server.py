@@ -169,6 +169,7 @@ G3_AUTHORING_TOOLS = frozenset(
         "comfyui.revision.diff",
         "comfyui.workflow.describe",
         "comfyui.workflow.dependencies.check",
+        "comfyui.workflow.visualize",
     }
 )
 PHASE_L_TOOL_NAMES = frozenset(
@@ -1547,10 +1548,15 @@ def create_server(
                     raise ValueError(
                         "Workflow visualization requires the SQLite Workflow store"
                     )
-                deployment = workflow_repository.describe(workflow_id, server_id)
-                revision = workflow_repository.get_revision(
-                    _required_revision_id(deployment, workflow_id, server_id)
-                )
+                try:
+                    deployment = workflow_repository.describe(workflow_id, server_id)
+                    revision = workflow_repository.get_revision(
+                        _required_revision_id(deployment, workflow_id, server_id)
+                    )
+                except LookupError as exc:
+                    raise WorkflowNotFound(
+                        f"Workflow not found: {server_id}/{workflow_id}"
+                    ) from exc
                 graph = revision.get("graph")
                 if not isinstance(graph, dict):
                     raise ValueError("Workflow revision has no graph")

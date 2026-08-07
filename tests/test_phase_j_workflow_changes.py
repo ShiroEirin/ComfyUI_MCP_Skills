@@ -889,3 +889,41 @@ def test_change_diff_includes_highlighted_mermaid(tmp_path: Path) -> None:
     assert revision_diff["mermaid"].startswith("flowchart LR")
     assert "classDef added" in revision_diff["mermaid"]
     assert 'N4["KSampler"]:::added' in revision_diff["mermaid"]
+
+
+def test_change_plan_supports_large_graphs_without_mermaid(tmp_path: Path) -> None:
+    """plan must not render Mermaid (50-node cap) for legal >50-node graphs."""
+    changes, workflows = _services(tmp_path)
+    big_graph = {
+        str(index): {"class_type": "Text", "inputs": {"text": "x"}}
+        for index in range(59)
+    }
+    big_graph["60"] = {"class_type": "Image", "inputs": {}}
+    big_graph["61"] = {
+        "class_type": "SaveImage",
+        "inputs": {"images": ["60", 0], "filename_prefix": "result"},
+    }
+    imported = WorkflowImportService(
+        WorkflowGraphService(
+            ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+        ),
+        WorkflowValidationService(),
+        workflows,
+    ).preview(big_graph, workflow_id="portrait", server_id="local", object_info=OBJECT_INFO)
+    committed = WorkflowImportService(
+        WorkflowGraphService(
+            ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+        ),
+        WorkflowValidationService(),
+        workflows,
+    ).commit(imported)
+    workflows.publish(committed["deployment_id"])
+
+    plan = changes.plan(
+        "portrait",
+        "local",
+        [{"op": "add_node", "node_id": "99", "class_type": "Text", "inputs": {"text": "y"}}],
+        object_info=OBJECT_INFO,
+    )
+    assert "mermaid" not in plan["diff"]
+    assert plan["diff"]["nodes_added"] == ["99"]

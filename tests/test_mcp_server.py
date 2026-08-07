@@ -2234,3 +2234,58 @@ def test_graph_mermaid_bounds_and_aliases() -> None:
         assert "visualization limit of 50 nodes" in str(exc)
     else:
         raise AssertionError("over-limit graph must fail loudly")
+
+
+@pytest.mark.anyio
+async def test_workflow_visualize_hidden_in_file_mode_and_not_found_errors(
+    tmp_path: Path,
+) -> None:
+    """visualize is gated to the SQLite store and missing workflows surface a
+    workflow-not-found error instead of an internal failure."""
+    _project(tmp_path)  # file-backed store
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: FakeGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.workflow.visualize" not in names
+        # Direct call in file mode is an unknown tool (SQLite-gated surface).
+        with pytest.raises(MCPError):
+            await client.call_tool(
+                "comfyui.workflow.visualize",
+                {"server_id": "local", "workflow_id": "txt2img"},
+            )
+
+
+@pytest.mark.anyio
+async def test_workflow_visualize_missing_workflow_is_not_found(tmp_path: Path) -> None:
+    """A missing workflow id yields a workflow-not-found error, not INTERNAL."""
+
+    from comfyui_mcp_skills.infrastructure.persistence.control_plane import (
+        SQLiteControlPlaneStore,
+    )
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    _copy_file_workflow_to_sqlite(tmp_path, store)
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: FakeGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.workflow.visualize",
+            {"server_id": "local", "workflow_id": "missing"},
+        )
+    assert result.is_error is True
+    assert "not found" in str(result.content[0]).lower()
