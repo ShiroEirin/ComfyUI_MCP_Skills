@@ -61,6 +61,18 @@ class ComfyUIGatewayAdapter:
     def get_history_list(self, max_items: int = 20, offset: int = 0) -> dict[str, Any]:
         return self._call(self._client.get_history_list, max_items, offset)
 
+    def get_history_bounded(
+        self,
+        *,
+        prompt_id: str = "",
+        max_items: int = 20,
+    ) -> dict[str, Any]:
+        return self._call(
+            self._client.get_history_bounded,
+            prompt_id=prompt_id,
+            max_items=max_items,
+        )
+
     def get_queue(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         try:
             return self._call(self._client.get_queue, timeout_seconds=timeout_seconds)

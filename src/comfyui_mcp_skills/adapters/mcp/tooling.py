@@ -1154,6 +1154,28 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             "additionalProperties": False,
         }
     )
+    engine_history_output = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "prompt_id": {"type": "string"},
+                        "status": {"type": "string"},
+                        "outputs_count": {"type": "integer"},
+                        "created_at": {"type": "string"},
+                    },
+                    "required": ["prompt_id", "status"],
+                    "additionalProperties": False,
+                },
+            },
+            "total": {"type": "integer"},
+        },
+        "required": ["items", "total"],
+        "additionalProperties": False,
+    }
     log_output = page_output(
         {
             "type": "object",
@@ -1395,6 +1417,36 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                 "additionalProperties": False,
             },
             output_schema=queue_output,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
+        Tool(
+            name="comfyui.engine.history",
+            description=(
+                "Read engine-side run history (flat projection of prompt_id, "
+                "status, and output counts) with a bounded response."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": server_identifier,
+                    "prompt_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "default": "",
+                        "description": "Optional single-prompt lookup",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 50,
+                        "default": 10,
+                    },
+                },
+                "required": ["server_id"],
+                "additionalProperties": False,
+            },
+            output_schema=engine_history_output,
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
         Tool(

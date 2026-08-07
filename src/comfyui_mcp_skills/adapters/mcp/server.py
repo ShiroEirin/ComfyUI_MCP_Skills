@@ -316,6 +316,51 @@ def _portable_tool_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name)
 
 
+def _engine_history_projection(
+    gateway: Any,
+    *,
+    prompt_id: str = "",
+    limit: int = 10,
+) -> dict[str, Any]:
+    """Flat projection of engine /history into bounded prompt records.
+
+    Engine history entries look like {prompt_id: {prompt, outputs, status,
+    ...}}; only the stable fields are projected so callers never see full
+    prompt graphs or raw output metadata. Outputs_count counts generated
+    images across all output nodes.
+    """
+    raw = gateway.get_history_bounded(prompt_id=prompt_id, max_items=limit)
+    if not isinstance(raw, dict):
+        raise ValueError("engine history response must be an object")
+    items: list[dict[str, Any]] = []
+    for entry_id, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        outputs = entry.get("outputs")
+        outputs_count = 0
+        if isinstance(outputs, dict):
+            for node_output in outputs.values():
+                if not isinstance(node_output, dict):
+                    continue
+                images = node_output.get("images")
+                if isinstance(images, list):
+                    outputs_count += len(images)
+        status = entry.get("status")
+        if not isinstance(status, str):
+            status = "unknown"
+        item: dict[str, Any] = {
+            "prompt_id": str(entry_id),
+            "status": status,
+            "outputs_count": outputs_count,
+        }
+        created = entry.get("created_at")
+        if isinstance(created, (int, float)) and not isinstance(created, bool):
+            item["created_at"] = str(created)
+        items.append(item)
+    items.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    return {"items": items[:limit], "total": len(raw)}
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -1544,6 +1589,18 @@ def create_server(
                 limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
                 result = await anyio.to_thread.run_sync(
                     lambda: observation.queue(server_id, limit=limit, cursor=cursor)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.engine.history":
+                validate_fixed_arguments(arguments, {"server_id", "prompt_id", "limit"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                prompt_id = optional_string(arguments, "prompt_id", "", max_length=128)
+                limit = bounded_integer(arguments, "limit", 10, minimum=1, maximum=50)
+                gateway = gateway_factory(servers.connection(server_id))
+                result = await anyio.to_thread.run_sync(
+                    lambda: _engine_history_projection(
+                        gateway, prompt_id=prompt_id, limit=limit
+                    )
                 )
                 return tool_result(result)
             if params.name == "comfyui.queue.remove":

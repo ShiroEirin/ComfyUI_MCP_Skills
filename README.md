@@ -254,11 +254,11 @@ uv build
 - MCP Elicitation 审批。
 - Windows Service 的内置 RuntimeController 适配器（Linux systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
-- `comfyui.engine.history`（引擎 `/history` 只读直连工具，设计完成未交付）。
+- `comfyui.engine.history`（引擎 `/history` 只读直连工具，**已交付**，见「本地单机部署边界」）。
 
 ### 本地单机部署边界
 
-以下能力直接 proxy 引擎公共 API，不依赖控制平面存储：`queue.list`→`/queue`、`server.health`→`/system_stats`、`node.list/describe`→`/object_info`、`model.list`→`/models`、`template.list`/`subgraph.list`→`/userdata`、动态 `run_*`→`/prompt`、`asset.upload`→`/upload`。执行记录（`job.*`、幂等、Artifact 聚合、诊断/重试 lineage）是持久执行层而非引擎历史缓存——引擎 `/history` 只保留运行中/近期记录且引擎重启即失，因此 `job.list` 不退化为引擎历史 proxy。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具（`comfyui.engine.history`，扁平投影 + 有界解码）已设计未交付，避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
+以下能力直接 proxy 引擎公共 API，不依赖控制平面存储：`queue.list`→`/queue`、`server.health`→`/system_stats`、`node.list/describe`→`/object_info`、`model.list`→`/models`、`template.list`/`subgraph.list`→`/userdata`、动态 `run_*`→`/prompt`、`asset.upload`→`/upload`。执行记录（`job.*`、幂等、Artifact 聚合、诊断/重试 lineage）是持久执行层而非引擎历史缓存——引擎 `/history` 只保留运行中/近期记录且引擎重启即失，因此 `job.list` 不退化为引擎历史 proxy。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
 
 Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。
 

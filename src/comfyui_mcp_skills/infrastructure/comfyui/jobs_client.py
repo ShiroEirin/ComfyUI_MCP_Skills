@@ -11,6 +11,9 @@ from typing import Any
 from comfyui_mcp_skills.infrastructure.comfyui.client_protocol import SharedClient
 
 _MAX_QUEUE_RESPONSE_BYTES = 8 * 1024 * 1024
+# Engine history entries carry full prompts and output metadata; 8 MiB bounds
+# a busy local session while staying far below process memory pressure.
+_MAX_HISTORY_RESPONSE_BYTES = 8 * 1024 * 1024
 
 
 class JobsClient(SharedClient):
@@ -59,6 +62,36 @@ class JobsClient(SharedClient):
         resp = self._get("/history", params={"max_items": max_items, "offset": offset})
         resp.raise_for_status()
         return resp.json()
+
+    def get_history_bounded(
+        self,
+        *,
+        prompt_id: str = "",
+        max_items: int = 20,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """Read engine history with a hard response cap.
+
+        The engine keeps the full history of a session and /history returns it
+        unbounded without filters; max_items and the bounded JSON decoder keep
+        the Admin/MCP process memory safe on busy engines.
+        """
+        if not isinstance(max_items, int) or isinstance(max_items, bool):
+            raise ValueError("max_items must be an integer")
+        if not 1 <= max_items <= 100:
+            raise ValueError("max_items must be between 1 and 100")
+        if prompt_id:
+            path = f"/history/{prompt_id}"
+            request_params: dict[str, object] | None = None
+        else:
+            path = "/history"
+            request_params = {"max_items": max_items}
+        return self._get_json_bounded(
+            path,
+            max_bytes=_MAX_HISTORY_RESPONSE_BYTES,
+            params=request_params,
+            timeout=self._query_timeout(timeout_seconds),
+        )
 
     def get_jobs(
         self,

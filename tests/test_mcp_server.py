@@ -1905,3 +1905,88 @@ async def test_admin_server_portable_tool_names_project_and_dispatch(
 
     assert result.is_error is False
     assert result.structured_content["valid"] is True
+
+
+@pytest.mark.anyio
+async def test_engine_history_projects_bounded_records(tmp_path: Path) -> None:
+    """engine.history returns a flat bounded projection of engine history."""
+    _project(tmp_path)
+
+    class _HistoryGateway(FakeGateway):
+        def get_history_bounded(self, *, prompt_id: str = "", max_items: int = 10):
+            return {
+                "prompt-1": {
+                    "prompt": {"1": {"class_type": "Text"}},
+                    "outputs": {
+                        "9": {"images": [{"filename": "a.png"}, {"filename": "b.png"}]}
+                    },
+                    "status": "success",
+                    "created_at": 100,
+                },
+                "prompt-2": {
+                    "prompt": {},
+                    "outputs": {},
+                    "status": "error",
+                    "created_at": 200,
+                },
+            }
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _HistoryGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.engine.history" in names
+        result = await client.call_tool(
+            "comfyui.engine.history",
+            {"server_id": "local", "limit": 5},
+        )
+
+    assert result.is_error is False
+    content = result.structured_content
+    assert content["total"] == 2
+    assert content["items"][0] == {
+        "prompt_id": "prompt-2",
+        "status": "error",
+        "outputs_count": 0,
+        "created_at": "200",
+    }
+    assert content["items"][1]["outputs_count"] == 2
+    assert "prompt" not in content["items"][0]
+
+
+@pytest.mark.anyio
+async def test_engine_history_single_prompt_lookup(tmp_path: Path) -> None:
+    """prompt_id restricts the engine query to one record."""
+    _project(tmp_path)
+
+    class _HistoryGateway(FakeGateway):
+        def get_history_bounded(self, *, prompt_id: str = "", max_items: int = 10):
+            assert prompt_id == "prompt-7"
+            return {
+                "prompt-7": {
+                    "prompt": {},
+                    "outputs": {},
+                    "status": "running",
+                }
+            }
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _HistoryGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.engine.history",
+            {"server_id": "local", "prompt_id": "prompt-7"},
+        )
+
+    assert result.is_error is False
+    assert result.structured_content["items"][0]["status"] == "running"

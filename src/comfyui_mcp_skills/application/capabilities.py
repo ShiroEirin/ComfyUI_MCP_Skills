@@ -321,6 +321,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("search", "class"),
     ),
     CapabilitySpec(
+        "comfyui.engine.history",
+        "Read engine run history",
+        "Flat projection of engine-side history records with a bounded response.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("history", "run", "prompt"),
+    ),
+    CapabilitySpec(
         "comfyui.node.describe",
         "Describe a ComfyUI node",
         "Read the complete definition of one installed node class.",
