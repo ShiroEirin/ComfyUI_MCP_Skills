@@ -42,7 +42,7 @@ from comfyui_mcp_skills.adapters.mcp.admin_control import (
     server_dict,
     server_page_dict,
 )
-from comfyui_mcp_skills.adapters.mcp.tooling import decorate_tool
+from comfyui_mcp_skills.adapters.mcp.tooling import decorate_tool, fixed_tools
 from comfyui_mcp_skills.application.admin import MAX_ADMIN_REQUEST_ID_LENGTH, WorkflowAdmin
 from comfyui_mcp_skills.application.authorization import (
     AuthorizationContext,
@@ -52,6 +52,7 @@ from comfyui_mcp_skills.application.authorization import (
     scopes_for_resource,
     scopes_for_tool,
 )
+from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.application.telemetry import (
@@ -196,6 +197,7 @@ def create_admin_server(
         else None
     )
     servers = ServerRegistry(base_dir)
+    discovery = DiscoveryService(servers, gateway_factory)
     store = repositories.store
     workflow_owner_id = owner_id if provisioning_repository is not None else None
     workflow_actor = owner_id if provisioning_repository is not None else actor
@@ -617,6 +619,16 @@ def create_admin_server(
                 ),
             ),
             *phase_o_surface,
+            *[
+                tool
+                for tool in fixed_tools()
+                if tool.name
+                in {
+                    "comfyui.node.list",
+                    "comfyui.node.describe",
+                    "comfyui.model.list",
+                }
+            ],
         ]
 
     async def list_tools(
@@ -675,6 +687,39 @@ def create_admin_server(
         if not is_authorized(authorization.scopes, scopes_for_tool(params.name)):
             raise MCPError(code=INVALID_PARAMS, message="Tool unavailable")
         try:
+            if params.name == "comfyui.node.list":
+                _validate_keys(arguments, {"server_id", "query", "limit", "cursor"})
+                server_id = _required_string(arguments, "server_id")
+                query = _optional_string(arguments, "query", "")
+                cursor = _optional_string(arguments, "cursor", "")
+                limit = _bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.nodes(
+                        server_id, query=query, limit=limit, cursor=cursor
+                    )
+                )
+                return _result(result)
+            if params.name == "comfyui.node.describe":
+                _validate_keys(arguments, {"server_id", "node_class"})
+                server_id = _required_string(arguments, "server_id")
+                node_class = _required_string(arguments, "node_class")
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.node(server_id, node_class)
+                )
+                return _result(result)
+            if params.name == "comfyui.model.list":
+                _validate_keys(arguments, {"server_id", "kind", "query", "limit", "cursor"})
+                server_id = _required_string(arguments, "server_id")
+                kind = _optional_string(arguments, "kind", "")
+                query = _optional_string(arguments, "query", "")
+                cursor = _optional_string(arguments, "cursor", "")
+                limit = _bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.models(
+                        server_id, kind=kind, query=query, limit=limit, cursor=cursor
+                    )
+                )
+                return _result(result)
             if params.name == "comfyui.admin.workflow.import":
                 if workflow_import is None:
                     raise MCPError(code=INVALID_PARAMS, message="Workflow import unavailable")
@@ -1417,6 +1462,17 @@ def _optional_string(arguments: dict[str, Any], name: str, default: str) -> str:
     value = arguments.get(name, default)
     if not isinstance(value, str):
         raise TypeError(f"{name} must be a string")
+    return value
+
+
+def _bounded_integer(
+    arguments: dict[str, Any], name: str, default: int, *, minimum: int, maximum: int
+) -> int:
+    value = arguments.get(name, default)
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{name} must be an integer")
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
     return value
 
 

@@ -389,9 +389,9 @@ comfyui://experiments/{experiment_id}
 | Toolset | Scope | 典型能力 |
 |---|---|---|
 | execution | `comfyui:execute` | Workflow run、Job、Asset、Experiment、Routing |
-| authoring | `comfyui:observe`, `comfyui:author` | Workflow 语义、Revision、依赖 |
+| authoring | `comfyui:observe`, `comfyui:author` | Workflow 语义、Revision、依赖、节点目录 |
 | operations | `comfyui:observe`, `comfyui:operate` | Server、Node、Model、Queue、Log、Runtime |
-| admin | `comfyui:configure`, `comfyui:provision`, `comfyui:audit` | 配置、供应、审批和审计 |
+| admin | `comfyui:observe`, `comfyui:configure`, `comfyui:provision`, `comfyui:audit` | 配置、供应、审批、审计、节点/模型只读目录（改工作流查节点） |
 
 工具是否出现在 `tools/list` 由 Toolset 与 granted scopes 共同决定。隐藏工具不能通过直接构造名称绕过授权。
 

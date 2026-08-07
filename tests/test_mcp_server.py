@@ -574,6 +574,9 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
             "comfyui.admin.audit.get",
             "comfyui.admin.audit.retry",
             "comfyui.admin.audit.export",
+            "comfyui.node.list",
+            "comfyui.node.describe",
+            "comfyui.model.list",
         }
         assert all(tool.title for tool in listed.tools)
         assert all(tool.icons for tool in listed.tools)
@@ -2488,3 +2491,89 @@ def test_history_suggest_handles_nested_snapshots_error_status_and_truncation(
     long_text = by_name["long_text"]["values"][0]
     assert long_text["value"] == "z" * 256  # truncated, not dropped
     assert long_text["runs"] == 2
+
+
+@pytest.mark.anyio
+async def test_admin_server_mounts_node_catalog_tools_end_to_end(
+    tmp_path: Path,
+) -> None:
+    """The admin endpoint (home of change.plan) exposes and dispatches the
+    node/model catalog so workflow editors can query node knowledge."""
+    _project(tmp_path)
+
+    class _CatalogGateway(FakeGateway):
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "KSampler": {
+                    "display_name": "KSampler",
+                    "category": "sampling",
+                    "input": {"required": {"cfg": ["FLOAT"]}},
+                    "input_order": {"required": ["cfg"]},
+                    "output": ["LATENT"],
+                }
+            }
+
+        def get_model_folders(self) -> list[str]:
+            return ["checkpoints"]
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _CatalogGateway(),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.node.list" in names
+        assert "comfyui.node.describe" in names
+        assert "comfyui.model.list" in names
+        listed = await client.call_tool(
+            "comfyui.node.list", {"server_id": "local"}
+        )
+        described = await client.call_tool(
+            "comfyui.node.describe",
+            {"server_id": "local", "node_class": "KSampler"},
+        )
+        models = await client.call_tool(
+            "comfyui.model.list", {"server_id": "local"}
+        )
+
+    assert listed.is_error is False
+    assert listed.structured_content["items"][0]["class"] == "KSampler"
+    assert described.is_error is False
+    assert described.structured_content["node_class"] == "KSampler"
+    assert models.is_error is False
+
+
+@pytest.mark.anyio
+async def test_engine_history_counts_audio_and_video_outputs(tmp_path: Path) -> None:
+    """outputs_count covers gifs/audio/video keys, not only images."""
+    _project(tmp_path)
+
+    class _MediaGateway(FakeGateway):
+        def get_history_bounded(self, *, prompt_id: str = "", max_items: int = 10):
+            return {
+                "prompt-m": {
+                    "prompt": {},
+                    "outputs": {
+                        "9": {"audio": [{"filename": "a.wav"}]},
+                        "10": {"video": [{"filename": "v.mp4"}, {"filename": "w.mp4"}]},
+                    },
+                    "status": {"completed": True, "status_str": "success"},
+                }
+            }
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _MediaGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.engine.history",
+            {"server_id": "local", "limit": 5},
+        )
+
+    assert result.is_error is False
+    assert result.structured_content["items"][0]["outputs_count"] == 3

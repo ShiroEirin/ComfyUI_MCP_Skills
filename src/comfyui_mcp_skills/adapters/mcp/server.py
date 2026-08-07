@@ -335,6 +335,9 @@ def _required_revision_id(deployment: dict[str, Any], workflow_id: str, server_i
 # ComfyUI status_str values we project; anything else maps to "unknown".
 _KNOWN_HISTORY_STATUSES = frozenset({"success", "error", "running"})
 
+# Output media keys counted by engine history projection (JobService contract).
+_HISTORY_OUTPUT_MEDIA_KEYS = ("images", "gifs", "audio", "video")
+
 
 def _engine_history_projection(
     gateway: Any,
@@ -365,9 +368,10 @@ def _engine_history_projection(
             for node_output in outputs.values():
                 if not isinstance(node_output, dict):
                     continue
-                images = node_output.get("images")
-                if isinstance(images, list):
-                    outputs_count += len(images)
+                for media_key in _HISTORY_OUTPUT_MEDIA_KEYS:
+                    media = node_output.get(media_key)
+                    if isinstance(media, list):
+                        outputs_count += len(media)
         status = entry.get("status")
         if isinstance(status, dict):
             status = status.get("status_str")

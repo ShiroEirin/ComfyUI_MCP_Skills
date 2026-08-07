@@ -6,7 +6,7 @@
 
 ## 节点能力感知（Node Capability Awareness）
 
-> 状态：**已拍板方向，未开始实现**。迭代顺序 P0-1 → P0-3 → P0-2 → P2 → P1，每段独立可验证。
+> 状态：**已交付**（P0-1/P0-2/P0-3、P2 可视化、P1 知识库全部完成；节点目录快照 Resource 等后续项单独标注未交付）。迭代顺序 P0-1 → P0-3 → P0-2 → P2 → P1，每段独立可验证。
 
 ### 背景
 - 底层设施已齐：`CapabilitiesClient.get_object_info()`、`DiscoveryService.nodes()/node()`、`comfyui.node.list/describe`、`comfyui.model.list` 已实现。
