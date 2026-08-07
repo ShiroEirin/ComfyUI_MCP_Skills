@@ -784,3 +784,48 @@ class DownloadOutputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EngineHistoryBoundedTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.client = ComfyUIClient("http://localhost:8188")
+
+    @staticmethod
+    def _ok_response(payload: bytes) -> MagicMock:
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status = MagicMock()
+        response.headers = {"Content-Length": str(len(payload))}
+        response.iter_content = lambda chunk_size: [
+            payload[index : index + chunk_size]
+            for index in range(0, len(payload), chunk_size)
+        ]
+        return response
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_list_sends_max_items_and_no_prompt_id(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = self._ok_response(b'{"p-1": {}}')
+        self.client.get_history_bounded(max_items=5)
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://localhost:8188/history")
+        self.assertEqual(kwargs["params"], {"max_items": 5})
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_single_prompt_omits_max_items(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = self._ok_response(b'{"p-7": {}}')
+        self.client.get_history_bounded(prompt_id="p-7")
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "http://localhost:8188/history/p-7")
+        self.assertNotIn("params", kwargs)
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_rejects_oversized_response(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = self._ok_response(b"x" * (8 * 1024 * 1024 + 1))
+        with self.assertRaises(ValueError):
+            self.client.get_history_bounded(max_items=10)
+
+    def test_rejects_invalid_max_items(self) -> None:
+        with self.assertRaises(ValueError):
+            self.client.get_history_bounded(max_items=0)
+        with self.assertRaises(ValueError):
+            self.client.get_history_bounded(max_items=101)

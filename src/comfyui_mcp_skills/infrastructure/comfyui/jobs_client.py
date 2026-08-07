@@ -82,15 +82,15 @@ class JobsClient(SharedClient):
             raise ValueError("max_items must be between 1 and 100")
         if prompt_id:
             path = f"/history/{prompt_id}"
-            request_params: dict[str, object] | None = None
+            request_kwargs: dict[str, Any] = {}
         else:
             path = "/history"
-            request_params = {"max_items": max_items}
+            request_kwargs = {"params": {"max_items": max_items}}
         return self._get_json_bounded(
             path,
             max_bytes=_MAX_HISTORY_RESPONSE_BYTES,
-            params=request_params,
             timeout=self._query_timeout(timeout_seconds),
+            **request_kwargs,
         )
 
     def get_jobs(

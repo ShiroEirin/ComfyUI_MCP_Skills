@@ -465,4 +465,4 @@ dependency.inspect
 - MCP Elicitation 审批。
 - Windows Service RuntimeController（systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；subgraph 提取/按名复用闭环已交付）。
-- `comfyui.engine.history`（引擎 `/history` 只读直连工具，设计完成未交付）。本地查看跑图历史请直接查询引擎 `GET /history` 或使用 CLI `history`；`job.list` 保留 owner-bound 持久执行记录契约，不退化为引擎历史 proxy。
+- `comfyui.engine.history`（引擎 `/history` 只读直连工具，**已交付**：扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50；本地看历史的最短 MCP 路径）。`job.list` 保留 owner-bound 持久执行记录契约，不退化为引擎历史 proxy。

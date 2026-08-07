@@ -316,6 +316,10 @@ def _portable_tool_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]", "_", name)
 
 
+# ComfyUI status_str values we project; anything else maps to "unknown".
+_KNOWN_HISTORY_STATUSES = frozenset({"success", "error", "running"})
+
+
 def _engine_history_projection(
     gateway: Any,
     *,
@@ -324,10 +328,13 @@ def _engine_history_projection(
 ) -> dict[str, Any]:
     """Flat projection of engine /history into bounded prompt records.
 
-    Engine history entries look like {prompt_id: {prompt, outputs, status,
-    ...}}; only the stable fields are projected so callers never see full
-    prompt graphs or raw output metadata. Outputs_count counts generated
-    images across all output nodes.
+    Engine history entries look like {prompt_id: {prompt, outputs,
+    status: {completed, status_str}, ...}}; only the stable fields are
+    projected so callers never see full prompt graphs or raw output metadata.
+    Outputs_count counts generated images across all output nodes. Entries
+    with a numeric/string created_at sort newest-first by that time; standard
+    engine payloads carry no created_at and fall back to reverse engine
+    insertion order (newest first).
     """
     raw = gateway.get_history_bounded(prompt_id=prompt_id, max_items=limit)
     if not isinstance(raw, dict):
@@ -346,19 +353,39 @@ def _engine_history_projection(
                 if isinstance(images, list):
                     outputs_count += len(images)
         status = entry.get("status")
-        if not isinstance(status, str):
-            status = "unknown"
+        if isinstance(status, dict):
+            status = status.get("status_str")
+        normalized_status = "unknown"
+        if isinstance(status, str):
+            candidate = status.strip().lower()
+            if candidate in _KNOWN_HISTORY_STATUSES:
+                normalized_status = candidate
         item: dict[str, Any] = {
             "prompt_id": str(entry_id),
-            "status": status,
+            "status": normalized_status,
             "outputs_count": outputs_count,
         }
         created = entry.get("created_at")
         if isinstance(created, (int, float)) and not isinstance(created, bool):
             item["created_at"] = str(created)
+        elif isinstance(created, str) and created:
+            item["created_at"] = created
         items.append(item)
-    items.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
-    return {"items": items[:limit], "total": len(raw)}
+    timed = [item for item in items if "created_at" in item]
+    untimed = [item for item in items if "created_at" not in item]
+
+    def _time_key(item: dict[str, Any]) -> tuple[int, float | str]:
+        value = item["created_at"]
+        if isinstance(value, str) and not value.isdigit():
+            return (1, value)  # ISO strings sort lexicographically
+        try:
+            return (0, float(value))
+        except (TypeError, ValueError):
+            return (2, 0.0)
+
+    timed.sort(key=_time_key, reverse=True)
+    untimed.reverse()  # engine insertion order is oldest-first
+    return {"items": (timed + untimed)[:limit], "total": len(raw)}
 
 
 logger = logging.getLogger(__name__)

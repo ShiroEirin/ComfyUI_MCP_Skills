@@ -1920,14 +1920,19 @@ async def test_engine_history_projects_bounded_records(tmp_path: Path) -> None:
                     "outputs": {
                         "9": {"images": [{"filename": "a.png"}, {"filename": "b.png"}]}
                     },
-                    "status": "success",
+                    "status": {"completed": True, "status_str": "success"},
                     "created_at": 100,
                 },
                 "prompt-2": {
                     "prompt": {},
                     "outputs": {},
-                    "status": "error",
+                    "status": {"completed": False, "status_str": "error"},
                     "created_at": 200,
+                },
+                "prompt-3": {
+                    "prompt": {},
+                    "outputs": {},
+                    "status": {"completed": True, "status_str": "weird_value"},
                 },
             }
 
@@ -1948,14 +1953,26 @@ async def test_engine_history_projects_bounded_records(tmp_path: Path) -> None:
 
     assert result.is_error is False
     content = result.structured_content
-    assert content["total"] == 2
+    assert content["total"] == 3
     assert content["items"][0] == {
         "prompt_id": "prompt-2",
         "status": "error",
         "outputs_count": 0,
         "created_at": "200",
     }
-    assert content["items"][1]["outputs_count"] == 2
+    assert content["items"][1] == {
+        "prompt_id": "prompt-1",
+        "status": "success",
+        "outputs_count": 2,
+        "created_at": "100",
+    }
+    # Unknown status_str maps to "unknown"; entries without created_at sort
+    # after timed ones via reverse engine insertion order.
+    assert content["items"][2] == {
+        "prompt_id": "prompt-3",
+        "status": "unknown",
+        "outputs_count": 0,
+    }
     assert "prompt" not in content["items"][0]
 
 
@@ -1971,7 +1988,7 @@ async def test_engine_history_single_prompt_lookup(tmp_path: Path) -> None:
                 "prompt-7": {
                     "prompt": {},
                     "outputs": {},
-                    "status": "running",
+                    "status": {"completed": False, "status_str": "running"},
                 }
             }
 
