@@ -1855,3 +1855,53 @@ async def test_admin_workflow_validate_uses_owner_bound_repository(
     assert result.is_error is False
     content = result.structured_content
     assert content["valid"] is True
+
+
+@pytest.mark.anyio
+async def test_admin_server_portable_tool_names_project_and_dispatch(
+    tmp_path: Path,
+) -> None:
+    """portable_tool_names projects admin tools to underscore names and the
+    dispatch restores canonical names so calls still work."""
+    import sqlite3
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    _copy_file_workflow_to_sqlite(tmp_path, store)
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            """UPDATE workflow_deployments SET enabled=1
+            WHERE workflow_id='txt2img'"""
+        )
+
+    class _ObjectInfoGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "CLIPTextEncode": {
+                    "input": {"required": {"text": ["STRING"]}},
+                    "input_order": {"required": ["text"]},
+                    "output": ["CONDITIONING"],
+                }
+            }
+
+        def get_models(self, folder: str) -> list[str]:
+            return []
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ObjectInfoGateway(),
+        portable_tool_names=True,
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui_admin_workflow_validate" in names
+        assert "comfyui.admin.workflow.validate" not in names
+        result = await client.call_tool(
+            "comfyui_admin_workflow_validate",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    assert result.is_error is False
+    assert result.structured_content["valid"] is True

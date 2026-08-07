@@ -47,7 +47,7 @@ def _configured_manager_hosts() -> set[str]:
     }
 
 
-async def _run(base_dir: Path, actor: str) -> None:
+async def _run(base_dir: Path, actor: str, portable_tool_names: bool = False) -> None:
     data_dir = base_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     SQLiteControlPlaneStore((data_dir / "control-plane.sqlite3").resolve()).initialize()
@@ -69,6 +69,7 @@ async def _run(base_dir: Path, actor: str) -> None:
             allowed_source_hosts=_configured_manager_hosts(),
         ),
         provisioning_repository=provisioning,
+        portable_tool_names=portable_tool_names,
     )
     async with stdio_server() as (read_stream, write_stream):
         await server.run(
@@ -84,7 +85,8 @@ def main() -> None:
         raise PermissionError("Set COMFYUI_MCP_ENABLE_ADMIN=1 to run the admin server")
     base_dir = Path(os.environ.get("COMFYUI_MCP_DIR", os.getcwd())).resolve()
     actor = os.environ.get("COMFYUI_MCP_ADMIN_ACTOR", "stdio-admin")
-    anyio.run(_run, base_dir, actor)
+    portable = os.environ.get("COMFYUI_MCP_PORTABLE_TOOL_NAMES") == "1"
+    anyio.run(_run, base_dir, actor, portable)
 
 
 if __name__ == "__main__":

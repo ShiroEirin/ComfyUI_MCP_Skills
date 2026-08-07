@@ -95,6 +95,15 @@ GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 logger = logging.getLogger(__name__)
 
 
+def _portable_tool_name(name: str) -> str:
+    """Project one canonical MCP tool name into provider-safe ASCII.
+
+    Same projection as the main server (adapters/mcp/server.py) so admin and
+    main surfaces stay consistent under COMFYUI_MCP_PORTABLE_TOOL_NAMES.
+    """
+    return re.sub(r"[^A-Za-z0-9_-]", "_", name)
+
+
 def create_admin_server(
     base_dir: Path,
     *,
@@ -110,6 +119,7 @@ def create_admin_server(
     tracer: Tracer | None = None,
     meter: Meter | None = None,
     upload_roots: list[Path] | None = None,
+    portable_tool_names: bool = False,
 ) -> Server[dict[str, object]]:
     if not enabled:
         raise PermissionError("Admin MCP requires an explicit enabled=True configuration")
@@ -214,321 +224,176 @@ def create_admin_server(
             actor=workflow_actor,
         )
 
-    async def list_tools(
-        _ctx: ServerRequestContext[dict[str, object]],
-        _params: PaginatedRequestParams | None,
-    ) -> ListToolsResult:
-        identity = {
-            "server_id": {"type": "string", "minLength": 1},
-            "workflow_id": {"type": "string", "minLength": 1},
-        }
-        request_id = {
-            "request_id": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": MAX_ADMIN_REQUEST_ID_LENGTH,
-                "description": "Stable caller-supplied idempotency and audit request ID.",
+    def _project_tools(
+        canonical_tools: list[Tool],
+    ) -> tuple[list[Tool], dict[str, str]]:
+        """Project canonical tool names to provider-safe ASCII when portable.
+
+        Mirrors the main server's portable_tool_names behavior: external names
+        map back to canonical names at dispatch time, and collisions abort
+        loudly instead of silently shadowing one tool.
+        """
+        if not portable_tool_names:
+            return canonical_tools, {
+                tool.name: tool.name for tool in canonical_tools
             }
+        tools: list[Tool] = []
+        canonical_by_external: dict[str, str] = {}
+        for tool in canonical_tools:
+            external_name = _portable_tool_name(tool.name)
+            prior = canonical_by_external.get(external_name)
+            if prior is not None and prior != tool.name:
+                raise RuntimeError(f"Portable tool name collision: {external_name}")
+            canonical_by_external[external_name] = tool.name
+            tools.append(tool.model_copy(update={"name": external_name}))
+        return tools, canonical_by_external
+
+    identity = {
+        "server_id": {"type": "string", "minLength": 1},
+        "workflow_id": {"type": "string", "minLength": 1},
+    }
+    request_id = {
+        "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_ADMIN_REQUEST_ID_LENGTH,
+            "description": "Stable caller-supplied idempotency and audit request ID.",
         }
-        return ListToolsResult(
-            tools=[
-                decorate_tool(tool)
-                for tool in [
-                    *(
-                        [
-                            Tool(
-                                name="comfyui.admin.workflow.import",
-                                description=(
-                                    "Preview an API or Editor workflow import and optionally "
-                                    "commit one validated, unpublished Revision."
-                                ),
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        **identity,
-                                        "source": {
-                                            "anyOf": [
-                                                {
-                                                    "type": "object",
-                                                    "description": "Inline workflow JSON",
-                                                    "properties": {
-                                                        "kind": {"enum": ["inline_json"]},
-                                                        "workflow": {"type": "object"},
-                                                    },
-                                                    "required": ["kind", "workflow"],
-                                                    "additionalProperties": False,
-                                                },
-                                                {
-                                                    "type": "object",
-                                                    "description": (
-                                                        "Read one workflow from ComfyUI userdata"
-                                                    ),
-                                                    "properties": {
-                                                        "kind": {"enum": ["server_userdata"]},
-                                                        "path": {"type": "string"},
-                                                    },
-                                                    "required": ["kind", "path"],
-                                                    "additionalProperties": False,
-                                                },
-                                                {
-                                                    "type": "object",
-                                                    "description": (
-                                                        "Read one workflow JSON from an "
-                                                        "authorized local upload root"
-                                                    ),
-                                                    "properties": {
-                                                        "kind": {
-                                                            "enum": ["authorized_local_file"]
-                                                        },
-                                                        "path": {"type": "string"},
-                                                    },
-                                                    "required": ["kind", "path"],
-                                                    "additionalProperties": False,
-                                                },
-                                                {
-                                                    "type": "object",
-                                                    "not": {"required": ["kind"]},
-                                                    "description": (
-                                                        "Legacy inline form: the workflow "
-                                                        "object itself (no kind key)"
-                                                    ),
-                                                },
-                                            ]
-                                        },
-                                        "media_type": {
-                                            "type": "string",
-                                            "enum": ["image", "audio", "video"],
-                                            "default": "image",
-                                        },
-                                        "commit": {"type": "boolean", "default": False},
-                                    },
-                                    "required": ["server_id", "workflow_id", "source"],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=False,
-                                    idempotent_hint=True,
-                                    open_world_hint=True,
-                                ),
-                            )
-                        ]
-                        if workflow_import is not None
-                        else []
-                    ),
-                    *(
-                        [
-                            Tool(
-                                name="comfyui.admin.workflow.change.plan",
-                                description=(
-                                    "Plan validated graph operations against a published Revision."
-                                ),
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        **identity,
-                                        "operations": {
-                                            "type": "array",
-                                            "minItems": 1,
-                                            "maxItems": 100,
-                                            "items": {"type": "object"},
-                                        },
-                                    },
-                                    "required": ["server_id", "workflow_id", "operations"],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=False,
-                                    idempotent_hint=False,
-                                    open_world_hint=True,
-                                ),
-                            ),
-                            Tool(
-                                name="comfyui.admin.workflow.change.commit",
-                                description=(
-                                    "Commit a bound, unexpired change plan as an unpublished "
-                                    "Revision."
-                                ),
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        "plan_id": {"type": "string", "minLength": 1},
-                                        "plan_digest": {
-                                            "type": "string",
-                                            "minLength": 64,
-                                            "maxLength": 64,
-                                        },
-                                    },
-                                    "required": ["plan_id", "plan_digest"],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=False,
-                                    idempotent_hint=True,
-                                    open_world_hint=False,
-                                ),
-                            ),
-                            Tool(
-                                name="comfyui.admin.workflow.publish",
-                                description="Atomically publish one validated Workflow Deployment.",
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        "deployment_id": {"type": "string", "minLength": 1}
-                                    },
-                                    "required": ["deployment_id"],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=True,
-                                    idempotent_hint=True,
-                                    open_world_hint=False,
-                                ),
-                            ),
-                            Tool(
-                                name="comfyui.admin.workflow.rollback",
-                                description=(
-                                    "Create and publish a new Revision from a historical target."
-                                ),
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        **identity,
-                                        **request_id,
-                                        "target_revision_id": {"type": "string", "minLength": 1},
-                                    },
-                                    "required": [
-                                        "server_id",
-                                        "workflow_id",
-                                        "target_revision_id",
-                                        "request_id",
-                                    ],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=True,
-                                    idempotent_hint=True,
-                                    open_world_hint=False,
-                                ),
-                            ),
-                        ]
-                        if workflow_changes is not None
-                        else []
-                    ),
+    }
+
+    def _admin_tools() -> list[Tool]:
+        """Canonical dotted-name admin tool surface; portable-name
+        projection is applied at list/dispatch time."""
+        return [
+            *(
+                [
                     Tool(
-                        name="comfyui.admin.workflow.validate",
+                        name="comfyui.admin.workflow.import",
                         description=(
-                            "Validate one workflow graph, parameters, nodes, and model "
-                            "dependencies without executing it. Requires a published "
-                            "deployment; enabled-only enforcement applies in SQLite "
-                            "store mode, while legacy file mode validates the stored "
-                            "schema as-is."
+                            "Preview an API or Editor workflow import and optionally "
+                            "commit one validated, unpublished Revision."
                         ),
                         input_schema={
                             "type": "object",
-                            "properties": identity,
-                            "required": ["server_id", "workflow_id"],
+                            "properties": {
+                                **identity,
+                                "source": {
+                                    "anyOf": [
+                                        {
+                                            "type": "object",
+                                            "description": "Inline workflow JSON",
+                                            "properties": {
+                                                "kind": {"enum": ["inline_json"]},
+                                                "workflow": {"type": "object"},
+                                            },
+                                            "required": ["kind", "workflow"],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "description": (
+                                                "Read one workflow from ComfyUI userdata"
+                                            ),
+                                            "properties": {
+                                                "kind": {"enum": ["server_userdata"]},
+                                                "path": {"type": "string"},
+                                            },
+                                            "required": ["kind", "path"],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "description": (
+                                                "Read one workflow JSON from an "
+                                                "authorized local upload root"
+                                            ),
+                                            "properties": {
+                                                "kind": {
+                                                    "enum": ["authorized_local_file"]
+                                                },
+                                                "path": {"type": "string"},
+                                            },
+                                            "required": ["kind", "path"],
+                                            "additionalProperties": False,
+                                        },
+                                        {
+                                            "type": "object",
+                                            "not": {"required": ["kind"]},
+                                            "description": (
+                                                "Legacy inline form: the workflow "
+                                                "object itself (no kind key)"
+                                            ),
+                                        },
+                                    ]
+                                },
+                                "media_type": {
+                                    "type": "string",
+                                    "enum": ["image", "audio", "video"],
+                                    "default": "image",
+                                },
+                                "commit": {"type": "boolean", "default": False},
+                            },
+                            "required": ["server_id", "workflow_id", "source"],
                             "additionalProperties": False,
                         },
                         output_schema={"type": "object"},
                         annotations=ToolAnnotations(
-                            read_only_hint=True,
+                            read_only_hint=False,
                             destructive_hint=False,
                             idempotent_hint=True,
                             open_world_hint=True,
                         ),
-                    ),
-                    *(
-                        [
-                            Tool(
-                                name="comfyui.admin.workflow.set_enabled",
-                                description="Enable or disable one configured workflow.",
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        **identity,
-                                        **request_id,
-                                        "enabled": {"type": "boolean"},
-                                    },
-                                    "required": ["server_id", "workflow_id", "enabled"],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=False,
-                                    idempotent_hint=True,
-                                    open_world_hint=False,
-                                ),
-                            ),
-                            Tool(
-                                name="comfyui.admin.workflow.delete",
-                                description=(
-                                    "Permanently delete one workflow after an exact confirmation "
-                                    "phrase. Supply request_id to make retries idempotent."
-                                ),
-                                input_schema={
-                                    "type": "object",
-                                    "properties": {
-                                        **identity,
-                                        **request_id,
-                                        "confirmation": {"type": "string"},
-                                    },
-                                    "required": [
-                                        "server_id",
-                                        "workflow_id",
-                                        "confirmation",
-                                        "request_id",
-                                    ],
-                                    "additionalProperties": False,
-                                },
-                                output_schema={"type": "object"},
-                                annotations=ToolAnnotations(
-                                    read_only_hint=False,
-                                    destructive_hint=True,
-                                    idempotent_hint=True,
-                                    open_world_hint=False,
-                                ),
-                            ),
-                        ]
-                        if file_workflow_available
-                        else []
-                    ),
+                    )
+                ]
+                if workflow_import is not None
+                else []
+            ),
+            *(
+                [
                     Tool(
-                        name="comfyui.admin.audit.get",
-                        description="Read the durable commit and audit status of an admin request.",
+                        name="comfyui.admin.workflow.change.plan",
+                        description=(
+                            "Plan validated graph operations against a published Revision."
+                        ),
                         input_schema={
                             "type": "object",
-                            "properties": request_id,
-                            "required": ["request_id"],
+                            "properties": {
+                                **identity,
+                                "operations": {
+                                    "type": "array",
+                                    "minItems": 1,
+                                    "maxItems": 100,
+                                    "items": {"type": "object"},
+                                },
+                            },
+                            "required": ["server_id", "workflow_id", "operations"],
                             "additionalProperties": False,
                         },
                         output_schema={"type": "object"},
                         annotations=ToolAnnotations(
-                            read_only_hint=True,
+                            read_only_hint=False,
                             destructive_hint=False,
-                            idempotent_hint=True,
-                            open_world_hint=False,
+                            idempotent_hint=False,
+                            open_world_hint=True,
                         ),
                     ),
                     Tool(
-                        name="comfyui.admin.audit.retry",
+                        name="comfyui.admin.workflow.change.commit",
                         description=(
-                            "Retry only a pending audit outcome without repeating its operation."
+                            "Commit a bound, unexpired change plan as an unpublished "
+                            "Revision."
                         ),
                         input_schema={
                             "type": "object",
-                            "properties": request_id,
-                            "required": ["request_id"],
+                            "properties": {
+                                "plan_id": {"type": "string", "minLength": 1},
+                                "plan_digest": {
+                                    "type": "string",
+                                    "minLength": 64,
+                                    "maxLength": 64,
+                                },
+                            },
+                            "required": ["plan_id", "plan_digest"],
                             "additionalProperties": False,
                         },
                         output_schema={"type": "object"},
@@ -540,55 +405,229 @@ def create_admin_server(
                         ),
                     ),
                     Tool(
-                        name="comfyui.admin.audit.export",
-                        description=(
-                            "Export a bounded, filterable slice of the durable admin audit "
-                            "trail in append order."
-                        ),
+                        name="comfyui.admin.workflow.publish",
+                        description="Atomically publish one validated Workflow Deployment.",
                         input_schema={
                             "type": "object",
                             "properties": {
-                                "actor": {"type": "string", "maxLength": 128, "default": ""},
-                                "action": {"type": "string", "maxLength": 256, "default": ""},
-                                "outcomes": {
-                                    "type": "array",
-                                    "items": {
-                                        "type": "string",
-                                        "enum": ["intent", "success", "failure"],
-                                    },
-                                    "maxItems": 3,
-                                    "default": [],
-                                },
-                                "after": {
-                                    "type": "string",
-                                    "description": "UTC ISO-8601 lower bound (inclusive)",
-                                    "maxLength": 64,
-                                    "default": "",
-                                },
-                                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
-                                "cursor": {
-                                    "type": "string",
-                                    "description": "Opaque next-page cursor from a prior call",
-                                    "maxLength": 64,
-                                    "default": "",
-                                },
+                                "deployment_id": {"type": "string", "minLength": 1}
                             },
+                            "required": ["deployment_id"],
                             "additionalProperties": False,
                         },
                         output_schema={"type": "object"},
                         annotations=ToolAnnotations(
-                            read_only_hint=True,
+                            read_only_hint=False,
+                            destructive_hint=True,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
+                    ),
+                    Tool(
+                        name="comfyui.admin.workflow.rollback",
+                        description=(
+                            "Create and publish a new Revision from a historical target."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                **identity,
+                                **request_id,
+                                "target_revision_id": {"type": "string", "minLength": 1},
+                            },
+                            "required": [
+                                "server_id",
+                                "workflow_id",
+                                "target_revision_id",
+                                "request_id",
+                            ],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
+                            destructive_hint=True,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
+                    ),
+                ]
+                if workflow_changes is not None
+                else []
+            ),
+            Tool(
+                name="comfyui.admin.workflow.validate",
+                description=(
+                    "Validate one workflow graph, parameters, nodes, and model "
+                    "dependencies without executing it. Requires a published "
+                    "deployment; enabled-only enforcement applies in SQLite "
+                    "store mode, while legacy file mode validates the stored "
+                    "schema as-is."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": identity,
+                    "required": ["server_id", "workflow_id"],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                annotations=ToolAnnotations(
+                    read_only_hint=True,
+                    destructive_hint=False,
+                    idempotent_hint=True,
+                    open_world_hint=True,
+                ),
+            ),
+            *(
+                [
+                    Tool(
+                        name="comfyui.admin.workflow.set_enabled",
+                        description="Enable or disable one configured workflow.",
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                **identity,
+                                **request_id,
+                                "enabled": {"type": "boolean"},
+                            },
+                            "required": ["server_id", "workflow_id", "enabled"],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
                             destructive_hint=False,
                             idempotent_hint=True,
                             open_world_hint=False,
                         ),
                     ),
-                    *phase_o_surface,
+                    Tool(
+                        name="comfyui.admin.workflow.delete",
+                        description=(
+                            "Permanently delete one workflow after an exact confirmation "
+                            "phrase. Supply request_id to make retries idempotent."
+                        ),
+                        input_schema={
+                            "type": "object",
+                            "properties": {
+                                **identity,
+                                **request_id,
+                                "confirmation": {"type": "string"},
+                            },
+                            "required": [
+                                "server_id",
+                                "workflow_id",
+                                "confirmation",
+                                "request_id",
+                            ],
+                            "additionalProperties": False,
+                        },
+                        output_schema={"type": "object"},
+                        annotations=ToolAnnotations(
+                            read_only_hint=False,
+                            destructive_hint=True,
+                            idempotent_hint=True,
+                            open_world_hint=False,
+                        ),
+                    ),
                 ]
-                if is_authorized(authorization.scopes, scopes_for_tool(tool.name))
-            ],
-            cache_scope="private",
-        )
+                if file_workflow_available
+                else []
+            ),
+            Tool(
+                name="comfyui.admin.audit.get",
+                description="Read the durable commit and audit status of an admin request.",
+                input_schema={
+                    "type": "object",
+                    "properties": request_id,
+                    "required": ["request_id"],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                annotations=ToolAnnotations(
+                    read_only_hint=True,
+                    destructive_hint=False,
+                    idempotent_hint=True,
+                    open_world_hint=False,
+                ),
+            ),
+            Tool(
+                name="comfyui.admin.audit.retry",
+                description=(
+                    "Retry only a pending audit outcome without repeating its operation."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": request_id,
+                    "required": ["request_id"],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                annotations=ToolAnnotations(
+                    read_only_hint=False,
+                    destructive_hint=False,
+                    idempotent_hint=True,
+                    open_world_hint=False,
+                ),
+            ),
+            Tool(
+                name="comfyui.admin.audit.export",
+                description=(
+                    "Export a bounded, filterable slice of the durable admin audit "
+                    "trail in append order."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "actor": {"type": "string", "maxLength": 128, "default": ""},
+                        "action": {"type": "string", "maxLength": 256, "default": ""},
+                        "outcomes": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["intent", "success", "failure"],
+                            },
+                            "maxItems": 3,
+                            "default": [],
+                        },
+                        "after": {
+                            "type": "string",
+                            "description": "UTC ISO-8601 lower bound (inclusive)",
+                            "maxLength": 64,
+                            "default": "",
+                        },
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                        "cursor": {
+                            "type": "string",
+                            "description": "Opaque next-page cursor from a prior call",
+                            "maxLength": 64,
+                            "default": "",
+                        },
+                    },
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                annotations=ToolAnnotations(
+                    read_only_hint=True,
+                    destructive_hint=False,
+                    idempotent_hint=True,
+                    open_world_hint=False,
+                ),
+            ),
+            *phase_o_surface,
+        ]
+
+    async def list_tools(
+        _ctx: ServerRequestContext[dict[str, object]],
+        _params: PaginatedRequestParams | None,
+    ) -> ListToolsResult:
+        tools = [
+            decorate_tool(tool)
+            for tool in _admin_tools()
+            if is_authorized(authorization.scopes, scopes_for_tool(tool.name))
+        ]
+        projected_tools, _canonical_by_external = _project_tools(tools)
+        return ListToolsResult(tools=projected_tools, cache_scope="private")
 
     async def call_tool(
         ctx: ServerRequestContext[dict[str, object]], params: CallToolRequestParams
@@ -620,6 +659,15 @@ def create_admin_server(
     async def _dispatch_tool_call(
         ctx: ServerRequestContext[dict[str, object]], params: CallToolRequestParams
     ) -> CallToolResult:
+        # Restore the canonical dotted name before authorization and dispatch
+        # so the dotted branches below stay untouched under portable names.
+        if portable_tool_names:
+            _, canonical_by_external = _project_tools(
+                [decorate_tool(tool) for tool in _admin_tools()]
+            )
+            canonical_name = canonical_by_external.get(params.name, params.name)
+            if canonical_name != params.name:
+                params = params.model_copy(update={"name": canonical_name})
         arguments = dict(params.arguments or {})
         context_request_id = "" if ctx.request_id is None else str(ctx.request_id)
         if not is_authorized(authorization.scopes, scopes_for_tool(params.name)):
