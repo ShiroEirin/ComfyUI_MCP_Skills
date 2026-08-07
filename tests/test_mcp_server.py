@@ -1800,6 +1800,10 @@ async def test_admin_workflow_validate_uses_owner_bound_repository(
     with sqlite3.connect(store.path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(
+            "INSERT INTO workflows(workflow_id, created_at) "
+                "VALUES ('w1', '2026-07-30T00:00:00+00:00')"
+        )
+        connection.execute(
             """INSERT INTO workflow_revisions(
                 revision_id, workflow_id, graph_json, parameter_schema_json,
                 dependency_contract_json, content_digest, created_at
@@ -2385,3 +2389,102 @@ async def test_history_suggest_counts_successful_parameter_values(
     failed = by_name["steps"]["values"][1]
     assert failed["value"] == "50"
     assert failed["success_rate"] == 0.0
+
+
+def test_history_suggest_handles_nested_snapshots_error_status_and_truncation(
+    tmp_path: Path,
+) -> None:
+    """Canonical planner snapshots ({arguments, resolved_inputs}) yield
+    suggestions; error status counts as failure; long values truncate."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from comfyui_mcp_skills.application.suggestions import SuggestionService
+
+    store = SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3")
+    store.initialize()
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO workflows(workflow_id, created_at) VALUES ('w1', ?)", (now,)
+        )
+        connection.execute(
+            """INSERT INTO workflow_revisions(
+                revision_id, workflow_id, graph_json, parameter_schema_json,
+                dependency_contract_json, content_digest, created_at
+            ) VALUES ('revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                      'w1', '{}', '{}', '{}',
+                      'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                      ?)""",
+            (now,),
+        )
+        connection.execute(
+            """INSERT INTO workflow_deployments(
+                deployment_id, workflow_id, revision_id, server_id, enabled,
+                validation_status, published, created_at
+            ) VALUES ('deployment_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+
+                      'w1',
+                      'revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                      'local', 1, 'valid', 1, ?)""",
+            (now,),
+        )
+        for index, status in enumerate([("completed"), ("error")], start=1):
+            plan_id = "plan_" + "c" * 62 + f"{index:02d}"
+            connection.execute(
+                """INSERT INTO execution_plans(
+                    plan_id, workflow_id, revision_id, deployment_id, server_id,
+                    resolved_inputs_json, input_digest, plan_digest, created_at
+                ) VALUES (?, 'w1',
+                          'revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          'deployment_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          'local', ?, ?, ?, ?)""",
+                (
+                    plan_id,
+                    json.dumps(
+                        {
+                            "arguments": {"prompt": "x"},
+                            "resolved_inputs": {
+                                "steps": 30,
+                                "long_text": "z" * 300,
+                                "cfg": 7.0,
+                            },
+                        }
+                    ),
+                    "d" * 62 + f"{index:02d}",
+                    "e" * 62 + f"{index:02d}",
+                    now,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO execution_plan_owners(
+                    plan_id, owner_id, revision_id, deployment_id, created_at
+                ) VALUES (?, 'owner-y',
+                          'revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          'deployment_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          ?)""",
+                (plan_id, now),
+            )
+            connection.execute(
+                """INSERT INTO jobs(
+                    job_id, workflow_id, plan_id, revision_id, deployment_id,
+                    owner_id, status, created_at, created_at_source,
+                    legacy_migrated, error, outputs_json, execution_origin
+                ) VALUES (?, 'w1', ?,
+                          'revision_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          'deployment_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                          'owner-y', ?, ?, 'suggest-test', 0, '', '[]', 'planned')""",
+                ("job_" + "c" * 31 + str(index), plan_id, status, now),
+            )
+
+    result = SuggestionService(store.path).suggest("owner-y")
+    assert result["scanned_jobs"] == 2
+    by_name = {item["parameter"]: item for item in result["suggestions"]}
+    steps = by_name["steps"]["values"][0]
+    assert steps["value"] == "30"
+    assert steps["runs"] == 2
+    assert steps["success_rate"] == 0.5  # one completed, one error
+    long_text = by_name["long_text"]["values"][0]
+    assert long_text["value"] == "z" * 256  # truncated, not dropped
+    assert long_text["runs"] == 2

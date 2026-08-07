@@ -34,9 +34,14 @@ class SuggestionService:
         tallies: dict[str, dict[str, dict[str, int]]] = {}
         for resolved_json, status in rows:
             try:
-                resolved = json.loads(resolved_json)
+                decoded = json.loads(resolved_json)
             except (json.JSONDecodeError, TypeError):
                 continue
+            if not isinstance(decoded, dict):
+                continue
+            # The planner stores {"arguments": ..., "resolved_inputs": ...};
+            # flat snapshots (pre-planner fixtures) are consumed as-is.
+            resolved = decoded.get("resolved_inputs", decoded)
             if not isinstance(resolved, dict):
                 continue
             success = status == "completed"
@@ -49,12 +54,13 @@ class SuggestionService:
                     rendered = "true" if value else "false"
                 elif isinstance(value, str):
                     rendered = value
-                    if not rendered or len(rendered) > _MAX_VALUE_LENGTH:
+                    if not rendered:
                         continue
                 elif isinstance(value, (int, float)):
                     rendered = str(value)
                 else:
                     continue
+                rendered = rendered[:_MAX_VALUE_LENGTH]
                 parameter = tallies.setdefault(name, {})
                 entry = parameter.setdefault(rendered, {"runs": 0, "successes": 0})
                 entry["runs"] += 1
@@ -97,7 +103,7 @@ class SuggestionService:
         if workflow_id:
             query += " AND j.workflow_id = ?"
             parameters.append(workflow_id)
-        query += " AND j.status IN ('completed', 'failed') LIMIT ?"
+        query += " AND j.status IN ('completed', 'failed', 'error') LIMIT ?"
         parameters.append(_SCAN_LIMIT)
         connection = sqlite3.connect(self._path, timeout=5.0)
         try:
