@@ -24,6 +24,7 @@
 1. `model_guidance` 内置数据（9 个模型家族 → sampler/scheduler/steps/CFG/resolution 社区共识）+ `comfyui.model.guidance` 工具（关键词匹配，未知输入不猜测）。
 2. `comfyui.job.history.suggest`（已交付）：从 execution_plans.resolved_inputs_json + jobs.status 统计证据（每参数值 runs + success_rate，≤20 参数 × ≤3 值，SQLite 门控）。
 3. 静态知识兜底 + 历史统计推荐双通道成立。Experiment/variant.rate 评分联动标记后续可选。
+4. **已知限制（多面部署）**：suggest 按调用方 principal 隔离；OMP 4 条目分面配置下（execution=local-stdio / authoring=author-a / operations=operator-a）跑图历史与建议查询跨 principal 不可见，suggest 返回空。单面部署（一个 MCP server 全工具面）无此限制。
 
 ### P2 工作流可视化（**已交付**）
 1. `comfyui.workflow.visualize`：Mermaid 渲染（≤50 节点 fail-loud、节点别名防注入、边来自输入连接、标签转义）。
