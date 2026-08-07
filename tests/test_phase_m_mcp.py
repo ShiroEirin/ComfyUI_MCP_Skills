@@ -53,7 +53,9 @@ def test_phase_m_declares_exact_bounded_execute_tools() -> None:
     assert set(tools) == PHASE_M_NAMES
     assert len(tools) == 7
     assert all(tool.input_schema["additionalProperties"] is False for tool in tools.values())
-    assert tools["comfyui.experiment.plan"].input_schema["properties"]["expansion"]["oneOf"]
+    assert tools["comfyui.experiment.plan"].input_schema["properties"]["expansion"][
+        "type"
+    ] == "object"
     assert (
         tools["comfyui.experiment.plan"].input_schema["properties"]["budgets"][
             "additionalProperties"

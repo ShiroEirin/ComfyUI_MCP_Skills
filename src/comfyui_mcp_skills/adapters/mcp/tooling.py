@@ -1860,45 +1860,8 @@ def phase_m_tools() -> list[Tool]:
         "type": "object",
     }
     expansion = {
-        "oneOf": [
-            {
-                "type": "object",
-                "properties": {"mode": {"enum": ["matrix"]}, "parameters": parameter_sets},
-                "required": ["mode", "parameters"],
-                "additionalProperties": False,
-            },
-            {
-                "type": "object",
-                "properties": {"mode": {"enum": ["zip"]}, "parameters": parameter_sets},
-                "required": ["mode", "parameters"],
-                "additionalProperties": False,
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "mode": {"enum": ["sample"]},
-                    "parameters": parameter_sets,
-                    "seed": {"type": "integer", "minimum": -(2**63), "maximum": 2**63 - 1},
-                    "count": {"type": "integer", "minimum": 1, "maximum": 10_000},
-                },
-                "required": ["mode", "parameters", "seed", "count"],
-                "additionalProperties": False,
-            },
-            {
-                "type": "object",
-                "properties": {
-                    "mode": {"enum": ["explicit"]},
-                    "variants": {
-                        "type": "array",
-                        "items": explicit_variant,
-                        "minItems": 1,
-                        "maxItems": 10_000,
-                    },
-                },
-                "required": ["mode", "variants"],
-                "additionalProperties": False,
-            },
-        ]
+        "type": "object",
+        "description": "One of matrix/zip/sample/explicit modes; validated server-side",
     }
     budgets = {
         "type": "object",
