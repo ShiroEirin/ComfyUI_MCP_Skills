@@ -414,9 +414,21 @@ class DiscoveryService:
         for label, candidate in candidates:
             try:
                 with os.scandir(candidate) as iterator:
-                    for entry in iterator:
+                    while True:
                         if scanned >= _PLUGIN_SCAN_BUDGET:
-                            truncated = True
+                            # Probe without processing: the probe consumes
+                            # one entry and is counted, so scanned_entries
+                            # always reflects real consumption.
+                            try:
+                                next(iterator)
+                                scanned += 1
+                                truncated = True
+                            except StopIteration:
+                                truncated = False
+                            break
+                        try:
+                            entry = next(iterator)
+                        except StopIteration:
                             break
                         scanned += 1
                         name = entry.name

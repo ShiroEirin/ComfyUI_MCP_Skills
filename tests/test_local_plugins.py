@@ -110,8 +110,8 @@ def test_scan_budget_is_total_direntry_budget(tmp_path: Path) -> None:
         (flat / f"plugin-{index}").mkdir()
     result = _service(root).plugins("local")
     assert result["truncated"] is True
-    assert result["scanned_entries"] == 201
-    assert result["total"] == 201  # all 201 budgeted entries were valid plugins
+    assert result["scanned_entries"] == 202  # 201 processed + 1 counted probe
+    assert result["total"] == 201  # all budgeted entries were valid plugins
     assert len(result["plugins"]) == 201
 
 
@@ -127,7 +127,7 @@ def test_bad_entries_consume_budget_and_total_is_lower_bound(tmp_path: Path) -> 
 
     result = _service(root).plugins("local")
     assert result["truncated"] is True
-    assert result["scanned_entries"] == 201
+    assert result["scanned_entries"] == 202  # 201 + counted probe
     assert result["total"] < 201  # invalid entries consumed part of the budget
     assert result["total"] == 100
 
@@ -373,3 +373,51 @@ def test_scan_oserror_reports_unreadable(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(_os, "scandir", fake_scandir)
     result = _service(root).plugins("local")
     assert result == {"available": False, "reason": "unreadable"}
+
+
+def test_probe_consumption_is_counted_and_handle_closed(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Budget exhaustion probes one entry (counted) and closes the handle."""
+    import os as _os
+
+    root = tmp_path / "root"
+    flat = root / "custom_nodes"
+    flat.mkdir(parents=True)
+    for index in range(202):
+        (flat / f"p-{index}").mkdir()
+
+    real_scandir = _os.scandir
+    calls = {"next": 0, "exit": 0}
+
+    class _CountingIterator:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            calls["exit"] += 1
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            calls["next"] += 1
+            return next(self._inner)
+
+    def fake_scandir(path):
+        inner = real_scandir(path)
+        return _CountingIterator(inner)
+
+    monkeypatch.setattr(_os, "scandir", fake_scandir)
+    result = _service(root).plugins("local")
+    # 201 processed + 1 probe (finds entry 202) = 202 next() calls; handle
+    # closed via __exit__.
+    assert calls["next"] == 202
+    assert calls["exit"] == 1
+    assert result["truncated"] is True
+    assert result["scanned_entries"] == 202
+    assert result["total"] == 201
