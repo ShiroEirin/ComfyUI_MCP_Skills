@@ -350,10 +350,11 @@ def _engine_history_projection(
     Engine history entries look like {prompt_id: {prompt, outputs,
     status: {completed, status_str}, ...}}; only the stable fields are
     projected so callers never see full prompt graphs or raw output metadata.
-    Outputs_count counts generated images across all output nodes. Entries
-    with a numeric/string created_at sort newest-first by that time; standard
-    engine payloads carry no created_at and fall back to reverse engine
-    insertion order (newest first).
+    Outputs_count counts generated media across output nodes (images, gifs,
+    audio, video — the JobService output contract). Entries with a
+    numeric/string created_at sort newest-first by that time; standard engine
+    payloads carry no created_at and fall back to reverse engine insertion
+    order (newest first).
     """
     raw = gateway.get_history_bounded(prompt_id=prompt_id, max_items=limit)
     if not isinstance(raw, dict):
