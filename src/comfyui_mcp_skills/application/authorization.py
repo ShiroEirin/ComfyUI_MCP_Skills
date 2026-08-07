@@ -108,6 +108,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.server.free": frozenset({Scope.OPERATE}),
     "comfyui.node.list": frozenset({Scope.OBSERVE}),
     "comfyui.node.blueprint": frozenset({Scope.OBSERVE}),
+    "comfyui.local.plugins": frozenset({Scope.OBSERVE}),
     "comfyui.workflow.visualize": frozenset({Scope.OBSERVE}),
     "comfyui.model.guidance": frozenset({Scope.OBSERVE}),
     "comfyui.job.history.suggest": frozenset({Scope.OBSERVE}),

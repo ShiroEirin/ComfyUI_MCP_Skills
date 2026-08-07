@@ -330,6 +330,16 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("blueprint", "node", "target", "inputs"),
     ),
     CapabilitySpec(
+        "comfyui.local.plugins",
+        "List local ComfyUI plugins",
+        "Custom-nodes plugin inventory from a locally configured "
+        "ComfyUI root; cloud sessions report unavailable.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("plugins", "custom_nodes", "local", "inventory"),
+    ),
+    CapabilitySpec(
         "comfyui.workflow.visualize",
         "Render a workflow as Mermaid",
         "Bounded Mermaid flowchart of one published workflow with aliased node ids.",

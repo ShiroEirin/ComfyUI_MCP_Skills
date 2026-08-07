@@ -1700,6 +1700,13 @@ def create_server(
                     lambda: suggestion_service.suggest(owner_id, workflow_id=workflow_id)
                 )
                 return tool_result(result)
+            if params.name == "comfyui.local.plugins":
+                validate_fixed_arguments(arguments, {"server_id"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.plugins(server_id)
+                )
+                return tool_result(result)
             if params.name == "comfyui.node.blueprint":
                 validate_fixed_arguments(arguments, {"server_id", "query", "limit"})
                 server_id = required_string(arguments, "server_id", max_length=128)

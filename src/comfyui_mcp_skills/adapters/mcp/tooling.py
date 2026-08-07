@@ -796,6 +796,36 @@ def fixed_tools() -> list[Tool]:
         "server_id": {"type": "string", "minLength": 1},
         "prompt_id": {"type": "string", "minLength": 1},
     }
+    plugins_output = {
+        "type": "object",
+        "properties": {
+            "available": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "server_id": {"type": "string"},
+            "layout": {"type": "string"},
+            "plugins": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "type_tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "readme": {"type": "string"},
+                    },
+                    "required": ["name", "type_tags"],
+                    "additionalProperties": False,
+                },
+            },
+            "total": {"type": "integer"},
+            "scanned_entries": {"type": "integer"},
+            "truncated": {"type": "boolean"},
+        },
+        "required": ["available"],
+        "additionalProperties": False,
+    }
     visualize_output = {
         "type": "object",
         "properties": {
@@ -1138,6 +1168,22 @@ def fixed_tools() -> list[Tool]:
                 "additionalProperties": False,
             },
             output_schema=suggest_output,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
+        Tool(
+            name="comfyui.local.plugins",
+            description=(
+                "List custom_nodes plugins from a locally configured ComfyUI "
+                "root (server entry local_root); cloud/unconfigured sessions "
+                "report available:false with a fixed reason."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {"server_id": {"type": "string", "minLength": 1}},
+                "required": ["server_id"],
+                "additionalProperties": False,
+            },
+            output_schema=plugins_output,
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
         Tool(

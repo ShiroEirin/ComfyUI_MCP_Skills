@@ -257,7 +257,14 @@ uv build
 
 ### 本地单机部署边界
 
-以下能力直接 proxy 引擎公共 API，不依赖控制平面存储：`queue.list`→`/queue`、`server.health`→`/system_stats`、`node.list/describe`→`/object_info`、`model.list`→`/models`、`template.list`/`subgraph.list`→`/userdata`、动态 `run_*`→`/prompt`、`asset.upload`→`/upload`。执行记录（`job.*`、幂等、Artifact 聚合、诊断/重试 lineage）是持久执行层而非引擎历史缓存——引擎 `/history` 只保留运行中/近期记录且引擎重启即失，因此 `job.list` 不退化为引擎历史 proxy。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
+以下能力直接 proxy 引擎公共 API，不依赖控制平面存储：`queue.list`→`/queue`、`server.health`→`/system_stats`、`node.list/describe`→`/object_info`、`model.list`→`/models`、`template.list`/`subgraph.list`→`/userdata`、动态 `run_*`→`/prompt`、`asset.upload`→`/upload`。执行记录（`job.*`、幂等、Artifact 聚合、诊断/重试 lineage）是持久执行层而非引擎历史缓存——引擎 `/history` 只保留运行中/近期记录且引擎重启即失，因此 `job.list` 不退化为引擎历史 proxy。`comfyui.local.plugins`（本地会话）从 server 条目配置的 `local_root` 读取 custom_nodes 插件清单（双布局兼容 aki 的 `ComfyUI/custom_nodes` 与标准 `custom_nodes`，有界扫描 + reparse/symlink 拒绝 + TOCTOU 复核）；云端/未配置会话返回 `available:false` 固定原因码。aki 等第三方整合包接入示例：
+
+```json
+{"servers": [{"id": "aki", "name": "Aki ComfyUI", "url": "http://127.0.0.1:8188",
+              "local_root": "D:\\ConfyUI-aki\\ComfyUI-aki-v1.6"}]}
+```
+
+本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
 
 Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。
 

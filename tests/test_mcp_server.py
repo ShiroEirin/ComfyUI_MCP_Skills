@@ -446,6 +446,7 @@ async def test_read_only_discovery_tools_are_paginated(tmp_path: Path) -> None:
             "comfyui.node.list",
             "comfyui.node.describe",
             "comfyui.model.list",
+            "comfyui.local.plugins",
         } <= names
         health = await client.call_tool("comfyui.server.health", {"server_id": "local"})
         nodes = await client.call_tool(
@@ -577,6 +578,7 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
             "comfyui.node.list",
             "comfyui.node.describe",
             "comfyui.model.list",
+            "comfyui.local.plugins",
         }
         assert all(tool.title for tool in listed.tools)
         assert all(tool.icons for tool in listed.tools)

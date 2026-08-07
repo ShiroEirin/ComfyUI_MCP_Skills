@@ -627,6 +627,7 @@ def create_admin_server(
                     "comfyui.node.list",
                     "comfyui.node.describe",
                     "comfyui.model.list",
+                    "comfyui.local.plugins",
                 }
             ],
         ]
@@ -718,6 +719,13 @@ def create_admin_server(
                     lambda: discovery.models(
                         server_id, kind=kind, query=query, limit=limit, cursor=cursor
                     )
+                )
+                return _result(result)
+            if params.name == "comfyui.local.plugins":
+                _validate_keys(arguments, {"server_id"})
+                server_id = _required_string(arguments, "server_id")
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.plugins(server_id)
                 )
                 return _result(result)
             if params.name == "comfyui.admin.workflow.import":

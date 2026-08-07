@@ -2,15 +2,119 @@
 
 from __future__ import annotations
 
+import os
 import re
+import stat
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
+from comfyui_mcp_skills.application.assets import same_file_stat
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.errors import WorkflowArgumentsError, WorkflowNotFound
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+
+_PLUGIN_SCAN_BUDGET = 201
+_PLUGIN_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
+_README_MAX_BYTES = 4 * 1024
+_README_MAX_CHARS = 200
+_PLUGIN_TYPE_TAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("anima", ("anima",)),
+    ("sampler", ("sampler", "flsampler", "wavespeed")),
+    ("upscale", ("upscale", "ultimatesdupscale", "vsr")),
+    ("controlnet", ("controlnet", "ipadapter")),
+    ("llm", ("llm", "gpt", "janus")),
+    ("translate", ("translate", "translation")),
+    ("impact", ("impact", "segment", "detect")),
+    ("essentials", ("essentials", "easy-use", "efficiency", "rgthree")),
+)
+
+
+def _is_reparse_or_link(path: Path) -> bool:
+    """Reject Windows reparse points (junctions) and symlinks."""
+    try:
+        result = path.lstat()
+    except OSError:
+        return True
+    if stat.S_ISLNK(result.st_mode):
+        return True
+    attributes = getattr(result, "st_file_attributes", 0)
+    if attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+        return True
+    return False
+
+
+def _path_is_safe_directory(path: Path) -> bool:
+    """A directory whose raw path and every un-resolved component are real,
+    non-reparse, non-symlink directories."""
+    raw = path if path.is_absolute() else path.absolute()
+    current = raw
+    parts: list[Path] = []
+    while current != current.parent:
+        parts.append(current)
+        current = current.parent
+    for component in parts:
+        if _is_reparse_or_link(component):
+            return False
+    try:
+        resolved = raw.resolve(strict=True)
+    except OSError:
+        return False
+    if not resolved.is_dir():
+        return False
+    return True
+
+
+def _clean_readme_line(content: bytes) -> str:
+    text = content.decode("utf-8", errors="replace")
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    cleaned = "".join(
+        char for char in first_line if char.isprintable() or char in " \t"
+    )
+    cleaned = re.sub(r"[A-Za-z]:[\\/]|\b(?:[A-Za-z0-9_\-]+[\\/]){2,}", "", cleaned)
+    return cleaned.strip()[:_README_MAX_CHARS]
+
+
+def _plugin_entry(directory: Path) -> dict[str, Any]:
+    """One plugin: name, keyword type tags, and a bounded README first line."""
+    name = directory.name
+    lowered = name.casefold()
+    tags = [
+        label
+        for label, keywords in _PLUGIN_TYPE_TAGS
+        if any(keyword in lowered for keyword in keywords)
+    ][:4]
+    if not tags:
+        tags = ["custom"]
+    plugin: dict[str, Any] = {"name": name, "type_tags": tags}
+    for readme_name in ("README.md", "README", "readme.md"):
+        readme_path = directory / readme_name
+        if not readme_path.is_file() or _is_reparse_or_link(readme_path):
+            continue
+        if not stat.S_ISREG(readme_path.lstat().st_mode):
+            continue
+        try:
+            expected = readme_path.resolve(strict=True).stat()
+            with readme_path.open("rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if not same_file_stat(expected, opened):
+                    continue  # swapped while opening; skip rather than trust
+                content = handle.read(_README_MAX_BYTES)
+                after = os.fstat(handle.fileno())
+                current = readme_path.resolve(strict=True).stat()
+                if not same_file_stat(opened, after) or not same_file_stat(
+                    opened, current
+                ):
+                    continue
+        except OSError:
+            continue
+        summary = _clean_readme_line(content)
+        if summary:
+            plugin["readme"] = summary
+        break
+    return plugin
 
 _BLUEPRINT_MAX_FIELDS = 8
 _BLUEPRINT_MAX_ENUM_VALUES = 8
@@ -241,6 +345,83 @@ class DiscoveryService:
         page = self._page(values, query=query, limit=limit, cursor=cursor)
         page["kind"] = kind
         return page
+
+    def plugins(self, server_id: str) -> dict[str, Any]:
+        """List custom_nodes plugins from a locally configured ComfyUI root.
+
+        This is the local-session channel: the server entry must configure
+        ``local_root`` (the ComfyUI installation root, e.g. an aki bundle);
+        without it, or when the root is unsafe/unreadable, the tool reports
+        ``available: false`` with a fixed reason code and never fabricates
+        success. Cloud sessions (no local file access) get the same fallback.
+        """
+        connection = self._servers.connection(server_id)
+        local_root = connection.get("local_root")
+        if not isinstance(local_root, str) or not local_root.strip():
+            return {"available": False, "reason": "no_local_root"}
+        root = Path(local_root).expanduser()
+        if not root.exists():
+            return {"available": False, "reason": "root_not_found"}
+        if not root.is_dir():
+            return {"available": False, "reason": "root_not_directory"}
+        if not _path_is_safe_directory(root):
+            return {"available": False, "reason": "root_unsafe"}
+        candidates = [
+            root / "ComfyUI" / "custom_nodes",
+            root / "custom_nodes",
+        ]
+        valid_candidates: list[tuple[str, Path]] = []
+        for label, candidate in zip(("nested", "flat"), candidates, strict=True):
+            if _path_is_safe_directory(candidate) and candidate.is_dir():
+                valid_candidates.append((label, candidate))
+        if not valid_candidates:
+            return {
+                "available": True,
+                "layout": "none",
+                "plugins": [],
+                "total": 0,
+                "scanned_entries": 0,
+                "truncated": False,
+            }
+        layout = (
+            "merged"
+            if len(valid_candidates) == 2
+            else valid_candidates[0][0]
+        )
+        plugins: dict[str, dict[str, Any]] = {}
+        scanned = 0
+        truncated = False
+        for label, candidate in valid_candidates:
+            if truncated:
+                break
+            try:
+                entries = list(candidate.iterdir())
+            except OSError:
+                return {"available": False, "reason": "unreadable"}
+            for entry in entries:
+                if scanned >= _PLUGIN_SCAN_BUDGET:
+                    truncated = True
+                    break
+                scanned += 1
+                name = entry.name
+                if not _PLUGIN_NAME.fullmatch(name):
+                    continue
+                if not _path_is_safe_directory(entry) or not entry.is_dir():
+                    continue
+                key = name.casefold()
+                if label == "flat" and key in plugins:
+                    continue  # nested layout wins the casefolded name
+                plugins[key] = _plugin_entry(entry)
+        ordered = [plugins[key] for key in sorted(plugins)]
+        return {
+            "available": True,
+            "server_id": server_id,
+            "layout": layout,
+            "plugins": ordered,
+            "total": len(ordered),
+            "scanned_entries": scanned,
+            "truncated": truncated,
+        }
 
     @staticmethod
     def _page(
