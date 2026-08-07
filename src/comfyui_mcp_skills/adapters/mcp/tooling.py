@@ -1848,17 +1848,8 @@ def phase_m_tools() -> list[Tool]:
         "maxLength": 128,
         "pattern": r"^(?!.*[\r\n])variant_[A-Za-z0-9_-]{1,120}$",
     }
-    parameter_name = {
-        "type": "string",
-        "minLength": 1,
-        "maxLength": 128,
-        "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
-    }
     parameter_sets = {
         "type": "object",
-        "minProperties": 1,
-        "maxProperties": 64,
-        "propertyNames": parameter_name,
         "additionalProperties": {
             "type": "array",
             "minItems": 1,
@@ -1867,27 +1858,25 @@ def phase_m_tools() -> list[Tool]:
     }
     explicit_variant = {
         "type": "object",
-        "maxProperties": 64,
-        "propertyNames": parameter_name,
     }
     expansion = {
         "oneOf": [
             {
                 "type": "object",
-                "properties": {"mode": {"const": "matrix"}, "parameters": parameter_sets},
+                "properties": {"mode": {"enum": ["matrix"]}, "parameters": parameter_sets},
                 "required": ["mode", "parameters"],
                 "additionalProperties": False,
             },
             {
                 "type": "object",
-                "properties": {"mode": {"const": "zip"}, "parameters": parameter_sets},
+                "properties": {"mode": {"enum": ["zip"]}, "parameters": parameter_sets},
                 "required": ["mode", "parameters"],
                 "additionalProperties": False,
             },
             {
                 "type": "object",
                 "properties": {
-                    "mode": {"const": "sample"},
+                    "mode": {"enum": ["sample"]},
                     "parameters": parameter_sets,
                     "seed": {"type": "integer", "minimum": -(2**63), "maximum": 2**63 - 1},
                     "count": {"type": "integer", "minimum": 1, "maximum": 10_000},
@@ -1898,7 +1887,7 @@ def phase_m_tools() -> list[Tool]:
             {
                 "type": "object",
                 "properties": {
-                    "mode": {"const": "explicit"},
+                    "mode": {"enum": ["explicit"]},
                     "variants": {
                         "type": "array",
                         "items": explicit_variant,
@@ -1947,7 +1936,7 @@ def phase_m_tools() -> list[Tool]:
                         "type": "string",
                         "pattern": r"^(?!.*[\r\n])preset_[A-Za-z0-9_-]{1,120}$",
                     },
-                    "base_arguments": {"type": "object", "maxProperties": 64},
+                    "base_arguments": {"type": "object"},
                     "budgets": budgets,
                     "failure_policy": {
                         "type": "string",
@@ -2075,9 +2064,6 @@ def phase_m_tools() -> list[Tool]:
                     "rubric_version": identifier,
                     "scores": {
                         "type": "object",
-                        "minProperties": 1,
-                        "maxProperties": 32,
-                        "propertyNames": parameter_name,
                         "additionalProperties": {
                             "type": "number",
                             "minimum": -1_000_000,
