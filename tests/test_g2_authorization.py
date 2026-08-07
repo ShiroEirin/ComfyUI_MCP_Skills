@@ -24,6 +24,20 @@ def test_authorization_matrix_keeps_execution_and_operations_separate() -> None:
     assert not tool_visible("comfyui.job.get", Toolset.AUTHORING, frozenset({Scope.AUTHOR}))
 
 
+def test_node_catalog_tools_visible_to_authoring_and_admin() -> None:
+    """Workflow-modifying surfaces need node knowledge: AUTHORING and ADMIN
+    must see the node/model catalog tools (authorization alignment P0-1)."""
+    admin_granted = frozenset(
+        {Scope.OBSERVE, Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}
+    )
+    authoring_granted = frozenset({Scope.OBSERVE, Scope.AUTHOR})
+    for name in ("comfyui.node.list", "comfyui.node.describe", "comfyui.model.list"):
+        assert tool_visible(name, Toolset.OPERATIONS, frozenset({Scope.OBSERVE}))
+        assert tool_visible(name, Toolset.AUTHORING, authoring_granted)
+        assert tool_visible(name, Toolset.ADMIN, admin_granted)
+        assert not tool_visible(name, Toolset.EXECUTION, frozenset({Scope.EXECUTE}))
+
+
 def test_stdio_defaults_to_local_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "COMFYUI_MCP_PRINCIPAL_ID",

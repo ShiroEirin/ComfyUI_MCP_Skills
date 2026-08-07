@@ -136,7 +136,9 @@ def create_admin_server(
         "mcp.tool.duration", unit="s", description="MCP tool invocation duration"
     )
     authorization = authorization or AuthorizationContext(
-        actor, frozenset({Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}), Toolset.ADMIN
+        actor,
+        frozenset({Scope.OBSERVE, Scope.CONFIGURE, Scope.PROVISION, Scope.AUDIT}),
+        Toolset.ADMIN,
     )
     owner_id = authorization.principal_id
     file_workflow_available = True
