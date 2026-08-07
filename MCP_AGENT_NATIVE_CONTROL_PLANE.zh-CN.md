@@ -149,7 +149,7 @@ comfyui.run.<server>.<workflow>
 | `execution` | 默认 `comfyui:execute` | 执行、Job、Asset、Experiment、Routing |
 | `authoring` | `comfyui:observe,comfyui:author` + 高风险开关 | Workflow、Revision、diff、依赖检查 |
 | `operations` | `comfyui:observe,comfyui:operate` + 高风险开关 | Server、Queue、Log、Runtime |
-| `admin` | `comfyui:configure,comfyui:provision,comfyui:audit` + 独立 Admin | 配置、供应、审批、审计 |
+| `admin` | `comfyui:observe,comfyui:configure,comfyui:provision,comfyui:audit` + 独立 Admin | 配置、供应、审批、审计、节点/模型/插件只读目录 |
 
 授权不等于存储切换。没有对应 SQLite cutover 时，工具可能不出现在工具面，或明确返回 backend unavailable。
 
@@ -454,6 +454,12 @@ comfyui:observe
 | `comfyui.model.describe` | 读取模型元数据、引用工作流、哈希和可用服务器 |
 | `comfyui.node.compatibility` | 检查节点端口、版本和替换关系 |
 | `comfyui.server.capabilities` | 探测可选 API、Manager 和版本能力 |
+| `comfyui.engine.history` | 只读引擎历史（8 MiB 有界 + 扁平投影） |
+| `comfyui.node.blueprint` | 目标驱动节点投影（≤10 节点 × ≤8 字段 + 枚举） |
+| `comfyui.model.guidance` | 模型家族静态起点（sampler/steps/CFG/resolution） |
+| `comfyui.job.history.suggest` | 本地运行历史证据建议（SQLite run store 门控） |
+| `comfyui.workflow.visualize` | 已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite 门控） |
+| `comfyui.local.plugins` | 本地 custom_nodes 插件清单（server 条目 `local_root`；云端降级 `available:false`） |
 
 > 未交付（设计蓝图表）：`comfyui.template.subgraph.list`、`comfyui.model.describe`、`comfyui.node.compatibility` 未实现。`comfyui.workflow.list` 已实现（分页 + `query`/`include_disabled` 过滤，`describe` 附加部署事实）。子图/节点/模型信息由 `comfyui.subgraph.list`、`comfyui.node.list/describe`、`comfyui.model.list` 提供。
 
@@ -545,6 +551,8 @@ comfyui:author
 
 继续使用 `comfyui:configure`，新增：
 
+> Admin 面还挂载只读目录工具（`comfyui:observe` 可见）：`comfyui.node.list`、`comfyui.node.describe`、`comfyui.model.list`、`comfyui.local.plugins`——供改工作流时查询节点/模型/插件知识。
+
 | Tool | 用途 |
 |---|---|
 | `comfyui.admin.server.upsert` | 新增或更新服务器配置 |
@@ -615,12 +623,13 @@ comfyui:provision
 | Tool | 用途 |
 |---|---|
 | `comfyui.workflow.describe` | 返回语义摘要、拓扑、参数、依赖和输出契约 |
-| `comfyui.admin.workflow.change.plan` | 解析领域图操作，返回 diff、验证结果和 plan digest |
+| `comfyui.admin.workflow.change.plan` | 解析领域图操作，返回 diff、验证结果和 plan digest；校验失败消息带 `node <id> field <field>` 定位 + describe hint（已知类带 class_type 指向 `comfyui.node.describe`，未知类指向 `comfyui.node.list`） |
 | `comfyui.admin.workflow.change.commit` | 提交未过期且 revision 未冲突的 change plan |
-| `comfyui.workflow.revision.list` | 分页列出 Revision |
-| `comfyui.workflow.revision.diff` | 返回两个 Revision 的结构化差异 |
-| `comfyui.admin.workflow.revision.publish` | 将草稿 Revision 发布为动态 Tool 当前版本 |
-| `comfyui.admin.workflow.revision.rollback` | 基于历史 Revision 创建新的回滚提交 |
+| `comfyui.revision.list` | 分页列出 Revision |
+| `comfyui.revision.diff` | 返回两个 Revision 的结构化差异；输出含 mermaid 视图（added 节点高亮）；`change.plan` 的 diff 不含 mermaid |
+| `comfyui.admin.workflow.publish` | 将草稿 Revision 发布为动态 Tool 当前版本 |
+| `comfyui.admin.workflow.rollback` | 基于历史 Revision 创建新的回滚提交 |
+| `comfyui.workflow.visualize` | 已发布工作流有界 Mermaid 渲染（≤50 节点、节点别名防注入；SQLite workflow store 门控） |
 | `comfyui.workflow.preset.list` | 分页列出参数 preset 及继承关系（未交付） |
 | `comfyui.admin.workflow.preset.upsert` | 创建或更新版本化 preset（未交付；preset 固化经 `experiment.variant.promote` 交付） |
 
@@ -819,8 +828,8 @@ POLICY_DENIED
 
 | 部署 Toolset | 主要工具 | 单端点活动面目标 |
 |---|---|---|
-| Execute | 动态 run、Job、Asset、Execution Plan（`workflow.execute` 未实现） | 8–16 个固定工具；动态工作流默认 8 个，可配置 1–128 |
-| Observe/Ops | Queue、Log、Diagnostic、Runtime | 8–14 个 |
+| Execute | 动态 run、Job、Asset、Execution Plan（`workflow.execute` 未实现） | 固定工具 ≤ 硬上限 32（`HARD_FIXED_LIMIT`）；动态工作流默认 8 个，可配置 1–128 |
+| Observe/Ops | Queue、Log、Diagnostic、Runtime、节点感知/建议工具 | base surface ≤ 25（预算测试断言）；全量装配 29–30；固定工具默认预算 `DEFAULT_FIXED_LIMIT=24`、硬上限 `HARD_FIXED_LIMIT=32` |
 | Authoring | Workflow、Graph、Revision、Template | 8–16 个 |
 | Admin/Provision | Server、Config、Dependency、Policy、Audit | 8–16 个 |
 
@@ -1674,6 +1683,9 @@ Published Revision + arguments + Asset URI
 - Prompt 与 Resource Template 参数的 `completion/complete`；不宣称支持 Tool 参数补全
 - OAuth 2.1、JWT/JWKS 或 Token Introspection 中至少一种生产认证（本切片交付 RFC 7662 Token Introspection）
 - 同主机多 worker SQLite 共享限流、保留策略与审计闭环（append-only 事件存储 + `admin.audit.get/retry/export` 有界过滤导出）
+- 节点感知与建议工具：`node.blueprint`（目标驱动投影）、`model.guidance`（模型家族静态起点）、`job.history.suggest`（运行历史证据建议）、`workflow.visualize`（有界 Mermaid）与 `revision.diff` mermaid 视图（added 高亮；`change.plan` 的 diff 不含）；`change.plan` 校验失败带 node/field 定位与 describe hint
+- 引擎历史与本地插件：`engine.history`（有界引擎历史）、`local.plugins`（server 条目 `local_root` 本地 custom_nodes 清单，云端降级）
+- admin portable 工具名（`COMFYUI_MCP_PORTABLE_TOOL_NAMES=1` 对 comfyui-mcp-admin 同样生效：下划线投影 + 碰撞拒绝 + canonical 分发）；node/model/插件目录工具在 AUTHORING 与 ADMIN 面可见（授权对齐）
 - MCP Apps 只读 Job 查看器（可选图库、实验对比与 Job 监视器未交付）
 
 尚未交付（后续计划，不得按现有能力使用）：
@@ -2152,7 +2164,7 @@ Anthropic 指出，工具定义和中间结果会形成显著上下文成本。�
 
 **如果把本文所有工具和动态工作流一次性暴露给 Agent，压力一定过大。**
 
-当前蓝图正文已经出现 74 个唯一 `comfyui.*` 契约名称，尚未计算每个工作流生成的动态 Tool。这进一步说明：74 项是后端能力目录，不应等同于单次 `tools/list` 返回值。
+当前蓝图正文已经出现 81 个唯一 `comfyui.*` 契约名称，尚未计算每个工作流生成的动态 Tool。这进一步说明：74 项是后端能力目录，不应等同于单次 `tools/list` 返回值。
 
 问题不是 Agent 是否“足够聪明”，而是：
 

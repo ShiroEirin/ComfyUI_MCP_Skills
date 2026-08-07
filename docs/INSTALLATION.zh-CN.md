@@ -79,6 +79,7 @@ D:/comfyui-mcp-workspace/
 | `url` | ComfyUI HTTP Origin，不包含凭据 |
 | `enabled` | 是否参与发现和执行 |
 | `default_server` | 未显式指定服务器时使用的默认 ID |
+| `local_root` | 可选，本地 ComfyUI 安装根目录（如 aki 整合包 `D:\\ConfyUI-aki\\ComfyUI-aki-v1.6`）；供 `comfyui.local.plugins` 扫描 custom_nodes，未配置/不可用时该工具报告 `available:false` |
 
 工作流目录结构：
 
@@ -162,6 +163,8 @@ comfyui.run.local.txt2img
 }
 ```
 
+`comfyui-mcp-admin` 同样接受 `COMFYUI_MCP_PORTABLE_TOOL_NAMES=1`：admin 工具名做同款下划线投影（如 `comfyui_admin_workflow_import`），命名碰撞拒绝列出，调用时反向映射回点号名后按既有分发处理，与主服务面行为一致。
+
 服务将暴露：
 
 ```text
@@ -196,7 +199,7 @@ COMFYUI_MCP_SCOPES=comfyui:execute
 | `execution` | `comfyui:execute` | 工作流执行、Job、Asset、Experiment、路由 |
 | `authoring` | `comfyui:observe,comfyui:author` | 工作流理解、Revision 和依赖检查 |
 | `operations` | `comfyui:observe,comfyui:operate` | Server、Queue、Log 和运行时控制 |
-| `admin` | `comfyui:configure,comfyui:provision,comfyui:audit` | 独立管理面 |
+| `admin` | `comfyui:observe,comfyui:configure,comfyui:provision,comfyui:audit` | 独立管理面（含节点/模型/插件只读目录） |
 
 显式配置必须同时提供主体、Toolset 和 scopes：
 
@@ -259,7 +262,7 @@ comfyui-mcp-admin
 uv run comfyui-mcp-admin
 ```
 
-Admin 覆盖 Workflow、Server、Config、Dependency、Approval、Provisioning 和 Audit。危险操作采用预览、摘要绑定、确认和审计约束。不要把 Admin 进程配置给不受信任 Agent。
+Admin 覆盖 Workflow、Server、Config、Dependency、Approval、Provisioning 和 Audit；同时挂载只读目录工具 `comfyui.node.list`、`comfyui.node.describe`、`comfyui.model.list`、`comfyui.local.plugins`（`comfyui:observe` 可见）。危险操作采用预览、摘要绑定、确认和审计约束。不要把 Admin 进程配置给不受信任 Agent。
 
 ## 9. Streamable HTTP 部署
 

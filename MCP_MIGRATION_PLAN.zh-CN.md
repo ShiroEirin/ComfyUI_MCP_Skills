@@ -832,7 +832,7 @@ POST /mcp
 - 依赖安装。
 - 审批、审计与 Provisioning。
 
-> 实现说明：队列清理（`queue.clear/remove` 需 `comfyui:operate`）与完整日志（`log.read` 需 `comfyui:observe`）位于 Operations Toolset，不在独立 Admin 面（Admin 只含 `comfyui.admin.*` 工具）。
+> 实现说明：队列清理（`queue.clear/remove` 需 `comfyui:operate`）与完整日志（`log.read` 需 `comfyui:observe`）位于 Operations Toolset，不在独立 Admin 面；Admin 面除 `comfyui.admin.*` 外还挂载只读目录工具 `comfyui.node.list`、`comfyui.node.describe`、`comfyui.model.list`、`comfyui.local.plugins`。
 
 管理工具需要：
 
@@ -958,6 +958,7 @@ mcp = ">=2,<3"
 - **O**：owner-bound Server 配置、Config Bundle、审批和依赖供应编排。
 - **P**：队列删除/清理、服务中断和重启影响预览；即时 `server.free` 暴露但强制 intent-first 审计与 `request_id` 幂等（重复执行被拒绝）。
 - **Q**：OAuth introspection 主体/受众绑定、预认证限流、owner-aware Server 连接、Revision 隔离、路由 commit fencing 和发布安全收口。
+- 后续切片（2026-08-07 已交付）：引擎历史 `engine.history`（有界 + 扁平投影）、节点感知 `node.blueprint`/`model.guidance`/`job.history.suggest`、可视化 `workflow.visualize` 与 `revision.diff` mermaid 视图、第三方整合包兼容 `local.plugins`（server 条目 `local_root`）、`change.plan` 校验失败定位与 hint、admin portable 工具名（`COMFYUI_MCP_PORTABLE_TOOL_NAMES` 对 admin 面同样生效）、node/model/插件目录工具在 AUTHORING 与 ADMIN 面可见（授权对齐）。
 
 阶段 G–Q 的验收覆盖 owner 隔离、并发幂等、迁移升级、MCP schema、HTTP 安全边界、真实 ComfyUI 推理及输出校验。
 
@@ -1011,7 +1012,7 @@ uv build
 
 当前结果：
 
-- 856 个测试通过、1 个跳过、2 个 subtest 通过（含 `otel` extra；未安装 `otel` extra 的环境为 850 通过、7 跳过）；语句覆盖率超过 80% 门禁。
+- 938 个测试通过、1 个跳过、2 个 subtest 通过（含 `otel` extra；未安装 `otel` extra 的环境为 932 通过、7 跳过）；语句覆盖率超过 80% 门禁。
 - Ruff 与 Mypy 通过。
 - `pip-audit` 未发现第三方依赖已知漏洞。
 - sdist 与 wheel 构建成功；wheel 包含 MCP 和兼容 CLI 两套入口。

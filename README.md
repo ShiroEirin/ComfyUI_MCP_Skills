@@ -242,7 +242,7 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`881 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试；未安装 `otel` extra 的环境对应为 `875 passed, 7 skipped`——6 个 SDK 集成测试与 1 个 Windows 符号链接用例跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`938 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试，6 个 SDK 集成测试从跳过转为通过；未安装 `otel` extra 的环境对应为 `932 passed, 7 skipped`——6 个 SDK 集成测试与 1 个 Windows 符号链接用例跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
@@ -264,7 +264,7 @@ uv build
               "local_root": "D:\\ConfyUI-aki\\ComfyUI-aki-v1.6"}]}
 ```
 
-本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
+本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。`comfyui.workflow.visualize`：已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite Workflow store 门控）；`revision.diff` 输出含 mermaid 视图（added 节点高亮），`change.plan` 的 diff 不含。`comfyui.model.guidance`：社区共识的模型家族采样器/调度器/steps/CFG/分辨率起点（9 个家族，静态数据，非引擎保证）。`comfyui.job.history.suggest`：基于本地运行历史的证据驱动参数建议（SQLite run store 门控、256 截断、仅本 principal 面可见）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
 
 Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。
 

@@ -78,7 +78,7 @@ comfyui.capability.describe
 
 单端点工具数量有硬上限；动态工作流也有数量边界。工具排序确定，便于 MCP Host 缓存。
 
-节点感知与建议工具（均已交付，OBSERVE 只读面，AUTHORING/ADMIN 可见）：
+节点感知与建议工具（均已交付，OBSERVE 只读面，OPERATIONS/AUTHORING/ADMIN 可见，EXECUTION 面不可见）：
 
 - `comfyui.node.list` / `comfyui.node.describe` / `comfyui.model.list`：节点/模型目录（AUTHORING 与 ADMIN 面可见，供改工作流时查节点）。
 - `comfyui.node.blueprint`：目标驱动紧凑投影（≤10 节点 × ≤8 字段 × ≤8 枚举）。
@@ -86,6 +86,7 @@ comfyui.capability.describe
 - `comfyui.job.history.suggest`：本地运行历史证据（resolved_inputs + job 状态统计，SQLite 门控）。
 - `comfyui.workflow.visualize`：已发布工作流 Mermaid 渲染（≤50 节点，SQLite 门控）；`revision.diff` 附带 mermaid 视图（added 节点高亮）。
 - `comfyui.engine.history`：引擎 `/history` 只读直连（8 MiB 有界 + 扁平投影；`job.list` 保持 owner-bound 持久执行记录契约）。
+- `comfyui.local.plugins`：本地 custom_nodes 插件清单（server 条目 `local_root` 配置；双布局 nested/flat 兼容 aki 与标准、201 目录项预算、reparse/junction 拒绝、README 首行有界）；云端/未配置会话降级返回 `available:false` + 固定 reason 枚举码。OPERATIONS/AUTHORING/ADMIN 可见，EXECUTION 不可见。
 
 修复引导：`admin.workflow.change.plan` 校验失败消息带 node/field 定位与 `comfyui.node.describe` hint。
 
@@ -208,7 +209,7 @@ comfyui.admin.workflow.publish
 comfyui.admin.workflow.rollback
 ```
 
-file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.delete` 在 workflow aggregate cutover 前可用；**cutover 后文件仓库被封存，这两个工具从 `tools/list` 移除**（直接构造名称调用返回 Unknown tool），审计工具（`audit.get/retry/export`）保持可用。
+file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.delete` 在 workflow aggregate cutover 前可用；**cutover 后文件仓库被封存，这两个工具从 `tools/list` 移除**（直接构造名称调用返回不可用错误 `Workflow admin unavailable after cutover`），审计工具（`audit.get/retry/export`）保持可用。
 
 `comfyui.admin.workflow.validate` 已实现：图校验 + 语义校验 + 参数目标校验 + 输入 schema 构建，并对照模型库存报告缺失模型；模型库存不可读时如实返回 `folder_errors` 且 `is_ready=false`，绝不伪装成功。
 
