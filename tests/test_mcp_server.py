@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import re
 import time
@@ -1697,3 +1698,160 @@ async def test_bad_schema_is_isolated_and_legacy_ui_parameters_are_exposed(
     assert "Skipping workflow local/bad" in caplog.text
     assert "Skipping workflow local/invalid-schema" in caplog.text
     assert legacy_tool.input_schema["required"] == ["prompt"]
+
+
+def _copy_file_workflow_to_sqlite(base_dir: Path, store: SQLiteControlPlaneStore) -> None:
+    """Import the file-backed txt2img workflow into the SQLite store (G3 cutover)."""
+    from comfyui_mcp_skills.infrastructure.persistence.g3_migration import (
+        build_g3_import_plan,
+        cutover_g3_import_plan,
+    )
+
+    cutover_g3_import_plan(build_g3_import_plan(base_dir), store)
+
+
+def _seed_owner_overlay_for(
+    base_dir: Path, store: SQLiteControlPlaneStore, deployment_id: str
+) -> None:
+    """Insert the minimal owner overlay chain referencing one deployment."""
+    import sqlite3
+
+    owner = "alice"
+    now = "2026-08-07T00:00:00+00:00"
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """INSERT INTO server_change_plans(
+                plan_id,plan_digest,owner_id,operation,server_id,changes_json,
+                expected_revision,impact_json,created_at,expires_at,resource_uri
+            ) VALUES ('plan_a','{digest}','{owner}','upsert','local','{{}}',0,'{{}}',?,?,'comfyui://servers/local')""".format(
+                digest="a" * 64, owner=owner
+            ),
+            (now, "2026-08-08T00:00:00+00:00"),
+        )
+        connection.execute(
+            """INSERT INTO server_revisions(
+                server_id,owner_id,revision,lifecycle_status,config_json,config_digest,
+                plan_id,created_at
+            ) VALUES ('local','{owner}',1,'active','{{}}','{digest}','plan_a',?)""".format(
+                owner=owner, digest="b" * 64
+            ),
+            (now,),
+        )
+        connection.execute(
+            """INSERT INTO managed_servers(
+                server_id,owner_id,current_revision,current_digest,lifecycle_status,
+                created_at,updated_at
+            ) VALUES ('local','{owner}',1,'{digest}','active',?,?)""".format(
+                owner=owner, digest="b" * 64
+            ),
+            (now, now),
+        )
+        connection.execute(
+            """INSERT INTO config_workflow_deployments(
+                owner_id,deployment_id,server_id,workflow_id
+            ) VALUES (?, ?, 'local', 'txt2img')""",
+            (owner, deployment_id),
+        )
+        connection.execute(
+            """INSERT INTO config_workflow_states(
+                owner_id,server_id,workflow_id,enabled,updated_at
+            ) VALUES (?, 'local', 'txt2img', 1, ?)""",
+            (owner, now),
+        )
+        connection.execute(
+            "INSERT INTO config_workflow_snapshots(owner_id,updated_at) VALUES (?, ?)",
+            (owner, now),
+        )
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_validate_uses_owner_bound_repository(
+    tmp_path: Path,
+) -> None:
+    """validate resolves through the owner overlay like import/change does:
+    an owner-referenced unpublished deployment is validatable."""
+    import sqlite3
+    from unittest.mock import MagicMock
+
+    from comfyui_mcp_skills.application.authorization import (
+        AuthorizationContext,
+        Scope,
+        Toolset,
+    )
+    from comfyui_mcp_skills.infrastructure.persistence.control_plane import (
+        SQLiteControlPlaneStore,
+    )
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    _copy_file_workflow_to_sqlite(tmp_path, store)
+
+    # A second, unpublished deployment the owner references (published=0).
+    revision_id = "revision_" + "b" * 64
+    deployment_id = "deployment_" + "c" * 64
+    graph = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "dog"}}}
+    schema = {
+        "description": "Owner deployment",
+        "enabled": True,
+        "parameters": {"prompt": {"type": "string", "node_id": "1", "field": "text"}},
+    }
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """INSERT INTO workflow_revisions(
+                revision_id, workflow_id, graph_json, parameter_schema_json,
+                dependency_contract_json, content_digest, created_at
+            ) VALUES (?, 'txt2img', ?, ?, '{}', ?, '2026-07-30T00:00:00+00:00')""",
+            (
+                revision_id,
+                json.dumps(graph),
+                json.dumps(schema),
+                hashlib.sha256(b"owner-graph").hexdigest(),
+            ),
+        )
+        connection.execute(
+            """INSERT INTO workflow_deployments(
+                deployment_id, workflow_id, revision_id, server_id, enabled,
+                validation_status, published, created_at
+            ) VALUES (?, 'txt2img', ?, 'local', 1, 'valid', 0,
+                      '2026-07-30T00:00:00+00:00')""",
+            (deployment_id, revision_id),
+        )
+    # Owner overlay referencing the unpublished deployment.
+    _seed_owner_overlay_for(tmp_path, store, deployment_id)
+
+    class _ObjectInfoGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "CLIPTextEncode": {
+                    "input": {"required": {"text": ["STRING"]}},
+                    "input_order": {"required": ["text"]},
+                    "output": ["CONDITIONING"],
+                }
+            }
+
+        def get_models(self, folder: str) -> list[str]:
+            return []
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _ObjectInfoGateway(),
+        authorization=AuthorizationContext(
+            "alice",
+            frozenset({Scope.OBSERVE, Scope.OPERATE, Scope.AUTHOR, Scope.CONFIGURE, Scope.AUDIT}),
+            Toolset.ADMIN,
+        ),
+        provisioning_repository=MagicMock(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.validate",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    assert result.is_error is False
+    content = result.structured_content
+    assert content["valid"] is True

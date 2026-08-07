@@ -192,11 +192,15 @@ def create_admin_server(
         ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
     )
     workflow_import = None
+    workflow_repository = repositories.workflows
     if repositories.workflow_store == "sqlite" and store is not None:
+        # Owner-bound view: under an owner overlay the deployment is resolved
+        # through the owner's snapshot, matching import/change semantics.
+        workflow_repository = SQLiteWorkflowRepository(store, owner_id=workflow_owner_id)
         workflow_import = WorkflowImportService(
             workflow_graphs,
             validation_service,
-            SQLiteWorkflowRepository(store, owner_id=workflow_owner_id),
+            workflow_repository,
             runtime_estimator=lambda server_id, _graph: float(
                 servers.connection(server_id).get("experiment_trusted_seconds_per_run", 300.0)
             ),
@@ -776,7 +780,7 @@ def create_admin_server(
                 workflow_id = _required_string(arguments, "workflow_id")
                 result = await anyio.to_thread.run_sync(
                     lambda: _validate_published_workflow(
-                        repositories.workflows,
+                        workflow_repository,
                         workflow_graphs,
                         validation_service,
                         gateway_factory,
