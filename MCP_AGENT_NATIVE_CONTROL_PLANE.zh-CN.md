@@ -1869,10 +1869,10 @@ comfyui.log.read
 comfyui.server.capabilities
 comfyui.admin.workflow.import
 comfyui.workflow.describe
-comfyui.workflow.revision.list
+comfyui.revision.list
 comfyui.admin.workflow.change.plan
 comfyui.admin.workflow.change.commit
-comfyui.admin.workflow.revision.publish
+comfyui.admin.workflow.publish
 comfyui.execution.plan
 comfyui.execution.commit
 ```
@@ -2164,7 +2164,7 @@ Anthropic 指出，工具定义和中间结果会形成显著上下文成本。�
 
 **如果把本文所有工具和动态工作流一次性暴露给 Agent，压力一定过大。**
 
-当前蓝图正文已经出现 81 个唯一 `comfyui.*` 契约名称，尚未计算每个工作流生成的动态 Tool。这进一步说明：74 项是后端能力目录，不应等同于单次 `tools/list` 返回值。
+当前蓝图正文已经出现 81 个唯一 `comfyui.*` 契约名称，尚未计算每个工作流生成的动态 Tool。这进一步说明：81 项是后端能力目录，不应等同于单次 `tools/list` 返回值。
 
 问题不是 Agent 是否“足够聪明”，而是：
 
