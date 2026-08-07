@@ -659,6 +659,77 @@ def _remove_parameter_target(schema: dict[str, Any], node_id: str, field: str) -
             del parameters[name]
 
 
+_MAX_MERMAID_NODES = 50
+_MERMAID_LABEL_MAX = 64
+
+
+def _mermaid_label(value: object) -> str:
+    """One safe Mermaid node label: stripped, bounded, quotes neutralized."""
+    label = str(value).strip()
+    if len(label) > _MERMAID_LABEL_MAX:
+        label = label[:_MERMAID_LABEL_MAX] + "…"
+    return label.replace('"', "'").replace("\\", "/")
+
+
+def _graph_mermaid(
+    graph: dict[str, Any],
+    *,
+    highlight_nodes: set[object] | None = None,
+) -> str:
+    """Render one workflow graph as a bounded Mermaid flowchart.
+
+    Node ids are aliased (N1, N2, ...) in stable order so arbitrary engine
+    node ids cannot corrupt the diagram; edges come from ``["<id>", index]``
+    input references. Graphs beyond the node limit fail loudly instead of
+    silently truncating the diagram.
+    """
+    if not isinstance(graph, dict) or not graph:
+        raise ValueError("workflow graph must be a non-empty object")
+    if len(graph) > _MAX_MERMAID_NODES:
+        raise ValueError(
+            f"workflow graph exceeds the visualization limit of {_MAX_MERMAID_NODES} nodes"
+        )
+    ordered = sorted(graph, key=_node_sort_key)
+    alias_by_id: dict[object, str] = {
+        node_id: f"N{index + 1}" for index, node_id in enumerate(ordered)
+    }
+    highlights = {str(node_id) for node_id in (highlight_nodes or set())}
+    lines = ["flowchart LR"]
+    if highlights:
+        lines.append("    classDef added fill:#d4edda,stroke:#28a745;")
+    for node_id in ordered:
+        node = graph[node_id]
+        class_type = ""
+        if isinstance(node, dict):
+            raw_class_type = node.get("class_type")
+            if isinstance(raw_class_type, str):
+                class_type = raw_class_type
+        label = _mermaid_label(class_type or node_id)
+        alias = alias_by_id[node_id]
+        if str(node_id) in highlights:
+            lines.append(f'    {alias}["{label}"]:::added')
+        else:
+            lines.append(f'    {alias}["{label}"]')
+    for node_id in ordered:
+        node = graph[node_id]
+        if not isinstance(node, dict):
+            continue
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for raw_value in inputs.values():
+            if (
+                isinstance(raw_value, list)
+                and raw_value
+                and isinstance(raw_value[0], (str, int))
+                and raw_value[0] in alias_by_id
+            ):
+                lines.append(
+                    f"    {alias_by_id[raw_value[0]]} --> {alias_by_id[node_id]}"
+                )
+    return "\n".join(lines) + "\n"
+
+
 def _semantic_diff(
     base_revision_id: str,
     *,
@@ -737,6 +808,10 @@ def _semantic_diff(
         "parameters_before": sorted(before_names),
         "parameters_after": sorted(after_names),
     }
+    result["mermaid"] = _graph_mermaid(
+        graph_after,
+        highlight_nodes=set(after_nodes - before_nodes),
+    )
     if to_revision_id:
         result["to_revision_id"] = to_revision_id
     return result

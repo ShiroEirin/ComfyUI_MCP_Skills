@@ -835,3 +835,57 @@ def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None
     message = str(excinfo.value)
     assert "node 9 field cfg [input_out_of_range]" in message
     assert "hint: 用 comfyui.node.describe KSampler 查看该节点的输入签名与枚举值" in message
+
+
+def test_change_diff_includes_highlighted_mermaid(tmp_path: Path) -> None:
+    """The revision diff carries a Mermaid view of the after graph with added
+    nodes highlighted."""
+    changes, workflows = _services(tmp_path)
+    imported = WorkflowImportService(
+        WorkflowGraphService(
+            ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+        ),
+        WorkflowValidationService(),
+        workflows,
+    ).preview(
+        {
+            "1": {"class_type": "Text", "inputs": {"text": "before"}},
+            "2": {"class_type": "Image", "inputs": {}},
+            "3": {
+                "class_type": "SaveImage",
+                "inputs": {"images": ["2", 0], "filename_prefix": "result"},
+            },
+        },
+        workflow_id="portrait",
+        server_id="local",
+        object_info=OBJECT_INFO,
+    )
+    committed = WorkflowImportService(
+        WorkflowGraphService(
+            ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+        ),
+        WorkflowValidationService(),
+        workflows,
+    ).commit(imported)
+    workflows.publish(committed["deployment_id"])
+
+    plan = changes.plan(
+        "portrait",
+        "local",
+        [
+            {
+                "op": "add_node",
+                "node_id": "9",
+                "class_type": "KSampler",
+                "inputs": {"cfg": 7},
+            },
+        ],
+        object_info=OBJECT_INFO,
+    )
+    committed_plan = changes.commit(plan["plan_id"], plan["plan_digest"])
+    revision_diff = changes.diff(committed["revision_id"], committed_plan["revision_id"])
+
+    assert revision_diff["nodes_added"] == ["9"]
+    assert revision_diff["mermaid"].startswith("flowchart LR")
+    assert "classDef added" in revision_diff["mermaid"]
+    assert 'N4["KSampler"]:::added' in revision_diff["mermaid"]

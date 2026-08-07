@@ -2159,3 +2159,78 @@ async def test_node_blueprint_limits_and_bounds_inputs(tmp_path: Path) -> None:
     assert len(inputs) == 8
     assert inputs[0]["name"] == "field_0"
     assert inputs[-1]["name"] == "field_7"
+
+
+@pytest.mark.anyio
+async def test_workflow_visualize_renders_bounded_mermaid(tmp_path: Path) -> None:
+    """visualize renders a bounded Mermaid flowchart with aliased nodes."""
+    from comfyui_mcp_skills.application.authorization import (
+        AuthorizationContext,
+        Scope,
+        Toolset,
+    )
+    from comfyui_mcp_skills.infrastructure.persistence.control_plane import (
+        SQLiteControlPlaneStore,
+    )
+
+    _project(tmp_path)
+    graph_path = tmp_path / "data" / "local" / "txt2img" / "workflow.json"
+    graph_path.write_text(
+        json.dumps(
+            {
+                "1": {"class_type": "Text", "inputs": {"text": "hello"}},
+                "2": {
+                    "class_type": "SaveImage",
+                    "inputs": {"images": ["1", 0], "filename_prefix": "out"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    _copy_file_workflow_to_sqlite(tmp_path, store)
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: FakeGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.workflow.visualize" in names
+        result = await client.call_tool(
+            "comfyui.workflow.visualize",
+            {"server_id": "local", "workflow_id": "txt2img"},
+        )
+
+    assert result.is_error is False
+    content = result.structured_content
+    assert content["node_count"] == 2
+    assert content["mermaid"].startswith("flowchart LR")
+    assert 'N1["Text"]' in content["mermaid"]
+    assert 'N2["SaveImage"]' in content["mermaid"]
+    assert "N1 --> N2" in content["mermaid"]
+
+
+def test_graph_mermaid_bounds_and_aliases() -> None:
+    """Over-limit graphs fail loudly; labels are sanitized."""
+    from comfyui_mcp_skills.application.workflow_change import _graph_mermaid
+
+    graph = {
+        "a": {"class_type": 'Text"weird', "inputs": {}},
+        "b": {"class_type": "SaveImage", "inputs": {"images": ["a", 0]}},
+    }
+    rendered = _graph_mermaid(graph)
+    assert "N1 --> N2" in rendered
+    assert '"weird' not in rendered  # quotes neutralized
+
+    big = {str(index): {"class_type": "Text", "inputs": {}} for index in range(51)}
+    try:
+        _graph_mermaid(big)
+    except ValueError as exc:
+        assert "visualization limit of 50 nodes" in str(exc)
+    else:
+        raise AssertionError("over-limit graph must fail loudly")

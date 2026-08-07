@@ -116,7 +116,10 @@ from comfyui_mcp_skills.application.telemetry import (
     meter_from_env,
     tracer_from_env,
 )
-from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
+from comfyui_mcp_skills.application.workflow_change import (
+    WorkflowChangeService,
+    _graph_mermaid,
+)
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
     WorkflowValidationService,
@@ -130,6 +133,7 @@ from comfyui_mcp_skills.domain.errors import (
     AuditIdempotencyConflict,
     ComfyUISkillsError,
     ServerNotFound,
+    WorkflowNotFound,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
@@ -314,6 +318,15 @@ def _audit_event(
 def _portable_tool_name(name: str) -> str:
     """Project one canonical MCP tool name into provider-safe ASCII."""
     return re.sub(r"[^A-Za-z0-9_-]", "_", name)
+
+
+def _required_revision_id(deployment: dict[str, Any], workflow_id: str, server_id: str) -> str:
+    revision_id = deployment.get("revision_id")
+    if not isinstance(revision_id, str) or not revision_id:
+        raise WorkflowNotFound(
+            f"Workflow not found: {server_id}/{workflow_id}"
+        )
+    return revision_id
 
 
 # ComfyUI status_str values we project; anything else maps to "unknown".
@@ -1526,6 +1539,29 @@ def create_server(
                     lambda: workflow_changes.diff(from_revision_id, to_revision_id)
                 )
                 return tool_result(result)
+            if params.name == "comfyui.workflow.visualize":
+                validate_fixed_arguments(arguments, {"workflow_id", "server_id"})
+                workflow_id = required_string(arguments, "workflow_id")
+                server_id = required_string(arguments, "server_id")
+                if not isinstance(workflow_repository, SQLiteWorkflowRepository):
+                    raise ValueError(
+                        "Workflow visualization requires the SQLite Workflow store"
+                    )
+                deployment = workflow_repository.describe(workflow_id, server_id)
+                revision = workflow_repository.get_revision(
+                    _required_revision_id(deployment, workflow_id, server_id)
+                )
+                graph = revision.get("graph")
+                if not isinstance(graph, dict):
+                    raise ValueError("Workflow revision has no graph")
+                return tool_result(
+                    {
+                        "workflow_id": workflow_id,
+                        "server_id": server_id,
+                        "mermaid": _graph_mermaid(graph),
+                        "node_count": len(graph),
+                    }
+                )
             if params.name in {
                 "comfyui.workflow.describe",
                 "comfyui.workflow.dependencies.check",

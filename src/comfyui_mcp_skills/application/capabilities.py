@@ -330,6 +330,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("blueprint", "node", "target", "inputs"),
     ),
     CapabilitySpec(
+        "comfyui.workflow.visualize",
+        "Render a workflow as Mermaid",
+        "Bounded Mermaid flowchart of one published workflow with aliased node ids.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("visualize", "mermaid", "diagram"),
+    ),
+    CapabilitySpec(
         "comfyui.engine.history",
         "Read engine run history",
         "Flat projection of engine-side history records with a bounded response.",

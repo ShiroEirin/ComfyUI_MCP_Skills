@@ -796,6 +796,17 @@ def fixed_tools() -> list[Tool]:
         "server_id": {"type": "string", "minLength": 1},
         "prompt_id": {"type": "string", "minLength": 1},
     }
+    visualize_output = {
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string"},
+            "server_id": {"type": "string"},
+            "mermaid": {"type": "string"},
+            "node_count": {"type": "integer"},
+        },
+        "required": ["workflow_id", "server_id", "mermaid", "node_count"],
+        "additionalProperties": False,
+    }
     discovery_properties = {
         "server_id": {"type": "string", "minLength": 1},
         "query": {"type": "string", "default": ""},
@@ -1011,6 +1022,24 @@ def fixed_tools() -> list[Tool]:
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
             Tool(
+            name="comfyui.workflow.visualize",
+            description=(
+                "Render one published workflow as a bounded Mermaid flowchart "
+                "(node ids aliased, edges from input connections)."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {"type": "string", "minLength": 1},
+                    "server_id": {"type": "string", "minLength": 1},
+                },
+                "required": ["workflow_id", "server_id"],
+                "additionalProperties": False,
+            },
+            output_schema=visualize_output,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
             name="comfyui.node.blueprint",
             description=(
                 "Project a goal-driven compact node blueprint: keyword-matched "

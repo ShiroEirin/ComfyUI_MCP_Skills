@@ -25,9 +25,9 @@
 2. `comfyui.job.history.suggest`（差异化）：从持久化 Job 历史统计成功组合（completed + 高评分），与 Experiment/variant.rate 评分联动；静态知识兜底 + 历史统计推荐双通道。
 3. **单独迭代**（已拍板：不混入 P0；依赖 SQLite run aggregate，workspace 已 cutover）。
 
-### P2 工作流可视化
-1. `comfyui.workflow.visualize`：Mermaid 渲染（有界节点数）。
-2. `revision.diff` 出 Mermaid 对比视图（差异化重点）。
+### P2 工作流可视化（**已交付**）
+1. `comfyui.workflow.visualize`：Mermaid 渲染（≤50 节点 fail-loud、节点别名防注入、边来自输入连接、标签转义）。
+2. `revision.diff` 出 Mermaid 视图（after 图 + added 节点高亮 classDef）。
 
 ### 已拍板决策
 - 迭代顺序：P0-1 → P0-3 → P0-2 → P2 → P1。
@@ -40,4 +40,4 @@
 ## 历史登记
 
 - 2026-08-07：登记「节点能力感知」计划（P0-P2，含拍板决策）。
-- 2026-08-07：P0-1 授权对齐、P0-3 change.plan 校验引导、P0-2 node.blueprint、本地化 engine.history 已交付。
+- 2026-08-07：P0-1 授权对齐、P0-3 change.plan 校验引导、P0-2 node.blueprint、P2 可视化、本地化 engine.history 已交付。
