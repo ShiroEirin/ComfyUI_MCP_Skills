@@ -264,3 +264,34 @@ def test_stale_file_workflow_repository_is_fenced_after_g3_cutover(tmp_path: Pat
         stale.get("local", "portrait")
     with pytest.raises(RuntimeError, match="fenced"):
         stale.list()
+
+
+def test_sqlite_include_disabled_lists_disabled_workflow(tmp_path: Path) -> None:
+    """list_workflows(include_disabled=True) must see disabled deployments on
+    the SQLite store; the catalog re-filters them when include_disabled=False.
+    """
+    from comfyui_mcp_skills.application.catalog import WorkflowCatalog
+
+    _write_workflow(tmp_path)
+    store = _store(tmp_path)
+    cutover_g3_import_plan(build_g3_import_plan(tmp_path), store)
+    repository = SQLiteWorkflowRepository(store)
+    catalog = WorkflowCatalog(repository)
+
+    assert any(item.enabled for item in repository.list())
+    assert any(
+        item["workflow_id"] == "portrait"
+        for item in catalog.list_workflows(include_disabled=True)["items"]
+    )
+
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE workflow_deployments SET enabled = 0 WHERE workflow_id = 'portrait'"
+        )
+
+    listed = repository.list()
+    assert listed and not listed[0].enabled
+    visible = catalog.list_workflows(include_disabled=False)["items"]
+    assert not any(item["workflow_id"] == "portrait" for item in visible)
+    all_items = catalog.list_workflows(include_disabled=True)["items"]
+    assert any(item["workflow_id"] == "portrait" for item in all_items)

@@ -234,8 +234,10 @@ def _free_locked(
     lock_key = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:32]
     lock_path = f"{audit_log.path}.{lock_key}.lock"
     lock = FileLock(lock_path, timeout=10)
+    acquired = False
     try:
         with lock:
+            acquired = True
             if audit_log.events_for(request_id):
                 raise AuditIdempotencyConflict(
                     f"request_id {request_id} was already used for server.free; "
@@ -285,10 +287,15 @@ def _free_locked(
     
     
     finally:
-        try:
-            os.unlink(lock_path)
-        except OSError:
-            pass
+        # Only ever unlink a lock file we actually held. A failed acquire
+        # (timeout while a concurrent same-request_id call holds the lock)
+        # must not delete the holder's lock file, or a later attempt could
+        # bypass per-request serialization.
+        if acquired:
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                pass
 def _audit_event(
     actor: str,
     action: str,

@@ -744,6 +744,54 @@ async def test_dynamic_run_invalid_target_does_not_consume_idempotency_key(
 
 
 @pytest.mark.anyio
+async def test_dynamic_run_reordered_targets_do_not_conflict(
+    tmp_path: Path,
+) -> None:
+    """Target order is set-like: the same key with reordered targets must not
+    be treated as a different request."""
+    _project(tmp_path)
+    graph = tmp_path / "data" / "local" / "txt2img" / "workflow.json"
+    graph.write_text(
+        json.dumps(
+            {
+                "1": {"class_type": "Test", "inputs": {"text": "default"}},
+                "2": {"class_type": "Test", "inputs": {"text": "default"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        first = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {
+                    "idempotency_key": "exec-order-1",
+                    "partial_execution_targets": ["1", "2"],
+                },
+            },
+        )
+        same = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {
+                    "idempotency_key": "exec-order-1",
+                    "partial_execution_targets": ["2", "1"],
+                },
+            },
+        )
+
+    assert first.is_error is False
+    assert same.is_error is False
+    assert len(gateway.queue_prompt_args) == 1
+    assert gateway.queue_prompt_args[0]["targets"] == ["1", "2"]
+
+
+@pytest.mark.anyio
 async def test_dynamic_run_rejects_target_with_line_break(tmp_path: Path) -> None:
     """A partial target containing a line break is rejected before submission."""
     _project(tmp_path)

@@ -451,7 +451,6 @@ class ObservationService:
             "unload_models": unload_models,
             "free_memory": free_memory,
             "impact": impact,
-            "audit_status": "not_configured",
         }
 
     def _gateway(self, server_id: str) -> ComfyUIGateway:

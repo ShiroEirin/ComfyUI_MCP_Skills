@@ -360,7 +360,6 @@ def test_free_requires_effect_and_forwards_both_explicit_booleans(tmp_path: Path
         "unload_models": False,
         "free_memory": True,
         "impact": ["runtime_memory"],
-        "audit_status": "not_configured",
     }
     with pytest.raises(WorkflowArgumentsError):
         service.free("local", unload_models=False, free_memory=False)
