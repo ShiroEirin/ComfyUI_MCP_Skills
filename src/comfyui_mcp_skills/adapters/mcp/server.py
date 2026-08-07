@@ -287,8 +287,8 @@ def _free_locked(
         result["audit_status"] = "audited"
         result["request_id"] = request_id
         return result
-    
-    
+
+
 def _audit_event(
     actor: str,
     action: str,
