@@ -809,12 +809,12 @@ def test_change_plan_unknown_class_type_reports_location_and_hint(
 
     message = str(excinfo.value)
     assert "node 9 [unknown_node_type]: Unknown node type: FutureNode" in message
-    assert "hint: 用 comfyui.node.describe FutureNode 查看正确输入" in message
+    assert "hint: 该节点类型不存在于服务器，用 comfyui.node.list 搜索可用节点类型" in message
 
 
 def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None:
-    """Range violations point at the offending field and suggest the describe
-    tool for the node's advertised inputs."""
+    """Range violations point at the offending field and carry the concrete
+    class_type so the describe hint is executable."""
     changes, _workflows = _services(tmp_path)
 
     with pytest.raises(ValueError, match=r"node 9 field cfg") as excinfo:
@@ -832,4 +832,6 @@ def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None
             object_info=OBJECT_INFO,
         )
 
-    assert "hint: 用 comfyui.node.describe 查看该节点的输入签名与枚举值" in str(excinfo.value)
+    message = str(excinfo.value)
+    assert "node 9 field cfg [input_out_of_range]" in message
+    assert "hint: 用 comfyui.node.describe KSampler 查看该节点的输入签名与枚举值" in message

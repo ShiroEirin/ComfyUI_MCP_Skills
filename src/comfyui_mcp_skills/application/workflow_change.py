@@ -149,7 +149,7 @@ class WorkflowChangeService:
         _validate_acyclic(graph)
         validation = self._validation.validate_api(graph, object_info)
         if not validation["valid"]:
-            raise ValueError(_change_validation_error(validation["issues"][:10]))
+            raise ValueError(_change_validation_error(validation["issues"][:10], graph))
         after_semantic = self._graphs.describe(graph, object_info=object_info)
         generated_parameters = after_semantic["parameters"]
         explicit = parameter_schema.get("parameters")
@@ -302,11 +302,13 @@ class WorkflowChangeService:
         )
 
 
-def _change_validation_error(issues: list[dict[str, str]]) -> str:
+def _change_validation_error(issues: list[dict[str, str]], graph: dict[str, Any]) -> str:
     """Format validation issues with node/field location and a repair hint.
 
     The hint steers agents to the node catalog tool instead of guessing
     class types or enum values from memory (see FEATURE_REQUESTS P0-3).
+    Known classes carry the concrete class_type (node.describe requires it);
+    unknown classes point at node.list since describe would fail on them.
     """
     parts: list[str] = []
     for issue in issues:
@@ -319,9 +321,8 @@ def _change_validation_error(issues: list[dict[str, str]]) -> str:
             location = f"{location} field {field}"
         parts.append(f"{location} [{code}]: {message}")
         if code == "unknown_node_type":
-            class_type_name = message.removeprefix("Unknown node type:").strip()
             parts.append(
-                f"hint: 用 comfyui.node.describe {class_type_name} 查看正确输入"
+                "hint: 该节点类型不存在于服务器，用 comfyui.node.list 搜索可用节点类型"
             )
         elif code in {
             "missing_required_input",
@@ -331,7 +332,23 @@ def _change_validation_error(issues: list[dict[str, str]]) -> str:
             "input_type_mismatch",
             "input_out_of_range",
         }:
-            parts.append("hint: 用 comfyui.node.describe 查看该节点的输入签名与枚举值")
+            class_type = ""
+            if node_id:
+                node = graph.get(node_id)
+                if isinstance(node, dict):
+                    raw_class_type = node.get("class_type")
+                    if isinstance(raw_class_type, str):
+                        class_type = raw_class_type.strip()
+            if class_type:
+                parts.append(
+                    f"hint: 用 comfyui.node.describe {class_type} "
+                    "查看该节点的输入签名与枚举值"
+                )
+            else:
+                parts.append(
+                    "hint: 用 comfyui.node.list 搜索节点类型后用 "
+                    "comfyui.node.describe 查看输入签名与枚举值"
+                )
     return "Workflow change is invalid: " + "; ".join(parts)
 
 
