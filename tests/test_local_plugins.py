@@ -437,7 +437,8 @@ def test_exactly_201_entries_not_truncated(tmp_path: Path) -> None:
 
 
 def test_budget_shared_across_layouts(tmp_path: Path) -> None:
-    """nested exhausting the budget stops before scanning flat."""
+    """nested exhausting the budget stops before processing flat entries; the
+    flat probe still consumes one counted entry."""
     root = tmp_path / "bundle"
     nested = root / "ComfyUI" / "custom_nodes"
     flat = root / "custom_nodes"
@@ -449,13 +450,19 @@ def test_budget_shared_across_layouts(tmp_path: Path) -> None:
 
     result = _service(root).plugins("local")
     assert result["truncated"] is True
+    assert result["scanned_entries"] == 202  # flat probe consumed one entry
+    assert result["total"] == 201
     assert "flat-only" not in {item["name"] for item in result["plugins"]}
     assert result["layout"] == "nested"
 
 
-def test_nested_exhausted_then_flat_probes_stop(tmp_path: Path) -> None:
-    """nested exactly 201 entries leaves no budget probe for flat's probe;
-    flat's first entry is the StopIteration probe -> flat invalid."""
+def test_nested_exhausted_then_flat_probes_stop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """nested exactly 201 entries; both layouts get exactly one StopIteration
+    probe and no entry is processed after the budget is full."""
+    import os as _os
+
     root = tmp_path / "bundle"
     nested = root / "ComfyUI" / "custom_nodes"
     flat = root / "custom_nodes"
@@ -464,7 +471,37 @@ def test_nested_exhausted_then_flat_probes_stop(tmp_path: Path) -> None:
     for index in range(201):
         (nested / f"n-{index}").mkdir()
 
+    real_scandir = _os.scandir
+    probes = {"nested": 0, "flat": 0}
+
+    class _ProbeIterator:
+        def __init__(self, inner, label):
+            self._inner = inner
+            self._label = label
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self._inner)
+            except StopIteration:
+                probes[self._label] += 1
+                raise
+
+    def fake_scandir(path):
+        label = "nested" if str(path).endswith("ComfyUI\\custom_nodes") else "flat"
+        return _ProbeIterator(real_scandir(path), label)
+
+    monkeypatch.setattr(_os, "scandir", fake_scandir)
     result = _service(root).plugins("local")
+    assert probes == {"nested": 1, "flat": 1}  # one StopIteration probe each
     assert result["truncated"] is False
     assert result["scanned_entries"] == 201
     assert result["layout"] == "nested"
