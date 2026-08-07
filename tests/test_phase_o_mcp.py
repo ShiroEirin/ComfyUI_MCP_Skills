@@ -86,8 +86,8 @@ def test_phase_o_tools_are_closed_and_unavailable_surfaces_are_hidden() -> None:
         "confirmation",
     }
     assert (
-        install.input_schema["properties"]["confirmation"]["const"]
-        == "INSTALL APPROVED DEPENDENCIES"
+        install.input_schema["properties"]["confirmation"]["enum"]
+        == ["INSTALL APPROVED DEPENDENCIES"]
     )
 
 

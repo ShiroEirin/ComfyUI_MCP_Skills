@@ -171,11 +171,11 @@ SERVER_INPUT = {
         "expected_revision": {"type": "integer", "minimum": 0},
         "secret_refs": {
             "type": "object",
-            "maxProperties": 16,
+
             "additionalProperties": {"type": "string", "maxLength": 256},
         },
     },
-    "maxProperties": 5,
+
     "additionalProperties": False,
 }
 BUNDLE_SERVER = {
@@ -188,7 +188,7 @@ BUNDLE_SERVER = {
         "is_default": {"type": "boolean"},
         "secret_refs": {
             "type": "object",
-            "maxProperties": 16,
+
             "additionalProperties": {"type": "string", "maxLength": 256},
         },
     },
@@ -285,11 +285,11 @@ def phase_o_tools(
                         "required": ["phase"],
                         "oneOf": [
                             {
-                                "properties": {"phase": {"const": "plan"}},
+                                "properties": {"phase": {"enum": ["plan"]}},
                                 "required": ["phase", "server_id"],
                             },
                             {
-                                "properties": {"phase": {"const": "commit"}},
+                                "properties": {"phase": {"enum": ["commit"]}},
                                 "required": ["phase", "plan_id", "plan_digest"],
                             },
                         ],
@@ -346,11 +346,11 @@ def phase_o_tools(
                     "required": ["phase"],
                     "oneOf": [
                         {
-                            "properties": {"phase": {"const": "plan"}},
+                            "properties": {"phase": {"enum": ["plan"]}},
                             "required": ["phase", "bundle", "expected_revision"],
                         },
                         {
-                            "properties": {"phase": {"const": "commit"}},
+                            "properties": {"phase": {"enum": ["commit"]}},
                             "required": ["phase", "plan_id", "plan_digest"],
                         },
                     ],
@@ -439,7 +439,7 @@ def phase_o_tools(
                         "request_id": IDENT,
                         "confirmation": {
                             "type": "string",
-                            "const": "INSTALL APPROVED DEPENDENCIES",
+                            "enum": ["INSTALL APPROVED DEPENDENCIES"],
                         },
                     },
                     "required": [
@@ -535,11 +535,11 @@ def phase_o_tools(
                     "additionalProperties": False,
                     "oneOf": [
                         {
-                            "properties": {"phase": {"const": "plan"}},
+                            "properties": {"phase": {"enum": ["plan"]}},
                             "required": ["phase", "job_id"],
                         },
                         {
-                            "properties": {"phase": {"const": "commit"}},
+                            "properties": {"phase": {"enum": ["commit"]}},
                             "required": ["phase", "plan_id", "plan_digest"],
                         },
                     ],

@@ -248,7 +248,7 @@ def create_admin_server(
                                                     "type": "object",
                                                     "description": "Inline workflow JSON",
                                                     "properties": {
-                                                        "kind": {"const": "inline_json"},
+                                                        "kind": {"enum": ["inline_json"]},
                                                         "workflow": {"type": "object"},
                                                     },
                                                     "required": ["kind", "workflow"],
@@ -260,7 +260,7 @@ def create_admin_server(
                                                         "Read one workflow from ComfyUI userdata"
                                                     ),
                                                     "properties": {
-                                                        "kind": {"const": "server_userdata"},
+                                                        "kind": {"enum": ["server_userdata"]},
                                                         "path": {"type": "string"},
                                                     },
                                                     "required": ["kind", "path"],
@@ -274,7 +274,7 @@ def create_admin_server(
                                                     ),
                                                     "properties": {
                                                         "kind": {
-                                                            "const": "authorized_local_file"
+                                                            "enum": ["authorized_local_file"]
                                                         },
                                                         "path": {"type": "string"},
                                                     },

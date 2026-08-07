@@ -118,7 +118,6 @@ def test_phase_n_tools_use_strict_canonical_schemas_and_allowlisted_outputs() ->
     )
     assert tools["comfyui.job.retry.plan"].input_schema["properties"]["changes"] == {
         "type": "object",
-        "maxProperties": 64,
     }
     assert tools["comfyui.job.retry.commit"].annotations.destructive_hint is False
 

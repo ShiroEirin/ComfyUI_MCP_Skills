@@ -986,7 +986,7 @@ def phase_k_tools() -> list[Tool]:
         "pattern": r"^routing_plan_[0-9a-f]{64}$",
     }
     digest = {"type": "string", "pattern": r"^[0-9a-f]{64}$"}
-    arguments = {"type": "object", "maxProperties": 256}
+    arguments = {"type": "object"}
     policy = {
         "type": "object",
         "properties": {
@@ -1501,9 +1501,9 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                 "anyOf": [
                     {
                         "required": ["unload_models"],
-                        "properties": {"unload_models": {"const": True}},
+                        "properties": {"unload_models": {"enum": [True]}},
                     },
-                    {"required": ["free_memory"], "properties": {"free_memory": {"const": True}}},
+                    {"required": ["free_memory"], "properties": {"free_memory": {"enum": [True]}}},
                 ],
                 "additionalProperties": False,
             },
@@ -2262,7 +2262,7 @@ def phase_n_tools() -> list[Tool]:
                     "type": "object",
                     "properties": {
                         "job_id": job_id,
-                        "changes": {"type": "object", "maxProperties": 64},
+                        "changes": {"type": "object"},
                     },
                     "required": ["job_id", "changes"],
                     "additionalProperties": False,
