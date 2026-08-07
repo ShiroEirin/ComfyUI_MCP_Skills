@@ -227,75 +227,65 @@ def _free_locked(
     caller-supplied request_id via SHA-256 so it can never affect the path.
     """
     import hashlib
-    import os
 
     from filelock import FileLock
 
     lock_key = hashlib.sha256(request_id.encode("utf-8")).hexdigest()[:32]
     lock_path = f"{audit_log.path}.{lock_key}.lock"
+    # filelock removes the lock file itself on release (both platforms), so no
+    # explicit unlink here: a failed acquire (timeout while a concurrent
+    # same-request_id call holds the lock) never touches the holder's file,
+    # and the events_for check below is the real serialization guarantee.
     lock = FileLock(lock_path, timeout=10)
-    acquired = False
-    try:
-        with lock:
-            acquired = True
-            if audit_log.events_for(request_id):
-                raise AuditIdempotencyConflict(
-                    f"request_id {request_id} was already used for server.free; "
-                    "refusing to re-execute a destructive operation"
-                )
-            audit_log.append(
-                _audit_event(actor, "server.free", target, "intent", request_id=request_id)
+    with lock:
+        if audit_log.events_for(request_id):
+            raise AuditIdempotencyConflict(
+                f"request_id {request_id} was already used for server.free; "
+                "refusing to re-execute a destructive operation"
             )
-            try:
-                result = observation.free(
-                    server_id, unload_models=unload_models, free_memory=free_memory
-                )
-            except Exception as exc:
-                try:
-                    audit_log.append(
-                        _audit_event(
-                            actor,
-                            "server.free",
-                            target,
-                            "failure",
-                            request_id=request_id,
-                            error_code=type(exc).__name__,
-                        )
-                    )
-                except Exception as audit_exc:
-                    raise RuntimeError(
-                        f"server.free backend failed ({type(exc).__name__}) and its audit "
-                        f"terminal could not be persisted (request_id={request_id}): "
-                        f"{audit_exc}"
-                    ) from exc
-                raise
+        audit_log.append(
+            _audit_event(actor, "server.free", target, "intent", request_id=request_id)
+        )
+        try:
+            result = observation.free(
+                server_id, unload_models=unload_models, free_memory=free_memory
+            )
+        except Exception as exc:
             try:
                 audit_log.append(
                     _audit_event(
-                        actor, "server.free", target, "success", request_id=request_id
+                        actor,
+                        "server.free",
+                        target,
+                        "failure",
+                        request_id=request_id,
+                        error_code=type(exc).__name__,
                     )
                 )
-            except Exception as exc:
+            except Exception as audit_exc:
                 raise RuntimeError(
-                    f"server.free executed but its audit terminal could not be "
-                    f"persisted (request_id={request_id}); refusing to claim audited"
+                    f"server.free backend failed ({type(exc).__name__}) and its audit "
+                    f"terminal could not be persisted (request_id={request_id}): "
+                    f"{audit_exc}"
                 ) from exc
-            result = dict(result)
-            result["audit_status"] = "audited"
-            result["request_id"] = request_id
-            return result
+            raise
+        try:
+            audit_log.append(
+                _audit_event(
+                    actor, "server.free", target, "success", request_id=request_id
+                )
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"server.free executed but its audit terminal could not be "
+                f"persisted (request_id={request_id}); refusing to claim audited"
+            ) from exc
+        result = dict(result)
+        result["audit_status"] = "audited"
+        result["request_id"] = request_id
+        return result
     
     
-    finally:
-        # Only ever unlink a lock file we actually held. A failed acquire
-        # (timeout while a concurrent same-request_id call holds the lock)
-        # must not delete the holder's lock file, or a later attempt could
-        # bypass per-request serialization.
-        if acquired:
-            try:
-                os.unlink(lock_path)
-            except OSError:
-                pass
 def _audit_event(
     actor: str,
     action: str,
