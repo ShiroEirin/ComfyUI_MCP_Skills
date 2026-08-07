@@ -1621,6 +1621,15 @@ def create_server(
                     lambda: observation.queue(server_id, limit=limit, cursor=cursor)
                 )
                 return tool_result(result)
+            if params.name == "comfyui.node.blueprint":
+                validate_fixed_arguments(arguments, {"server_id", "query", "limit"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                query = required_string(arguments, "query", max_length=256)
+                limit = bounded_integer(arguments, "limit", 5, minimum=1, maximum=10)
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.blueprint(server_id, query=query, limit=limit)
+                )
+                return tool_result(result)
             if params.name == "comfyui.engine.history":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id", "limit"})
                 server_id = required_string(arguments, "server_id", max_length=128)

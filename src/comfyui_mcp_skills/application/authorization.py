@@ -107,6 +107,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.subgraph.get": frozenset({Scope.OBSERVE}),
     "comfyui.server.free": frozenset({Scope.OPERATE}),
     "comfyui.node.list": frozenset({Scope.OBSERVE}),
+    "comfyui.node.blueprint": frozenset({Scope.OBSERVE}),
     "comfyui.engine.history": frozenset({Scope.OBSERVE}),
     "comfyui.queue.remove": frozenset({Scope.OPERATE}),
     "comfyui.queue.clear": frozenset({Scope.OPERATE}),

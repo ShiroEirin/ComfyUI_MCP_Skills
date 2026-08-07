@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -10,6 +11,105 @@ from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.errors import WorkflowArgumentsError, WorkflowNotFound
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+
+_BLUEPRINT_MAX_FIELDS = 8
+_BLUEPRINT_MAX_ENUM_VALUES = 8
+_BLUEPRINT_MAX_OUTPUTS = 4
+_BLUEPRINT_MAX_FIELD_VALUE_CHARS = 64
+
+
+def _compact_type(value: object) -> str:
+    """Render one object_info field type slot compactly."""
+    if isinstance(value, list):
+        return ", ".join(_compact_type(item) for item in value[:4])
+    return str(value)
+
+
+def _advertised_options(value: object) -> list[str]:
+    """Extract advertised enum options from a field type slot, bounded."""
+    options: list[str] = []
+    raw_options: object = value
+    if isinstance(value, dict):
+        raw_options = value.get("options", [])
+    if isinstance(raw_options, list):
+        for option in raw_options:
+            if len(options) >= _BLUEPRINT_MAX_ENUM_VALUES:
+                break
+            if isinstance(option, str) and option:
+                options.append(option[:_BLUEPRINT_MAX_FIELD_VALUE_CHARS])
+    return options
+
+
+def _blueprint_field(name: str, spec: list[Any], *, required: bool) -> dict[str, Any]:
+    """Project one input field: type plus bounded advertised options.
+
+    object_info spells enums both as a bare list (``[["a", "b"]]``) and as
+    ``["COMBO", {"options": [...]}]``; both are projected as ``options``.
+    """
+    raw_type = spec[0] if spec else None
+    field: dict[str, Any] = {"name": name, "type": "unknown", "required": required}
+    options: list[str] = []
+    if isinstance(raw_type, list):
+        field["type"] = "COMBO"
+        options = _advertised_options(raw_type)
+    elif isinstance(raw_type, str):
+        field["type"] = raw_type
+        if len(spec) > 1:
+            options = _advertised_options(spec[1])
+    else:
+        field["type"] = _compact_type(raw_type)
+        if len(spec) > 1:
+            options = _advertised_options(spec[1])
+    if options:
+        field["options"] = options
+    return field
+
+
+def _blueprint_item(node_class: str, metadata: dict[str, Any]) -> dict[str, Any]:
+    """Compact node signature: bounded input fields with types and options."""
+    fields: list[dict[str, Any]] = []
+    input_spec = metadata.get("input")
+    input_order = metadata.get("input_order")
+    ordered_required: list[str] = []
+    if isinstance(input_order, dict):
+        raw_required = input_order.get("required")
+        if isinstance(raw_required, list):
+            ordered_required = [str(name) for name in raw_required[: _BLUEPRINT_MAX_FIELDS]]
+    seen: set[str] = set()
+    for name in ordered_required:
+        if name in seen or len(fields) >= _BLUEPRINT_MAX_FIELDS:
+            continue
+        seen.add(name)
+        spec = input_spec.get("required", {}).get(name) if isinstance(input_spec, dict) else None
+        if not isinstance(spec, list) or not spec:
+            continue
+        fields.append(_blueprint_field(name, spec, required=True))
+    if isinstance(input_spec, dict):
+        optional = input_spec.get("optional")
+        if isinstance(optional, dict):
+            for name in sorted(optional, key=str):
+                if name in seen or len(fields) >= _BLUEPRINT_MAX_FIELDS:
+                    continue
+                seen.add(name)
+                spec = optional[name]
+                if not isinstance(spec, list) or not spec:
+                    continue
+                fields.append(_blueprint_field(str(name), spec, required=False))
+    outputs = metadata.get("output")
+    output_types: list[str] = []
+    if isinstance(outputs, list):
+        for output in outputs[: _BLUEPRINT_MAX_OUTPUTS]:
+            if isinstance(output, str):
+                output_types.append(output)
+    item: dict[str, Any] = {
+        "class_type": node_class,
+        "display_name": str(metadata.get("display_name", node_class)),
+        "category": str(metadata.get("category", "")),
+        "inputs": fields,
+    }
+    if output_types:
+        item["outputs"] = output_types
+    return item
 
 
 class DiscoveryService:
@@ -68,6 +168,59 @@ class DiscoveryService:
         if node is None:
             raise WorkflowNotFound(f"ComfyUI node not found: {node_class}")
         return {"server_id": server_id, "node_class": node_class, "node": node}
+
+    def blueprint(
+        self,
+        server_id: str,
+        *,
+        query: str,
+        limit: int = 5,
+    ) -> dict[str, Any]:
+        """Project a goal-driven compact node blueprint from object_info.
+
+        Matches nodes by keyword overlap on class/display_name/category and
+        returns bounded compact signatures: at most ``limit`` nodes, each with
+        up to _BLUEPRINT_MAX_FIELDS inputs whose names, types and (truncated)
+        advertised options fit a token budget an agent can actually consume.
+        """
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("query must be a non-empty string")
+        if len(query) > 256:
+            raise ValueError("query must be at most 256 characters")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10:
+            raise ValueError("limit must be an integer between 1 and 10")
+        terms = [term.casefold() for term in re.split(r"[\s,]+", query.strip()) if term]
+        if not terms:
+            raise ValueError("query must contain at least one keyword")
+        gateway = self._gateway_factory(self._servers.connection(server_id))
+        raw = gateway.get_object_info()
+        scored: list[tuple[int, str, dict[str, Any]]] = []
+        for node_class, metadata in raw.items():
+            if not isinstance(node_class, str) or not isinstance(metadata, dict):
+                continue
+            display_name = str(metadata.get("display_name", node_class)).casefold()
+            category = str(metadata.get("category", "")).casefold()
+            class_name = node_class.casefold()
+            score = 0
+            for term in terms:
+                if term in display_name:
+                    score += 3
+                elif term in category:
+                    score += 2
+                elif term in class_name:
+                    score += 1
+            if score:
+                scored.append((score, node_class, metadata))
+        scored.sort(key=lambda entry: (-entry[0], entry[1].casefold(), entry[1]))
+        return {
+            "server_id": server_id,
+            "query": query,
+            "items": [
+                _blueprint_item(node_class, metadata)
+                for _score, node_class, metadata in scored[:limit]
+            ],
+            "total_matches": len(scored),
+        }
 
     def models(
         self,

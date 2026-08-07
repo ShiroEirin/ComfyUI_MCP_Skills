@@ -321,6 +321,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("search", "class"),
     ),
     CapabilitySpec(
+        "comfyui.node.blueprint",
+        "Project a goal-driven node blueprint",
+        "Keyword-matched node classes with bounded input signatures and advertised options.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("blueprint", "node", "target", "inputs"),
+    ),
+    CapabilitySpec(
         "comfyui.engine.history",
         "Read engine run history",
         "Flat projection of engine-side history records with a bounded response.",

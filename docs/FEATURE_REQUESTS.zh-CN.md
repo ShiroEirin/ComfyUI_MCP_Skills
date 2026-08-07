@@ -16,7 +16,7 @@
 
 ### P0 节点能力感知
 1. **授权对齐**（最小，改两处 frozenset + 测试）：`node.list` / `node.describe` / `model.list` 的 Toolset 从 OPERATIONS 扩展到 AUTHORING。
-2. **`comfyui.node.blueprint`**（核心新增）：目标驱动的节点模板投影——输入自然语言目标 + server_id；输出按 display_name/category 匹配的相关节点紧凑签名（输入字段名 + 类型 + 枚举值截断有界 + 输出类型）；硬性体积上限（≤10 节点 × ≤8 字段）。匹配策略：**纯关键词匹配**（已拍板）。
+2. **`comfyui.node.blueprint`**（**已交付**）：目标驱动的节点模板投影——关键词匹配 class/display_name/category（加权评分），紧凑签名（≤8 字段：类型 + 枚举 ≤8 项截断 + 输出 ≤4 类型），limit ≤10；fixed_tools 成员 + OBSERVE。
 3. **`change.plan` 校验增强 + 失败引导**（**已交付**）：plan 阶段对照 object_info 校验（validate_api 覆盖 class_type/required/枚举/范围）；失败错误带节点/字段定位与修复路径 hint（`comfyui.node.describe <class_type>`）；`suggested_queries` 字段标记可选未做。
 4. 节点目录快照 Resource（可选加分）：`comfyui://server/{id}/nodes` 紧凑投影 + 缓存 + 订阅失效。
 
@@ -40,4 +40,4 @@
 ## 历史登记
 
 - 2026-08-07：登记「节点能力感知」计划（P0-P2，含拍板决策）。
-- 2026-08-07：P0-1 授权对齐、P0-3 change.plan 校验引导、本地化 engine.history 已交付。
+- 2026-08-07：P0-1 授权对齐、P0-3 change.plan 校验引导、P0-2 node.blueprint、本地化 engine.history 已交付。

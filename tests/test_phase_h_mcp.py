@@ -255,7 +255,8 @@ def test_phase_h_scopes_and_toolset_budgets_remain_fixed() -> None:
         if tool_visible(tool.name, Toolset.OPERATIONS, admitted_scopes(Toolset.OPERATIONS))
     ]
     assert len(execution) <= 16
-    assert len(operations) <= 20
+    # 21 = fixed_tools observe surface (incl. node.blueprint) + phase_h observe tools
+    assert len(operations) <= 21
 
 
 @pytest.mark.anyio

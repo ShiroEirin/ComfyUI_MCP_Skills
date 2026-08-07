@@ -2051,3 +2051,111 @@ async def test_engine_history_numeric_timestamps_sort_numerically(
     items = result.structured_content["items"]
     assert [item["prompt_id"] for item in items] == ["prompt-a", "prompt-c", "prompt-b"]
     assert [item["created_at"] for item in items] == ["11", "10.5", "9.5"]
+
+
+@pytest.mark.anyio
+async def test_node_blueprint_projects_bounded_signatures(tmp_path: Path) -> None:
+    """blueprint keyword-matches nodes and bounds fields/options/outputs."""
+    _project(tmp_path)
+
+    class _ObjectInfoGateway(FakeGateway):
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "KSampler": {
+                    "display_name": "KSampler",
+                    "category": "sampling",
+                    "input": {
+                        "required": {
+                            "sampler_name": [["euler", "ddim", "uni_pc"]],
+                            "cfg": ["FLOAT", {"min": 0.0, "max": 20.0}],
+                        },
+                        "optional": {"seed": ["INT", {"default": 0}]},
+                    },
+                    "input_order": {"required": ["sampler_name", "cfg"]},
+                    "output": ["LATENT"],
+                },
+                "UpscaleImage": {
+                    "display_name": "Upscale Image",
+                    "category": "image/upscaling",
+                    "input": {
+                        "required": {"upscale_method": [["nearest", "bilinear"]]}
+                    },
+                    "input_order": {"required": ["upscale_method"]},
+                    "output": ["IMAGE"],
+                },
+                "Text": {
+                    "display_name": "Text",
+                    "category": "text",
+                    "input": {"required": {"text": ["STRING"]}},
+                    "input_order": {"required": ["text"]},
+                    "output": ["STRING"],
+                },
+            }
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _ObjectInfoGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.node.blueprint" in names
+        result = await client.call_tool(
+            "comfyui.node.blueprint",
+            {"server_id": "local", "query": "upscale"},
+        )
+
+    assert result.is_error is False
+    content = result.structured_content
+    assert content["total_matches"] == 1
+    item = content["items"][0]
+    assert item["class_type"] == "UpscaleImage"
+    assert item["inputs"] == [
+        {
+            "name": "upscale_method",
+            "type": "COMBO",
+            "required": True,
+            "options": ["nearest", "bilinear"],
+        }
+    ]
+    assert item["outputs"] == ["IMAGE"]
+
+
+@pytest.mark.anyio
+async def test_node_blueprint_limits_and_bounds_inputs(tmp_path: Path) -> None:
+    """More than 8 fields: only the ordered required ones are projected."""
+    _project(tmp_path)
+
+    class _WideGateway(FakeGateway):
+        def get_object_info(self) -> dict[str, Any]:
+            required = {f"field_{index}": ["STRING"] for index in range(12)}
+            return {
+                "WideNode": {
+                    "display_name": "Wide Node",
+                    "category": "wide",
+                    "input": {"required": required},
+                    "input_order": {"required": list(required)},
+                    "output": ["IMAGE"],
+                }
+            }
+
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: _WideGateway(),
+        authorization=AuthorizationContext(
+            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+        ),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.node.blueprint",
+            {"server_id": "local", "query": "wide", "limit": 1},
+        )
+
+    assert result.is_error is False
+    inputs = result.structured_content["items"][0]["inputs"]
+    assert len(inputs) == 8
+    assert inputs[0]["name"] == "field_0"
+    assert inputs[-1]["name"] == "field_7"

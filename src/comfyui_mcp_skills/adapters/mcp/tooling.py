@@ -748,6 +748,50 @@ def decorate_tool(tool: Tool, *, risk: str | None = None, toolset: str | None = 
 
 
 def fixed_tools() -> list[Tool]:
+    blueprint_output = {
+        "type": "object",
+        "properties": {
+            "server_id": {"type": "string"},
+            "query": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "class_type": {"type": "string"},
+                        "display_name": {"type": "string"},
+                        "category": {"type": "string"},
+                        "inputs": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "type": {"type": "string"},
+                                    "required": {"type": "boolean"},
+                                    "options": {
+                                        "type": "array",
+                                        "items": {"type": "string"},
+                                    },
+                                },
+                                "required": ["name", "type", "required"],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "outputs": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["class_type", "display_name", "category", "inputs"],
+                    "additionalProperties": False,
+                },
+            },
+            "total_matches": {"type": "integer"},
+        },
+        "required": ["server_id", "query", "items", "total_matches"],
+        "additionalProperties": False,
+    }
     job_properties = {
         "server_id": {"type": "string", "minLength": 1},
         "prompt_id": {"type": "string", "minLength": 1},
@@ -966,6 +1010,35 @@ def fixed_tools() -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
+            Tool(
+            name="comfyui.node.blueprint",
+            description=(
+                "Project a goal-driven compact node blueprint: keyword-matched "
+                "node classes with bounded input signatures (types and "
+                "advertised options)."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": {"type": "string", "minLength": 1},
+                    "query": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 256,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 10,
+                        "default": 5,
+                    },
+                },
+                "required": ["server_id", "query"],
+                "additionalProperties": False,
+            },
+            output_schema=blueprint_output,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
     ]
     return [decorate_tool(tool) for tool in tools]
 
@@ -1062,6 +1135,7 @@ def phase_k_tools() -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
+
     ]
     return [decorate_tool(tool) for tool in tools]
 
