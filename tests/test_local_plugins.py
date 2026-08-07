@@ -496,7 +496,13 @@ def test_nested_exhausted_then_flat_probes_stop(
                 raise
 
     def fake_scandir(path):
-        label = "nested" if str(path).endswith("ComfyUI\\custom_nodes") else "flat"
+        scan_path = Path(path)
+        label = (
+            "nested"
+            if scan_path.parent.name == "ComfyUI"
+            and scan_path.name == "custom_nodes"
+            else "flat"
+        )
         return _ProbeIterator(real_scandir(path), label)
 
     monkeypatch.setattr(_os, "scandir", fake_scandir)
