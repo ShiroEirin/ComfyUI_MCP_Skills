@@ -76,11 +76,14 @@ def test_phase_m_declares_exact_bounded_execute_tools() -> None:
         "maximum": 100,
         "default": 50,
     }
+    # propertyNames/minProperties/maxProperties are not harness-compatible;
+    # score-name and count bounds are enforced by validate_rating_scores
+    # against the registered rubric instead.
     assert (
         tools["comfyui.experiment.variant.rate"].input_schema["properties"]["scores"][
-            "maxProperties"
+            "additionalProperties"
         ]
-        == 32
+        == {"type": "number", "minimum": -1_000_000, "maximum": 1_000_000}
     )
     assert tools["comfyui.experiment.variant.promote"].input_schema["properties"]["target"] == {
         "type": "string",
