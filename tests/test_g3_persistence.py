@@ -295,3 +295,85 @@ def test_sqlite_include_disabled_lists_disabled_workflow(tmp_path: Path) -> None
     assert not any(item["workflow_id"] == "portrait" for item in visible)
     all_items = catalog.list_workflows(include_disabled=True)["items"]
     assert any(item["workflow_id"] == "portrait" for item in all_items)
+
+
+def _seed_owner_overlay(store: SQLiteControlPlaneStore, *, s_enabled: int, d_enabled: int) -> None:
+    """Insert the minimal owner overlay chain for the cutover 'portrait' deployment."""
+    owner = "alice"
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        deployment_id = connection.execute(
+            "SELECT deployment_id FROM workflow_deployments WHERE workflow_id='portrait'"
+        ).fetchone()[0]
+        now = "2026-08-07T00:00:00+00:00"
+        connection.execute(
+            "UPDATE workflow_deployments SET enabled=? WHERE deployment_id=?",
+            (d_enabled, deployment_id),
+        )
+        connection.execute(
+            """INSERT INTO server_change_plans(
+                plan_id,plan_digest,owner_id,operation,server_id,changes_json,
+                expected_revision,impact_json,created_at,expires_at,resource_uri
+            ) VALUES ('plan_a','{digest}','{owner}','upsert','local','{{}}',0,'{{}}',?,?,'comfyui://servers/local')"""
+            .format(owner=owner, digest="a" * 64),
+            (now, "2026-08-08T00:00:00+00:00"),
+        )
+        connection.execute(
+            """INSERT INTO server_revisions(
+                server_id,owner_id,revision,lifecycle_status,config_json,config_digest,
+                plan_id,created_at
+            ) VALUES ('local','{owner}',1,'active','{{}}','{digest}','plan_a',?)"""
+            .format(owner=owner, digest="b" * 64),
+            (now,),
+        )
+        connection.execute(
+            """INSERT INTO managed_servers(
+                server_id,owner_id,current_revision,current_digest,lifecycle_status,
+                created_at,updated_at
+            ) VALUES ('local','{owner}',1,'{digest}','active',?,?)"""
+            .format(owner=owner, digest="b" * 64),
+            (now, now),
+        )
+        connection.execute(
+            """INSERT INTO config_workflow_deployments(
+                owner_id,deployment_id,server_id,workflow_id
+            ) VALUES (?,?, 'local','portrait')""",
+            (owner, deployment_id),
+        )
+        connection.execute(
+            """INSERT INTO config_workflow_states(
+                owner_id,server_id,workflow_id,enabled,updated_at
+            ) VALUES (?, 'local','portrait',?,?)""",
+            (owner, s_enabled, now),
+        )
+        connection.execute(
+            "INSERT INTO config_workflow_snapshots(owner_id,updated_at) VALUES (?, ?)",
+            (owner, now),
+        )
+
+
+@pytest.mark.parametrize(
+    ("s_enabled", "d_enabled", "expected"),
+    [(1, 1, True), (1, 0, False), (0, 1, False), (0, 0, False)],
+)
+def test_sqlite_owner_overlay_enabled_is_owner_and_deployment(
+    tmp_path: Path,
+    s_enabled: int,
+    d_enabled: int,
+    expected: bool,
+) -> None:
+    """Effective enabled under an owner overlay requires both the owner state
+    and the deployment to be enabled."""
+    from comfyui_mcp_skills.application.catalog import WorkflowCatalog
+
+    _write_workflow(tmp_path)
+    store = _store(tmp_path)
+    cutover_g3_import_plan(build_g3_import_plan(tmp_path), store)
+    _seed_owner_overlay(store, s_enabled=s_enabled, d_enabled=d_enabled)
+
+    repository = SQLiteWorkflowRepository(store, owner_id="alice")
+    catalog = WorkflowCatalog(repository)
+
+    assert repository.list()[0].enabled is expected
+    visible = catalog.list_workflows(include_disabled=False)["items"]
+    assert any(item["workflow_id"] == "portrait" for item in visible) is expected

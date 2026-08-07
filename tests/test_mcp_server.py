@@ -1116,6 +1116,7 @@ async def test_admin_workflow_import_from_server_userdata(tmp_path: Path) -> Non
     from unittest.mock import patch
 
     _project(tmp_path)
+    _USERDATA_BODY = b'{"1": {"class_type": "Test", "inputs": {}}}'
     store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
     store.initialize()
     with sqlite3.connect(store.path) as connection:
@@ -1137,9 +1138,18 @@ async def test_admin_workflow_import_from_server_userdata(tmp_path: Path) -> Non
 
     class _Response:
         status_code = 200
+        headers = {"Content-Length": str(len(_USERDATA_BODY))}
 
-        def json(self) -> dict[str, Any]:
-            return {"1": {"class_type": "Test", "inputs": {}}}
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 8192):
+            payload = _USERDATA_BODY
+            for index in range(0, len(payload), chunk_size):
+                yield payload[index : index + chunk_size]
+
+        def close(self) -> None:
+            return None
 
     with patch(
         "comfyui_mcp_skills.infrastructure.comfyui.core_client.CoreClient._get",

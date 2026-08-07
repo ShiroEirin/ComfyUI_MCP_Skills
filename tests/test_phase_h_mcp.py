@@ -598,3 +598,109 @@ async def test_server_free_intent_write_failure_aborts_execution(
 
     assert result.is_error is True
     assert gateway.calls == 0
+
+
+@pytest.mark.anyio
+async def test_server_free_success_terminal_write_failure_refuses_audited(
+    tmp_path: Path,
+) -> None:
+    """A failed success-terminal write must error, never claim audited."""
+    _project(tmp_path)
+
+    class _CountingGateway(PhaseHGateway):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+            self.calls += 1
+            return {"success": True, "impact": ["loaded_models"]}
+
+    gateway = _CountingGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+
+    from comfyui_mcp_skills.application.admin import JsonlAuditLog
+
+    class _FailingTerminalLog(JsonlAuditLog):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            self.appends = 0
+
+        def append(self, event: dict[str, object]) -> None:
+            self.appends += 1
+            if self.appends > 1:  # intent succeeds, the terminal write fails
+                raise OSError("audit terminal write failed")
+            return super().append(event)
+
+    with patch(
+        "comfyui_mcp_skills.adapters.mcp.server.JsonlAuditLog",
+        lambda _path: _FailingTerminalLog(tmp_path / "data" / "admin-audit.jsonl"),
+    ):
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "comfyui.server.free",
+                {"server_id": "local", "unload_models": True},
+            )
+
+    assert result.is_error is True
+    assert "refusing to claim audited" in str(result.content[0])
+    assert gateway.calls == 1
+    assert "audit_status" not in str(result.content[0])
+
+
+@pytest.mark.anyio
+async def test_server_free_failure_terminal_write_failure_is_explicit(
+    tmp_path: Path,
+) -> None:
+    """A failed failure-terminal write surfaces as an explicit error."""
+    _project(tmp_path)
+
+    class _FailingGateway(PhaseHGateway):
+        def free_memory(self, *, unload_models: bool, free_memory: bool) -> dict[str, Any]:
+            raise RuntimeError("free backend failed")
+
+    gateway = _FailingGateway()
+    server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        authorization=AuthorizationContext(
+            "operations-test",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
+
+    from comfyui_mcp_skills.application.admin import JsonlAuditLog
+
+    class _FailingTerminalLog(JsonlAuditLog):
+        def __init__(self, path: Path) -> None:
+            super().__init__(path)
+            self.appends = 0
+
+        def append(self, event: dict[str, object]) -> None:
+            self.appends += 1
+            if self.appends > 1:  # intent succeeds, the failure terminal fails
+                raise OSError("audit terminal write failed")
+            return super().append(event)
+
+    with patch(
+        "comfyui_mcp_skills.adapters.mcp.server.JsonlAuditLog",
+        lambda _path: _FailingTerminalLog(tmp_path / "data" / "admin-audit.jsonl"),
+    ):
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "comfyui.server.free",
+                {"server_id": "local", "unload_models": True},
+            )
+
+    assert result.is_error is True
+    assert "audit terminal could not be persisted" in str(result.content[0])
+    assert "audit_status" not in str(result.content[0])

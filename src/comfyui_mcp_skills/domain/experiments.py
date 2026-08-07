@@ -6,6 +6,7 @@ import hashlib
 import itertools
 import json
 import math
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -101,6 +102,21 @@ class RatingRubric:
     dimensions: Mapping[str, ScoreDimension]
 
 
+def _exact_keys(normalized: dict[str, Any], allowed: frozenset[str], field: str) -> None:
+    """Reject unknown expansion fields the tool schema no longer enumerates."""
+    unexpected = sorted(set(normalized) - allowed)
+    if unexpected:
+        raise ValueError(f"{field} has unexpected fields: {', '.join(unexpected)}")
+
+
+_EXPANSION_KEYS = {
+    "matrix": frozenset({"mode", "parameters"}),
+    "zip": frozenset({"mode", "parameters"}),
+    "sample": frozenset({"mode", "parameters", "seed", "count"}),
+    "explicit": frozenset({"mode", "variants"}),
+}
+
+
 def expand_variants(
     expansion: object,
     base_arguments: object,
@@ -113,13 +129,16 @@ def expand_variants(
     mode = normalized.get("mode")
     if mode not in {"matrix", "zip", "sample", "explicit"}:
         raise ValueError("expansion mode must be matrix, zip, sample, or explicit")
+    _exact_keys(normalized, _EXPANSION_KEYS[mode], "expansion")
     if mode == "explicit":
         explicit = json_copy(normalized.get("variants"), "expansion.variants")
         if not isinstance(explicit, list) or not explicit:
             raise ValueError("explicit expansion variants must be a non-empty list")
         if len(explicit) > max_variants:
             raise ValueError("variant count exceeds max_variants budget")
-        arguments = tuple(_json_object(variant, "explicit variant") for variant in explicit)
+        arguments: tuple[dict[str, Any], ...] = tuple(
+            _bounded_variant(variant) for variant in explicit
+        )
         return ExpandedVariants("explicit", arguments)
     parameters = _parameter_lists(normalized.get("parameters"))
     count: int
@@ -453,14 +472,45 @@ def _json_object(value: object, field: str) -> dict[str, Any]:
     return copied
 
 
+_PARAMETER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+_MAX_PARAMETER_SETS = 64
+_MAX_PARAMETER_VALUES = 10_000
+
+
 def _parameter_lists(value: object) -> dict[str, list[Any]]:
     parameters = _json_object(value, "expansion.parameters")
     if not parameters:
         raise ValueError("expansion.parameters must not be empty")
+    if len(parameters) > _MAX_PARAMETER_SETS:
+        raise ValueError(f"expansion.parameters must not exceed {_MAX_PARAMETER_SETS} entries")
     for name, values in parameters.items():
-        if not name or not isinstance(values, list) or not values:
-            raise ValueError("each expansion parameter must have a name and non-empty value list")
+        if not isinstance(name, str) or _PARAMETER_NAME.fullmatch(name) is None:
+            raise ValueError(
+                "expansion parameter names must match "
+                "[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
+            )
+        if not isinstance(values, list) or not values:
+            raise ValueError("each expansion parameter must have a non-empty value list")
+        if len(values) > _MAX_PARAMETER_VALUES:
+            raise ValueError(
+                f"each expansion parameter value list must not exceed "
+                f"{_MAX_PARAMETER_VALUES} entries"
+            )
     return parameters
+
+
+def _bounded_variant(value: object) -> dict[str, Any]:
+    """One explicit variant: an object with bounded, well-formed parameter keys."""
+    variant = _json_object(value, "explicit variant")
+    if len(variant) > _MAX_PARAMETER_SETS:
+        raise ValueError(f"explicit variant must not exceed {_MAX_PARAMETER_SETS} parameters")
+    for name in variant:
+        if not isinstance(name, str) or _PARAMETER_NAME.fullmatch(name) is None:
+            raise ValueError(
+                "explicit variant parameter names must match "
+                "[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}"
+            )
+    return variant
 
 
 def _product_size(parameters: dict[str, list[Any]]) -> int:

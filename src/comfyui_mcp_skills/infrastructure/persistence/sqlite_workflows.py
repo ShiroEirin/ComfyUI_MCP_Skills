@@ -48,7 +48,8 @@ class SQLiteWorkflowRepository:
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    """SELECT d.server_id,d.workflow_id,s.enabled,
+                    """SELECT d.server_id,d.workflow_id,
+                    (s.enabled AND d.enabled) AS enabled,
                     r.graph_json,r.parameter_schema_json
                     FROM config_workflow_deployments AS b
                     JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id
@@ -81,7 +82,8 @@ class SQLiteWorkflowRepository:
                 ).fetchone()
             else:
                 row = connection.execute(
-                    """SELECT d.server_id,d.workflow_id,s.enabled,
+                    """SELECT d.server_id,d.workflow_id,
+                    (s.enabled AND d.enabled) AS enabled,
                     r.graph_json,r.parameter_schema_json
                     FROM config_workflow_deployments AS b
                     JOIN workflow_deployments AS d ON d.deployment_id=b.deployment_id

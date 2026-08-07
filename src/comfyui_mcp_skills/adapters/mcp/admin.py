@@ -1333,6 +1333,13 @@ def _missing_models(
         except (TypeError, ValueError, LookupError) as exc:
             folder_errors.append(f"{folder}: {exc}")
             continue
+        except ComfyUISkillsError as exc:
+            # Production gateways wrap connectivity/HTTP failures in
+            # ComfyUISkillsError subclasses; an unreadable inventory must be
+            # reported as a folder error (is_ready=false), never as a tool
+            # failure pretending the inventory is fine.
+            folder_errors.append(f"{folder}: {type(exc).__name__}")
+            continue
         missing.extend(filename for filename in filenames if filename not in available_set)
     return missing, folder_errors
 

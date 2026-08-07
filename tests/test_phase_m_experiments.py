@@ -866,3 +866,58 @@ def test_plan_rejects_unknown_pinned_cost_facts(missing_fact: str) -> None:
             0,
         )
     assert repository.saved_plans == []
+
+
+def test_expansion_rejects_unexpected_fields_per_mode() -> None:
+    """The service layer enforces exact per-mode key sets that the tool schema
+    no longer enumerates."""
+    from comfyui_mcp_skills.domain.experiments import expand_variants
+
+    with pytest.raises(ValueError, match="unexpected fields"):
+        expand_variants(
+            {"mode": "matrix", "parameters": {"seed": [1]}, "extra": 1},
+            {},
+            max_variants=100,
+        )
+    with pytest.raises(ValueError, match="unexpected fields"):
+        expand_variants(
+            {"mode": "sample", "parameters": {"seed": [1]}, "seed": 1, "count": 1, "x": 2},
+            {},
+            max_variants=100,
+        )
+    with pytest.raises(ValueError, match="unexpected fields"):
+        expand_variants(
+            {"mode": "explicit", "variants": [{"a": 1}], "parameters": {}},
+            {},
+            max_variants=100,
+        )
+
+
+def test_expansion_parameter_name_and_count_bounds_are_enforced() -> None:
+    from comfyui_mcp_skills.domain.experiments import expand_variants
+
+    with pytest.raises(ValueError, match="must match"):
+        expand_variants(
+            {"mode": "matrix", "parameters": {"bad name!": [1]}},
+            {},
+            max_variants=100,
+        )
+    too_many = {f"p{i}": [i] for i in range(65)}
+    with pytest.raises(ValueError, match="must not exceed 64"):
+        expand_variants(
+            {"mode": "matrix", "parameters": too_many},
+            {},
+            max_variants=100,
+        )
+    with pytest.raises(ValueError, match="must not exceed 10000"):
+        expand_variants(
+            {"mode": "matrix", "parameters": {"p": list(range(10_001))}},
+            {},
+            max_variants=100,
+        )
+    with pytest.raises(ValueError, match="must not exceed 64"):
+        expand_variants(
+            {"mode": "explicit", "variants": [{f"p{i}": i for i in range(65)}]},
+            {},
+            max_variants=100,
+        )

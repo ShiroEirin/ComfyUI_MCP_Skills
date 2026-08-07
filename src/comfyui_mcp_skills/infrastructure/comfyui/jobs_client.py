@@ -31,7 +31,10 @@ class JobsClient(SharedClient):
         if priority is not None:
             payload["number"] = priority
         if targets:
-            payload["partial_execution_targets"] = [[target] for target in targets]
+            # ComfyUI /prompt validates partial_execution_targets against its
+            # output node ids as a flat list of strings; nested arrays never
+            # match and the engine would reject the prompt as output-less.
+            payload["partial_execution_targets"] = list(targets)
         if self.comfy_api_key:
             payload["extra_data"] = {"api_key_comfy_org": self.comfy_api_key}
         resp = self._post("/prompt", json_data=payload)

@@ -1848,17 +1848,6 @@ def phase_m_tools() -> list[Tool]:
         "maxLength": 128,
         "pattern": r"^(?!.*[\r\n])variant_[A-Za-z0-9_-]{1,120}$",
     }
-    parameter_sets = {
-        "type": "object",
-        "additionalProperties": {
-            "type": "array",
-            "minItems": 1,
-            "maxItems": 10_000,
-        },
-    }
-    explicit_variant = {
-        "type": "object",
-    }
     expansion = {
         "type": "object",
         "description": "One of matrix/zip/sample/explicit modes; validated server-side",

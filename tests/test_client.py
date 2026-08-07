@@ -59,7 +59,7 @@ class QueuePromptTests(unittest.TestCase):
         mock_post.return_value.raise_for_status = MagicMock()
         self.client.queue_prompt({"1": {}}, targets=["5", "8"])
         payload = mock_post.call_args.kwargs["json"]
-        self.assertEqual(payload["partial_execution_targets"], [["5"], ["8"]])
+        self.assertEqual(payload["partial_execution_targets"], ["5", "8"])
 
     @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.post")
     def test_without_targets(self, mock_post: MagicMock) -> None:
@@ -645,9 +645,21 @@ class ReadUserdataWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.client = ComfyUIClient("http://localhost:8188")
 
+    @staticmethod
+    def _ok_response(payload: bytes) -> MagicMock:
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status = MagicMock()
+        response.headers = {"Content-Length": str(len(payload))}
+        response.iter_content = lambda chunk_size: [
+            payload[index : index + chunk_size]
+            for index in range(0, len(payload), chunk_size)
+        ]
+        return response
+
     @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_percent_encodes_full_path(self, mock_get: MagicMock) -> None:
-        mock_get.return_value = MagicMock(status_code=200, json=lambda: {"nodes": []})
+        mock_get.return_value = self._ok_response(b'{"nodes": []}')
         self.client.read_userdata_workflow("workflows/MultiCharacter.json")
         called_url = mock_get.call_args.args[0]
         self.assertIn("/userdata/workflows%2FMultiCharacter.json", called_url)
@@ -656,7 +668,24 @@ class ReadUserdataWorkflowTests(unittest.TestCase):
     @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
     def test_returns_none_on_404(self, mock_get: MagicMock) -> None:
         mock_get.return_value = MagicMock(status_code=404)
+        mock_get.return_value.raise_for_status.side_effect = requests.HTTPError("404")
         self.assertIsNone(self.client.read_userdata_workflow("workflows/missing.json"))
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_rejects_oversized_declared_body(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = MagicMock(status_code=200)
+        mock_get.return_value.raise_for_status = MagicMock()
+        mock_get.return_value.headers = {"Content-Length": str(2 * 1024 * 1024 + 1)}
+        with self.assertRaises(ValueError):
+            self.client.read_userdata_workflow("workflows/huge.json")
+
+    @patch("comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get")
+    def test_rejects_oversized_chunked_body(self, mock_get: MagicMock) -> None:
+        response = self._ok_response(b"x" * (2 * 1024 * 1024 + 1))
+        del response.headers["Content-Length"]  # no declared length; streaming cap
+        mock_get.return_value = response
+        with self.assertRaises(ValueError):
+            self.client.read_userdata_workflow("workflows/huge.json")
 
 
 class DownloadOutputTests(unittest.TestCase):

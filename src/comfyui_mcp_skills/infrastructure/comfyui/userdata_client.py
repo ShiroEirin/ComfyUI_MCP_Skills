@@ -56,11 +56,22 @@ class UserdataClient(SharedClient):
         # aiohttp matches /userdata/{file} as a single path segment. Percent-
         # encode the full relative path (including "/" separators) so it is
         # not split into multiple segments, which would return 404.
+        # The response is decoded with a hard byte cap so a hostile or broken
+        # engine cannot exhaust the Admin process memory.
+        if not isinstance(workflow_path, str) or not workflow_path:
+            raise ValueError("userdata workflow path must be a non-empty string")
+        if len(workflow_path) > 1024:
+            raise ValueError("userdata workflow path exceeds 1024 characters")
         encoded = urllib.parse.quote(workflow_path, safe="")
         try:
-            resp = self._get(f"/userdata/{encoded}")
-            if resp.status_code == 200:
-                return resp.json()
-        except (requests.RequestException, ValueError):
-            pass
-        return None
+            return self._get_json_bounded(
+                f"/userdata/{encoded}",
+                max_bytes=2 * 1024 * 1024,
+                description="ComfyUI userdata workflow",
+            )
+        except requests.RequestException:
+            # Connection/HTTP failures and 404s read as "not found"; an
+            # oversize or malformed body is a real error and must surface.
+            return None
+        except ValueError:
+            raise
