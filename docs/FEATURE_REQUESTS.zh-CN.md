@@ -38,6 +38,21 @@
 
 ---
 
+## 装配分层（架构原则，GA 前置）
+
+> 状态：**已登记**。诊断已验证（3 轮方案审查 PASS）：本地 stdio 入口在 create_server 前无条件初始化 SQLite 控制面（80+ 表）+ 编排仓库 + 订阅总线，核心层（本地单用户）被云端增强层包裹。分层顺序应为：核心层默认、增强层按需装配。
+
+### 原则
+- **核心层（本地默认路径）**：run 动态工具直连 `/prompt`、`engine.history` 看历史、`local.plugins` + node 目录写工作流、本地文件/轻量存储。
+- **增强层（云端可选装配）**：幂等/恢复/retry lineage、审计闭环/owner 隔离、路由/审批/多租户/实验矩阵、cutover 迁移治理。
+- **装配规则（方案审查确认）**：轻量仅限 fresh（control-plane.sqlite3 不存在，store=None）；任何已存在数据库（含 all-file 未 cutover）保持完整初始化 + fail-closed（已初始化 all-file DB 有 provisioning/experiments 消费者与编排 worker，走轻量会停摆持久工作）。订阅总线拆分：目录变更通知（ToolsListChanged/ResourcesListChanged）是核心契约保留；OrchestrationRuntime worker/outbox 按 SQLite 可用性门控。
+
+### 任务
+1. **本地轻量引导文档**（零代码）：分层说明 + 本地 5 分钟上手（operations 单条目：OBSERVE principal/scopes/toolset + `COMFYUI_MCP_ENABLE_HIGH_RISK=1`，覆盖观察/节点/插件/历史；跑图需 execution 第二条目——单条目不暴露动态工作流）；同步修正 INSTALLATION "立即初始化控制平面"旧说明。
+2. **入口懒初始化**（代码）：`__main__.py`/`http_main.py` 按 DB 是否存在决定初始化；fresh 不建 control-plane.sqlite3、既有 DB 完整升级；编排 worker 门控。回归：fresh 无库、all-file pending provisioning/outbox 推进、混合/全 SQLite 升级、932 基线。
+
+---
+
 ## 1.0 GA 路径（Beta → 正式）
 
 > 状态：**已登记，未开始**。当前 1.1.0 Beta 卡在两个"承诺性"门槛，均为生产可用性要求（功能增强不构成 beta 理由）。
@@ -58,7 +73,7 @@
 - **交付**：G2 完成后接入 Windows Service 适配器 + 测试。
 
 ### 建议迭代顺序
-G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每项独立可验证、不阻塞。
+装配分层（前置原则 + 懒初始化 + 引导文档）→ G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每项独立可验证、不阻塞。
 
 ---
 
@@ -67,3 +82,4 @@ G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每
 - 2026-08-07：登记「节点能力感知」计划（P0-P2，含拍板决策）。
 - 2026-08-07：P0-1/P0-2/P0-3、P2 可视化、P1 知识库、本地化 engine.history、第三方整合包兼容（local.plugins）全部已交付。
 - 2026-08-07：登记 1.0 GA 路径（G1 schema 冻结 / G2 重启闭环 / G3 Windows 控制器）。
+- 2026-08-07：登记装配分层原则（诊断经 3 轮方案审查 PASS；轻量仅限 fresh，既有 DB fail-closed 保持）。
