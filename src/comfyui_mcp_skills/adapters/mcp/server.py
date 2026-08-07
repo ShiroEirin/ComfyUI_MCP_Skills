@@ -93,6 +93,7 @@ from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.experiment_orchestration import ExperimentAdvanceHandler
 from comfyui_mcp_skills.application.experiments import ExperimentService, get_experiment_variant
 from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.model_guidance import guidance as model_guidance
 from comfyui_mcp_skills.application.observability import ObservationService
 from comfyui_mcp_skills.application.orchestration import (
     ComfyUIReconcileProbe,
@@ -110,6 +111,7 @@ from comfyui_mcp_skills.application.runtime_control import (
     RuntimeControlService,
 )
 from comfyui_mcp_skills.application.servers import OwnerAwareServerRegistry, ServerRegistry
+from comfyui_mcp_skills.application.suggestions import SuggestionService
 from comfyui_mcp_skills.application.telemetry import (
     Meter,
     Tracer,
@@ -446,6 +448,9 @@ def create_server(
         "local-stdio", frozenset({Scope.EXECUTE}), Toolset.EXECUTION
     )
     workflow_repository = repositories.workflows
+    suggestion_service = None
+    if repositories.store is not None and repositories.run_store == "sqlite":
+        suggestion_service = SuggestionService(repositories.store.path)
     if isinstance(workflow_repository, SQLiteWorkflowRepository) and repositories.store is not None:
         workflow_repository = SQLiteWorkflowRepository(
             repositories.store,
@@ -659,6 +664,10 @@ def create_server(
                 and (routing is not None or spec.name not in PHASE_K_TOOL_NAMES)
                 and (
                     repositories.run_store == "sqlite" or spec.name != "comfyui.job.list"
+                )
+                and (
+                    repositories.run_store == "sqlite"
+                    or spec.name != "comfyui.job.history.suggest"
                 )
                 and (
                     spec.name not in PHASE_N_TOOL_NAMES
@@ -879,6 +888,10 @@ def create_server(
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
+                and (
+                    repositories.run_store == "sqlite"
+                    or tool.name != "comfyui.job.history.suggest"
+                )
                 and tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
@@ -889,6 +902,10 @@ def create_server(
                 for tool in fixed_surface
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
+                and (
+                    repositories.run_store == "sqlite"
+                    or tool.name != "comfyui.job.history.suggest"
+                )
                 and tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
         if apps_supported:
@@ -1661,6 +1678,21 @@ def create_server(
                 limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
                 result = await anyio.to_thread.run_sync(
                     lambda: observation.queue(server_id, limit=limit, cursor=cursor)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.model.guidance":
+                validate_fixed_arguments(arguments, {"query"})
+                query = optional_string(arguments, "query", "")
+                return tool_result(model_guidance(query=query))
+            if params.name == "comfyui.job.history.suggest":
+                validate_fixed_arguments(arguments, {"workflow_id"})
+                workflow_id = optional_string(arguments, "workflow_id", "")
+                if suggestion_service is None:
+                    raise ValueError(
+                        "Run-history suggestions require the SQLite run store"
+                    )
+                result = await anyio.to_thread.run_sync(
+                    lambda: suggestion_service.suggest(owner_id, workflow_id=workflow_id)
                 )
                 return tool_result(result)
             if params.name == "comfyui.node.blueprint":

@@ -109,6 +109,8 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.node.list": frozenset({Scope.OBSERVE}),
     "comfyui.node.blueprint": frozenset({Scope.OBSERVE}),
     "comfyui.workflow.visualize": frozenset({Scope.OBSERVE}),
+    "comfyui.model.guidance": frozenset({Scope.OBSERVE}),
+    "comfyui.job.history.suggest": frozenset({Scope.OBSERVE}),
     "comfyui.engine.history": frozenset({Scope.OBSERVE}),
     "comfyui.queue.remove": frozenset({Scope.OPERATE}),
     "comfyui.queue.clear": frozenset({Scope.OPERATE}),

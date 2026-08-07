@@ -20,10 +20,10 @@
 3. **`change.plan` 校验增强 + 失败引导**（**已交付**）：plan 阶段对照 object_info 校验（validate_api 覆盖 class_type/required/枚举/范围）；失败错误带节点/字段定位与修复路径 hint（`comfyui.node.describe <class_type>`）；`suggested_queries` 字段标记可选未做。
 4. 节点目录快照 Resource（可选加分）：`comfyui://server/{id}/nodes` 紧凑投影 + 缓存 + 订阅失效。
 
-### P1 采样器/模型经验知识
-1. 内置 `model_guidance` 数据文件：模型家族 → 推荐 sampler/scheduler/steps/CFG/resolution（社区共识，Resource 提供）。
-2. `comfyui.job.history.suggest`（差异化）：从持久化 Job 历史统计成功组合（completed + 高评分），与 Experiment/variant.rate 评分联动；静态知识兜底 + 历史统计推荐双通道。
-3. **单独迭代**（已拍板：不混入 P0；依赖 SQLite run aggregate，workspace 已 cutover）。
+### P1 采样器/模型经验知识（**已交付**）
+1. `model_guidance` 内置数据（9 个模型家族 → sampler/scheduler/steps/CFG/resolution 社区共识）+ `comfyui.model.guidance` 工具（关键词匹配，未知输入不猜测）。
+2. `comfyui.job.history.suggest`（已交付）：从 execution_plans.resolved_inputs_json + jobs.status 统计证据（每参数值 runs + success_rate，≤20 参数 × ≤3 值，SQLite 门控）。
+3. 静态知识兜底 + 历史统计推荐双通道成立。Experiment/variant.rate 评分联动标记后续可选。
 
 ### P2 工作流可视化（**已交付**）
 1. `comfyui.workflow.visualize`：Mermaid 渲染（≤50 节点 fail-loud、节点别名防注入、边来自输入连接、标签转义）。
@@ -40,4 +40,4 @@
 ## 历史登记
 
 - 2026-08-07：登记「节点能力感知」计划（P0-P2，含拍板决策）。
-- 2026-08-07：P0-1 授权对齐、P0-3 change.plan 校验引导、P0-2 node.blueprint、P2 可视化、本地化 engine.history 已交付。
+- 2026-08-07：P0-1/P0-2/P0-3、P2 可视化、P1 知识库、本地化 engine.history 全部已交付。

@@ -2289,3 +2289,99 @@ async def test_workflow_visualize_missing_workflow_is_not_found(tmp_path: Path) 
         )
     assert result.is_error is True
     assert "not found" in str(result.content[0]).lower()
+
+
+def test_model_guidance_returns_family_starting_points() -> None:
+    """guidance matches families by keyword and returns the full catalog on an
+    empty query without ever guessing on unknown input."""
+    from comfyui_mcp_skills.application.model_guidance import guidance, list_families
+
+    assert len(list_families()) >= 5
+    flux = guidance("flux")
+    assert flux["items"][0]["family"] == "FLUX.1"
+    assert flux["items"][0]["cfg"] == 1.0
+    empty = guidance("")
+    assert len(empty["items"]) == len(list_families())
+    unknown = guidance("definitely-not-a-model")
+    assert unknown["items"] == []
+
+
+@pytest.mark.anyio
+async def test_history_suggest_counts_successful_parameter_values(
+    tmp_path: Path,
+) -> None:
+    """suggest tallies resolved plan inputs against job outcomes."""
+    import sqlite3
+    from datetime import datetime, timezone
+
+    from comfyui_mcp_skills.application.suggestions import SuggestionService
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    _copy_file_workflow_to_sqlite(tmp_path, store)
+    now = datetime.now(timezone.utc).isoformat()
+    with sqlite3.connect(store.path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        deployment_id = connection.execute(
+            "SELECT deployment_id FROM workflow_deployments LIMIT 1"
+        ).fetchone()[0]
+        revision_id = connection.execute(
+            "SELECT revision_id FROM workflow_deployments LIMIT 1"
+        ).fetchone()[0]
+        plan_ids = []
+        for index, (status, steps) in enumerate(
+            [("completed", 25), ("completed", 25), ("failed", 50)], start=1
+        ):
+            plan_id = "plan_" + "a" * 30 + f"{index:02d}"
+            plan_ids.append(plan_id)
+            connection.execute(
+                """INSERT INTO execution_plans(
+                    plan_id, workflow_id, revision_id, deployment_id, server_id,
+                    resolved_inputs_json, input_digest, plan_digest, created_at
+                ) VALUES (?, 'txt2img', ?, ?, 'local', ?, ?, ?, ?)""",
+                (
+                    plan_id,
+                    revision_id,
+                    deployment_id,
+                    json.dumps({"steps": steps, "cfg": 7.0, "sampler_name": "euler_a"}),
+                    "d" * 62 + f"{index:02d}",
+                    "e" * 62 + f"{index:02d}",
+                    now,
+                ),
+            )
+            connection.execute(
+                """INSERT INTO execution_plan_owners(
+                    plan_id, owner_id, revision_id, deployment_id, created_at
+                ) VALUES (?, 'owner-x', ?, ?, ?)""",
+                (plan_id, revision_id, deployment_id, now),
+            )
+            connection.execute(
+                """INSERT INTO jobs(
+                    job_id, workflow_id, plan_id, revision_id, deployment_id,
+                    owner_id, status, created_at, created_at_source,
+                    legacy_migrated, error, outputs_json, execution_origin
+                ) VALUES (?, 'txt2img', ?, ?, ?, 'owner-x', ?, ?, 'suggest-test',
+                          0, '', '[]', 'planned')""",
+                (
+                    "job_" + "b" * 31 + str(index),
+                    plan_id,
+                    revision_id,
+                    deployment_id,
+                    status,
+                    now,
+                ),
+            )
+
+    service = SuggestionService(store.path)
+    result = service.suggest("owner-x")
+
+    assert result["scanned_jobs"] == 3
+    by_name = {item["parameter"]: item for item in result["suggestions"]}
+    steps = by_name["steps"]["values"][0]
+    assert steps["value"] == "25"
+    assert steps["runs"] == 2
+    assert steps["success_rate"] == 1.0
+    failed = by_name["steps"]["values"][1]
+    assert failed["value"] == "50"
+    assert failed["success_rate"] == 0.0

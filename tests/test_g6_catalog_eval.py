@@ -39,7 +39,7 @@ def test_fixed_tool_inventory_has_uniform_metadata_and_stays_within_budget() -> 
     tools = fixed_tools()
     inventory = ToolInventory(tools)
 
-    assert inventory.fixed_count <= 16
+    assert inventory.fixed_count <= ToolInventory.DEFAULT_FIXED_LIMIT
     assert all(tool.title for tool in tools)
     assert all(tool.icons and tool.icons[0].src.startswith("data:image/svg+xml,") for tool in tools)
     assert all(tool.annotations is not None for tool in tools)
@@ -83,8 +83,11 @@ def test_each_authorized_fixed_toolset_stays_within_default_budget() -> None:
         visible = [tool for tool in tools if tool_visible(tool.name, toolset, granted)]
         assert len(visible) <= ToolInventory.DEFAULT_FIXED_LIMIT
 
-    with pytest.raises(ValueError, match="limit of 16"):
-        ToolInventory(SimpleNamespace(name=str(index)) for index in range(17))
+    with pytest.raises(ValueError, match="limit of 24"):
+        ToolInventory(
+            SimpleNamespace(name=str(index))
+            for index in range(ToolInventory.DEFAULT_FIXED_LIMIT + 1)
+        )
     extended = ToolInventory(
         (SimpleNamespace(name=str(index)) for index in range(20)),
         max_fixed_limit=20,

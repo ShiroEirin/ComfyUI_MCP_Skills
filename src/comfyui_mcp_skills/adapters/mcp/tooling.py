@@ -807,6 +807,64 @@ def fixed_tools() -> list[Tool]:
         "required": ["workflow_id", "server_id", "mermaid", "node_count"],
         "additionalProperties": False,
     }
+    guidance_output = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "family": {"type": "string"},
+                        "sampler": {"type": "string"},
+                        "scheduler": {"type": "string"},
+                        "steps": {"type": "integer"},
+                        "cfg": {"type": "number"},
+                        "resolution": {"type": "integer"},
+                    },
+                    "required": ["family", "sampler", "scheduler", "steps", "cfg", "resolution"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["query", "items"],
+        "additionalProperties": False,
+    }
+    suggest_output = {
+        "type": "object",
+        "properties": {
+            "owner_id": {"type": "string"},
+            "workflow_id": {"type": "string"},
+            "scanned_jobs": {"type": "integer"},
+            "suggestions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "parameter": {"type": "string"},
+                        "values": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {"type": "string"},
+                                    "runs": {"type": "integer"},
+                                    "success_rate": {"type": "number"},
+                                },
+                                "required": ["value", "runs", "success_rate"],
+                                "additionalProperties": False,
+                            },
+                        },
+                    },
+                    "required": ["parameter", "values"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["owner_id", "workflow_id", "scanned_jobs", "suggestions"],
+        "additionalProperties": False,
+    }
     discovery_properties = {
         "server_id": {"type": "string", "minLength": 1},
         "query": {"type": "string", "default": ""},
@@ -1038,6 +1096,49 @@ def fixed_tools() -> list[Tool]:
             },
             output_schema=visualize_output,
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
+        Tool(
+            name="comfyui.model.guidance",
+            description=(
+                "Community-consensus starting points (sampler/scheduler/steps/"
+                "cfg/resolution) for a model family; evidence from local run "
+                "history is available via comfyui.job.history.suggest."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "default": "",
+                        "description": "Model family keyword; empty returns the catalog",
+                    }
+                },
+                "additionalProperties": False,
+            },
+            output_schema=guidance_output,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
+        Tool(
+            name="comfyui.job.history.suggest",
+            description=(
+                "Evidence-driven parameter suggestions from local run history: "
+                "which parameter values were used on successful jobs."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "workflow_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "default": "",
+                    },
+                },
+                "additionalProperties": False,
+            },
+            output_schema=suggest_output,
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
         Tool(
             name="comfyui.node.blueprint",

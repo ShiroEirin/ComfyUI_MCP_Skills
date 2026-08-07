@@ -339,6 +339,24 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("visualize", "mermaid", "diagram"),
     ),
     CapabilitySpec(
+        "comfyui.model.guidance",
+        "Community model-family guidance",
+        "Static starting points for sampler/scheduler/steps/CFG/resolution per model family.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("guidance", "model", "sampler", "suggest"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.history.suggest",
+        "Evidence-driven parameter suggestions",
+        "Parameter values that produced successful jobs, from local run history.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("suggest", "history", "parameters", "evidence"),
+    ),
+    CapabilitySpec(
         "comfyui.engine.history",
         "Read engine run history",
         "Flat projection of engine-side history records with a bounded response.",
@@ -703,7 +721,9 @@ class _NamedTool(Protocol):
 class ToolInventory:
     """Validate and bound one endpoint's stable active Tool surface."""
 
-    DEFAULT_FIXED_LIMIT = 16
+    # Grows with the fixed_tools() surface (product tools); the main server
+    # uses HARD_FIXED_LIMIT, this default bounds the standalone catalog eval.
+    DEFAULT_FIXED_LIMIT = 24
     HARD_FIXED_LIMIT = 32
     DYNAMIC_LIMIT = 8
     HARD_DYNAMIC_LIMIT = 128
