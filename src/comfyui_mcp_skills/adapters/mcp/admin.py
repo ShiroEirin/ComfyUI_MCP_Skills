@@ -1150,6 +1150,10 @@ def create_admin_server(
 
 _USERDATA_PATH = re.compile(r"^workflows/[A-Za-z0-9][A-Za-z0-9_.-]*\.json$")
 
+# A folder inventory larger than this is treated as unreadable rather than
+# compared exhaustively; documented so the cap cannot be mistaken for a bug.
+_MODEL_INVENTORY_LIMIT = 10_000
+
 
 def _safe_userdata_path(value: object) -> bool:
     """Userdata paths must be relative workflows/*.json with safe characters."""
@@ -1261,6 +1265,9 @@ def _validate_published_workflow(
     )
     issues = list(result["issues"])
     try:
+        # The store keeps normalized parameter metadata (name -> metadata);
+        # re-feeding it through the schema shape re-runs the shared
+        # node_id/field and metadata-object validation without any mutation.
         normalized = normalize_parameters({"parameters": workflow.parameters})
         validate_parameter_targets(normalized, workflow.graph)
         build_input_schema(normalized)
@@ -1314,8 +1321,11 @@ def _missing_models(
             available = gateway.get_models(folder)
             if not isinstance(available, list):
                 raise TypeError("models response must be an array")
-            if len(available) > 10_000:
-                raise ValueError("models response exceeds the inventory limit")
+            if len(available) > _MODEL_INVENTORY_LIMIT:
+                raise ValueError(
+                    "models response exceeds the inventory limit "
+                    f"({_MODEL_INVENTORY_LIMIT} entries)"
+                )
             available_set = set(available)
         except (TypeError, ValueError, LookupError) as exc:
             folder_errors.append(f"{folder}: {exc}")

@@ -43,7 +43,7 @@ class SQLiteWorkflowRepository:
                     r.graph_json,r.parameter_schema_json
                     FROM workflow_deployments AS d JOIN workflow_revisions AS r
                     ON r.workflow_id=d.workflow_id AND r.revision_id=d.revision_id
-                    WHERE d.published=1 AND d.enabled=1 AND d.validation_status='valid'
+                    WHERE d.published=1 AND d.validation_status='valid'
                     ORDER BY d.server_id,d.workflow_id"""
                 ).fetchall()
             else:
@@ -58,8 +58,8 @@ class SQLiteWorkflowRepository:
                     AND s.server_id=b.server_id AND s.workflow_id=b.workflow_id
                     JOIN managed_servers AS m ON m.owner_id=b.owner_id
                     AND m.server_id=b.server_id AND m.lifecycle_status='active'
-                    WHERE b.owner_id=? AND s.enabled=1 AND d.enabled=1
-                    AND d.validation_status='valid' ORDER BY d.server_id,d.workflow_id""",
+                    WHERE b.owner_id=? AND d.validation_status='valid'
+                    ORDER BY d.server_id,d.workflow_id""",
                     (self._owner_id,),
                 ).fetchall()
         finally:

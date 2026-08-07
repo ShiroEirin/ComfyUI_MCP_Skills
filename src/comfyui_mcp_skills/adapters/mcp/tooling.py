@@ -169,7 +169,7 @@ EXECUTION_PROPERTY: dict[str, Any] = {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 128,
-                "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$",
+                "pattern": r"^(?!.*[\r\n]).{1,128}$",
             },
         },
     },
@@ -1257,7 +1257,7 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                 "items": {"type": "string", "enum": ["loaded_models", "runtime_memory"]},
                 "uniqueItems": True,
             },
-            "audit_status": {"type": "string", "enum": ["audited", "not_configured"]},
+            "audit_status": {"type": "string", "enum": ["audited"]},
             "request_id": {"type": "string"},
         },
         "required": [

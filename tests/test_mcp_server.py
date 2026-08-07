@@ -744,6 +744,26 @@ async def test_dynamic_run_invalid_target_does_not_consume_idempotency_key(
 
 
 @pytest.mark.anyio
+async def test_dynamic_run_rejects_target_with_line_break(tmp_path: Path) -> None:
+    """A partial target containing a line break is rejected before submission."""
+    _project(tmp_path)
+    gateway = FakeGateway()
+    server = create_server(tmp_path, gateway_factory=lambda _config: gateway)
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.run.local.txt2img",
+            {
+                "prompt": "hello",
+                "_execution": {"partial_execution_targets": ["1\r\n2"]},
+            },
+        )
+
+    assert result.is_error is True
+    assert not gateway.queued
+
+
+@pytest.mark.anyio
 async def test_workflow_list_lists_and_filters(tmp_path: Path) -> None:
     """workflow.list enumerates workflows with filtering and pagination."""
     _project(tmp_path)

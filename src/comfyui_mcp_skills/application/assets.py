@@ -97,11 +97,16 @@ def _is_mpeg_audio_frame(prefix: bytes) -> bool:
 
 
 def same_file_stat(first: os.stat_result, second: os.stat_result) -> bool:
-    """Two stat results refer to the same unmodified file (dev, inode, size)."""
+    """Two stat results refer to the same unmodified file.
+
+    Compares device, inode, size, and modification time so an in-place
+    same-size rewrite (which preserves dev/ino/size) is still detected.
+    """
     return (
         first.st_dev == second.st_dev
         and first.st_ino == second.st_ino
         and first.st_size == second.st_size
+        and first.st_mtime_ns == second.st_mtime_ns
     )
 
 

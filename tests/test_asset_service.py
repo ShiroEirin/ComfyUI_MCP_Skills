@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -199,3 +200,32 @@ def test_upload_stages_outside_source_directory(tmp_path: Path) -> None:
     staged_path = Path(gateway.upload_file.call_args.args[0])
     assert staged_path.parent == staging_root.resolve()
     assert not staged_path.exists()
+
+
+def test_same_file_stat_rejects_in_place_same_size_rewrite(tmp_path: Path) -> None:
+    """A same-inode same-size rewrite (mtime change) must fail the check.
+
+    NTFS mtime is coarse, so instead of racing the real clock the rewrite is
+    simulated deterministically: same inode, same size, modified time advanced
+    (exactly what an in-place rewrite produces at the metadata level).
+    """
+    from comfyui_mcp_skills.application.assets import same_file_stat
+
+    target = tmp_path / "swap.json"
+    target.write_text('{"a": 1}', encoding="utf-8")
+    with target.open("r+", encoding="utf-8") as handle:
+        opened = os.fstat(handle.fileno())
+        # In-place rewrite with identical byte length: dev/ino/size unchanged.
+        handle.seek(0)
+        handle.write('{"b": 2}')
+        handle.flush()
+        os.utime(
+            target,
+            ns=(opened.st_atime_ns, opened.st_mtime_ns + 1_000_000_000),
+        )
+        after = os.fstat(handle.fileno())
+        assert opened.st_dev == after.st_dev
+        assert opened.st_ino == after.st_ino
+        assert opened.st_size == after.st_size
+        assert after.st_mtime_ns != opened.st_mtime_ns
+        assert not same_file_stat(opened, after)

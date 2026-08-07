@@ -35,11 +35,14 @@ class WorkflowCatalog:
         limit: int = 50,
         cursor: str = "",
     ) -> dict[str, Any]:
-        """List workflows with owner-bound filtering and stable keyset pagination.
+        """List workflows with owner-bound filtering and stable-offset pagination.
 
-        Deployment facts (revision/deployment/published/validation) are attached
-        when the backing repository can describe them; file-backed repositories
-        that cannot are listed without those fields.
+        Pages are slices of the deterministic (server_id, workflow_id) ordering
+        taken at call time; a cursor from one filter set must not be reused
+        under a different filter set. Deployment facts (revision/deployment/
+        published/validation) are attached when the backing repository can
+        describe them; file-backed repositories that cannot are listed without
+        those fields.
         """
         if (
             isinstance(limit, bool)
@@ -118,6 +121,8 @@ def _decode_cursor(cursor: str) -> int:
         parsed = json.loads(payload)
     except (ValueError, UnicodeDecodeError):
         raise ValueError("cursor is invalid") from None
+    if not isinstance(parsed, dict):
+        raise ValueError("cursor is invalid")
     offset = parsed.get("o")
     if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
         raise ValueError("cursor is invalid")

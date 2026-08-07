@@ -128,12 +128,19 @@ class ExecutionService:
         )
         digest_arguments = arguments
         if priority is not None or targets:
+            # Normalize before hashing: priority is float, targets are set-like
+            # (order is meaningless to ComfyUI), so semantically identical
+            # requests always produce the same digest regardless of caller.
             digest_arguments = {
                 **arguments,
                 "_execution": {
-                    **({"priority": priority} if priority is not None else {}),
                     **(
-                        {"partial_execution_targets": list(targets)}
+                        {"priority": float(priority)}
+                        if priority is not None
+                        else {}
+                    ),
+                    **(
+                        {"partial_execution_targets": sorted(targets)}
                         if targets
                         else {}
                     ),
