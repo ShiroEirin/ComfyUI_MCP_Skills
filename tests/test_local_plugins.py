@@ -421,3 +421,50 @@ def test_probe_consumption_is_counted_and_handle_closed(
     assert result["truncated"] is True
     assert result["scanned_entries"] == 202
     assert result["total"] == 201
+
+
+def test_exactly_201_entries_not_truncated(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    flat = root / "custom_nodes"
+    flat.mkdir(parents=True)
+    for index in range(201):
+        (flat / f"p-{index}").mkdir()
+
+    result = _service(root).plugins("local")
+    assert result["truncated"] is False
+    assert result["scanned_entries"] == 201
+    assert result["total"] == 201
+
+
+def test_budget_shared_across_layouts(tmp_path: Path) -> None:
+    """nested exhausting the budget stops before scanning flat."""
+    root = tmp_path / "bundle"
+    nested = root / "ComfyUI" / "custom_nodes"
+    flat = root / "custom_nodes"
+    nested.mkdir(parents=True)
+    flat.mkdir(parents=True)
+    for index in range(201):
+        (nested / f"n-{index}").mkdir()
+    _make_plugin(flat, "flat-only")
+
+    result = _service(root).plugins("local")
+    assert result["truncated"] is True
+    assert "flat-only" not in {item["name"] for item in result["plugins"]}
+    assert result["layout"] == "nested"
+
+
+def test_nested_exhausted_then_flat_probes_stop(tmp_path: Path) -> None:
+    """nested exactly 201 entries leaves no budget probe for flat's probe;
+    flat's first entry is the StopIteration probe -> flat invalid."""
+    root = tmp_path / "bundle"
+    nested = root / "ComfyUI" / "custom_nodes"
+    flat = root / "custom_nodes"
+    nested.mkdir(parents=True)
+    flat.mkdir(parents=True)
+    for index in range(201):
+        (nested / f"n-{index}").mkdir()
+
+    result = _service(root).plugins("local")
+    assert result["truncated"] is False
+    assert result["scanned_entries"] == 201
+    assert result["layout"] == "nested"
