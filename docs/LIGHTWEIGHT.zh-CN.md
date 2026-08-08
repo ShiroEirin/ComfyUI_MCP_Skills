@@ -70,7 +70,7 @@ my-comfyui-mcp/
         "COMFYUI_MCP_DIR": "D:/comfyui-mcp-workspace",
         "COMFYUI_MCP_PRINCIPAL_ID": "local-observer",
         "COMFYUI_MCP_TOOLSET": "operations",
-        "COMFYUI_MCP_SCOPES": "comfyui:observe,comfyui:operate",
+        "COMFYUI_MCP_SCOPES": "comfyui:observe",
         "COMFYUI_MCP_ENABLE_HIGH_RISK": "1"
       }
     }
@@ -78,7 +78,7 @@ my-comfyui-mcp/
 }
 ```
 
-该条目提供 `comfyui:observe` 下的只读目录（`node.list/describe`、`model.list`、`local.plugins`、`engine.history`、`server.health` 等）与 `comfyui:operate` 下的运维工具。**注意：单条目不暴露动态工作流工具**——需要执行工作流时添加下面第二条目。
+该条目是**只读**面：`comfyui:observe` 提供 `node.list/describe`、`model.list`、`local.plugins`、`engine.history`、`server.health` 等只读目录与引擎历史工具。`COMFYUI_MCP_ENABLE_HIGH_RISK=1` 只负责让非 execution Toolset 通过启动准入，**不授予** `comfyui:operate`——队列清理、中断、显存释放等修改性运维工具不会被暴露；需要可写运维时另行配置 `comfyui:operate` 并知悉其影响。**注意：单条目不暴露动态工作流工具**——需要执行工作流时添加下面第二条目。
 
 ### 3.3 执行条目（execution，第二条目）
 
@@ -91,7 +91,7 @@ my-comfyui-mcp/
         "COMFYUI_MCP_DIR": "D:/comfyui-mcp-workspace",
         "COMFYUI_MCP_PRINCIPAL_ID": "local-observer",
         "COMFYUI_MCP_TOOLSET": "operations",
-        "COMFYUI_MCP_SCOPES": "comfyui:observe,comfyui:operate",
+        "COMFYUI_MCP_SCOPES": "comfyui:observe",
         "COMFYUI_MCP_ENABLE_HIGH_RISK": "1"
       }
     },
