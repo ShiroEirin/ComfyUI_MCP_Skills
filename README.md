@@ -265,9 +265,9 @@ uv build
               "local_root": "D:\\ConfyUI-aki\\ComfyUI-aki-v1.6"}]}
 ```
 
-本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。`comfyui.workflow.visualize`：已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite Workflow store 门控）；`revision.diff` 输出含 mermaid 视图（added 节点高亮），`change.plan` 的 diff 不含。`comfyui.model.guidance`：社区共识的模型家族采样器/调度器/steps/CFG/分辨率起点（9 个家族，静态数据，非引擎保证）。`comfyui.job.history.suggest`：基于本地运行历史的证据驱动参数建议（SQLite run store 门控、256 截断、仅本 principal 面可见）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。未提供 `COMFYUI_MCP_LOCAL=1` 本地轻量模式：控制平面初始化是启动成本而非功能负担，按 YAGNI 不引入第二套服务面。
+本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。`comfyui.workflow.visualize`：已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite Workflow store 门控）；`revision.diff` 输出含 mermaid 视图（added 节点高亮），`change.plan` 的 diff 不含。`comfyui.model.guidance`：社区共识的模型家族采样器/调度器/steps/CFG/分辨率起点（9 个家族，静态数据，非引擎保证）。`comfyui.job.history.suggest`：基于本地运行历史的证据驱动参数建议（SQLite run store 门控、256 截断、仅本 principal 面可见）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。控制平面按装配分层初始化：fresh 数据目录（无 `data/control-plane.sqlite3`）走轻量路径不建控制平面数据库，既有数据库完整初始化与升级；分层说明与本地 5 分钟上手见[轻量引导文档](docs/LIGHTWEIGHT.zh-CN.md)。
 
-Beta 阶段不保证持久化 schema 永久兼容；升级前应备份 `config.json`、`data/` 和控制平面数据库。
+持久化 schema 自 1.1.0 起版本化冻结：已发布迁移不可改写（改动在初始化时被拒绝，跨版本升级由迁移回归套件验证，覆盖 v1–v12 → 当前）；升级自动应用且单向——新版本保证打开并升级任一已冻结历史前缀，新 schema 被旧版本代码打开时显式拒绝（fail-loud，不承诺降级），降级只能通过升级前备份恢复。升级前仍建议备份 `config.json`、`data/` 和控制平面数据库。
 
 ## License
 

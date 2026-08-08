@@ -2193,6 +2193,26 @@ _MIGRATIONS = (
     ),
 )
 
+# Frozen release baseline since 1.1.0: published schema migrations are append-only.
+# The (version, name, checksum) tuples must match the prefix of _MIGRATIONS exactly;
+# modifying a released migration (rename, reorder, SQL rewrite, head deletion) is
+# rejected at initialize time. Appending new migrations is allowed. Shrinking the
+# released set is rejected by the freeze test suite (len(_MIGRATIONS) >= len(this)).
+RELEASED_SCHEMA_MIGRATIONS: tuple[tuple[int, str, str], ...] = (
+    (1, "initial-control-plane", "ec3b7e87db745722708447503691a379ac68646d4cee26c94b5d28bbb06a4a42"),
+    (2, "g1-job-asset-facts", "872fc39683c332ec6faea3d51bcdcf8d409aa14f7f25b01f213a140d468e5aed"),
+    (3, "g5-event-orchestrator", "b6c66dae5e67832003ed8888b771ac90fa2beef88ab6be1c9c5eb65200fc2613"),
+    (4, "g5-upstream-identity-merge", "cd9dbce65979a2f3095c847d4ccb2e184260a7e9638706e7535b8b053c34d586"),
+    (5, "phase-j-workflow-change-plans", "d63240f17bc2aab84a9c3fe4d317e4b32fcd2d157a309df326d803bf712a2405"),
+    (6, "phase-l-asset-library", "b7c66fb5c8f4061a23884be8804f4b94e91905116616391633ed6bed27a6c946"),
+    (7, "phase-m-experiments", "bd796b92d0d6977a0b68f42a77b6cc82bf59a804ff17f5b891abaaacb63ee149"),
+    (8, "phase-n-diagnostic-recovery", "fb28f09890ad2684886f7d668f88e73c00227a2cb546b3dddd7c99bbae5ad0a4"),
+    (9, "phase-o-server-config-provisioning", "105ec6356b2e817923beacab537952133f74fa5adb40ad74cdbf46bc29e7894a"),
+    (10, "phase-k-routing-plans", "e1854d586b0ce3c1d13d0c1718224d294d770724e752fa8eb4d68a0d14b315b7"),
+    (11, "phase-j-workflow-change-hardening", "3b25b166953bdb988dfb825964aea8a099386526807aa4c4f7762f8c30654ea7"),
+    (12, "phase-q-routing-commit-idempotency", "cf5394f33bc4825949fa3255b08d9ee76628855abf0e87526e0dfba115ca9bd5"),
+)
+
 
 class SQLiteControlPlaneStore:
     """Own the SQLite database and apply immutable schema migrations."""
@@ -2210,6 +2230,15 @@ class SQLiteControlPlaneStore:
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         _migration_map()
+        released = RELEASED_SCHEMA_MIGRATIONS
+        prefix = min(len(_MIGRATIONS), len(released))
+        if any(
+            (migration.version, migration.name, migration.checksum) != spec
+            for migration, spec in zip(_MIGRATIONS[:prefix], released[:prefix])
+        ):
+            raise SchemaMigrationError(
+                "released schema migration modified; schema freezing forbids history rewrites"
+            )
         connection = self._connect(require_wal=False)
         try:
             self.path.chmod(0o600)

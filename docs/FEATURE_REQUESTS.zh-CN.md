@@ -58,6 +58,7 @@
 > 状态：**已登记，未开始**。当前 1.1.0 Beta 卡在两个"承诺性"门槛，均为生产可用性要求（功能增强不构成 beta 理由）。
 
 ### G1. 持久化 schema 冻结承诺（最高优先级）
+> 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v12 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：每个历史版本 v1..v12 → 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
 - **问题**：README 明示"Beta 阶段不保证持久化 schema 永久兼容；升级前应备份"——数据层无冻结承诺，升级需备份重迁，生产不敢用。
 - **现状**：已有 `store_migrations` + cutover + fencing 基础设施（迁移治理能力在），缺的是**冻结承诺 + 长期升级验证**。
 - **交付**：schema 版本化冻结；向前/向后兼容保证；从旧版本一键升级路径验证（迁移回归套件覆盖历史版本 → 当前版本）。
