@@ -27,7 +27,7 @@ python -m pip install "git+https://github.com/ShiroEirin/ComfyUI_MCP_Skills.git@
 python -c "import comfyui_mcp_skills; print(comfyui_mcp_skills.__version__)"
 ```
 
-`comfyui-mcp` 是纯 stdio MCP 进程，不提供 `--help` 交互参数。它会立即初始化 `COMFYUI_MCP_DIR` 中的控制平面并等待协议输入，因此应由 MCP Host 启动，不要把直接运行或 `--help` 当作安装检查。
+`comfyui-mcp` 是纯 stdio MCP 进程，不提供 `--help` 交互参数。启动时按需初始化 `COMFYUI_MCP_DIR`：全新数据目录（无 `data/control-plane.sqlite3`）走轻量路径，不创建控制平面数据库；已存在数据库（含未完成 aggregate cutover 的 all-file 目录）则完整升级初始化。随后等待协议输入，因此应由 MCP Host 启动，不要把直接运行或 `--help` 当作安装检查。装配分层与本地 5 分钟上手见[轻量引导文档](LIGHTWEIGHT.zh-CN.md)。
 
 ### 2.2 源码开发安装
 

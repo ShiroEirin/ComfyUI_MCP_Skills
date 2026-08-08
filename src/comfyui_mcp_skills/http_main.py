@@ -12,7 +12,6 @@ import uvicorn
 from comfyui_mcp_skills.adapters.http.app import create_http_app
 from comfyui_mcp_skills.adapters.http.auth import _validate_tokens
 from comfyui_mcp_skills.application.shared_limits import SQLiteSharedLimitStore
-from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.observability import configure_logging
 
 _APP_FACTORY = "comfyui_mcp_skills.http_main:create_app"
@@ -33,7 +32,7 @@ def create_app():
     """Build an HTTP app from the current process environment for Uvicorn workers."""
     configure_logging(os.environ.get("COMFYUI_MCP_LOG_LEVEL", "INFO"))
     _host, _port, app_options = _http_environment()
-    _initialize_control_plane(app_options["base_dir"])
+    _ensure_data_dir(app_options["base_dir"])
     return create_http_app(**_with_shared_store(app_options))
 
 
@@ -43,7 +42,7 @@ def main() -> None:
     limit_mode = os.environ.get("COMFYUI_MCP_LIMIT_MODE", "process").strip().lower()
     _validate_worker_limits(workers, limit_mode)
     host, port, app_options = _http_environment()
-    _initialize_control_plane(app_options["base_dir"])
+    _ensure_data_dir(app_options["base_dir"])
     if workers > 1:
         uvicorn.run(
             _APP_FACTORY,
@@ -133,10 +132,11 @@ def _http_environment() -> tuple[str, int, dict[str, Any]]:
     return host, port, app_options
 
 
-def _initialize_control_plane(base_dir: Path) -> None:
+def _ensure_data_dir(base_dir: Path) -> None:
+    """Create the data directory only; control-plane initialization is deferred to the
+    repository bundle (fresh directories stay lightweight, existing databases upgrade)."""
     data_dir = base_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    SQLiteControlPlaneStore((data_dir / "control-plane.sqlite3").resolve()).initialize()
 
 
 def _validate_worker_limits(workers: int, limit_mode: str) -> None:

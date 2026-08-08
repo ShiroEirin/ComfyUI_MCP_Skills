@@ -12,6 +12,7 @@ ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影�
 
 - [安装与客户端配置](docs/INSTALLATION.zh-CN.md)
 - [功能与使用模型](docs/FEATURES.zh-CN.md)
+- [本地轻量引导（装配分层与 5 分钟上手）](docs/LIGHTWEIGHT.zh-CN.md)
 - [CLI → MCP 迁移方案](MCP_MIGRATION_PLAN.zh-CN.md)
 - [Agent 原生控制平面设计](MCP_AGENT_NATIVE_CONTROL_PLANE.zh-CN.md)
 
