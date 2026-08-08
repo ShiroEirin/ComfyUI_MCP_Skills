@@ -40,7 +40,7 @@
 
 ## 装配分层（架构原则，GA 前置）
 
-> 状态：**已登记**。诊断已验证（3 轮方案审查 PASS）：本地 stdio 入口在 create_server 前无条件初始化 SQLite 控制面（80+ 表）+ 编排仓库 + 订阅总线，核心层（本地单用户）被云端增强层包裹。分层顺序应为：核心层默认、增强层按需装配。
+> 状态：**已交付**（2026-08-08，`23c0c52`）。任务 1 引导文档 `docs/LIGHTWEIGHT.zh-CN.md`（分层说明 + 本地 5 分钟上手 + 双条目配置）+ INSTALLATION:30 旧说明修正 + README 链接；任务 2 入口懒初始化（`__main__.py`/`http_main.py` 删除无条件 initialize，fresh 不建 control-plane.sqlite3、既有 DB 由 repository bundle 完整初始化；`http_main` 保留 `_ensure_data_dir` 于 `_with_shared_store` 之前保障 external 限流；编排 worker 门控零改动）。回归 10 测试（stdio/HTTP fresh 不建库含 process/external、all-file fail-closed 编排接入 + fresh 负向 + job cutover、真实 provisioning 三单步推进含事件增量 +0/+1/+1、g5 outbox owner 解析投递）。诊断记录：本地 stdio 入口在 create_server 前无条件初始化 SQLite 控制面（80+ 表）+ 编排仓库 + 订阅总线，核心层（本地单用户）被云端增强层包裹；分层顺序应为核心层默认、增强层按需装配。
 
 ### 原则
 - **核心层（本地默认路径）**：run 动态工具直连 `/prompt`、`engine.history` 看历史、`local.plugins` + node 目录写工作流、本地文件/轻量存储。
@@ -55,7 +55,7 @@
 
 ## 1.0 GA 路径（Beta → 正式）
 
-> 状态：**已登记，未开始**。当前 1.1.0 Beta 卡在两个"承诺性"门槛，均为生产可用性要求（功能增强不构成 beta 理由）。
+> 状态：**进行中**。装配分层（前置）与 G1（schema 冻结）已交付；剩余 G2（重启执行闭环）、G3（Windows Service RuntimeController）为**后续任务，尚未开始**。当前 1.1.0 Beta 卡在"承诺性"门槛，均为生产可用性要求（功能增强不构成 beta 理由）。
 
 ### G1. 持久化 schema 冻结承诺（最高优先级）
 > 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v12 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：每个历史版本 v1..v12 → 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
@@ -65,16 +65,18 @@
 - **验收**：文档移除"不保证兼容"声明；CI 有跨版本升级测试。
 
 ### G2. 重启执行闭环（approve/commit + drain/fence）
+> 状态：**后续任务，未开始**。
 - **问题**：`runtime.restart.plan` 只读预览；执行闭环未交付（无影响快照、无单次审批、无按服务器 drain/fence 协调），管理员无法安全重启引擎。
 - **交付**：服务端持久化影响快照 + 单次审批 + 所有提交路径入队前检查 + 原子启用/解除（drain/fence）；`runtime.restart.commit` 在审批后执行固定重启命令。
 - **验收**：并发/恢复场景测试（重启中提交被 fence、审批后原子执行）；诚实不可用原则保持（未完成前不暴露执行工具）。
 
 ### G3. Windows Service RuntimeController（依赖 G2）
+> 状态：**后续任务，未开始**（依赖 G2）。
 - systemd/Docker 适配器已实现并接线（固定命令 + 超时 + fail-closed）；Windows 服务控制器需服务管理 API 集成，执行动作依赖 G2 闭环。
 - **交付**：G2 完成后接入 Windows Service 适配器 + 测试。
 
 ### 建议迭代顺序
-装配分层（前置原则 + 懒初始化 + 引导文档）→ G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每项独立可验证、不阻塞。
+装配分层（前置原则 + 懒初始化 + 引导文档）→ G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每项独立可验证、不阻塞。当前进度：装配分层 ✅、G1 ✅、G2/G3 未开始。
 
 ---
 
