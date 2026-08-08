@@ -107,8 +107,8 @@ def test_released_migrations_match_frozen_spec() -> None:
     "version", range(1, len(RELEASED_SCHEMA_MIGRATIONS) + 1)
 )
 def test_upgrade_from_released_version(version: int, tmp_path: Path, monkeypatch) -> None:
-    # Parametrization is bound to the frozen spec so appending a migration
-    # automatically extends the matrix.
+    # Bound to the frozen spec: every released historical prefix must upgrade.
+    # Extending the frozen spec (publishing a new migration) extends this matrix.
     assert version <= len(RELEASED_SCHEMA_MIGRATIONS)
     migrations = control_plane_module._MIGRATIONS
     monkeypatch.setattr(control_plane_module, "_MIGRATIONS", migrations[:version])
