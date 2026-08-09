@@ -50,7 +50,7 @@ def test_phase_m_migration_creates_owner_bound_experiment_schema(tmp_path: Path)
             ).fetchall()
         }
 
-    assert version == 12
+    assert version == 13
     assert {
         "experiment_plans",
         "experiments",
@@ -771,7 +771,7 @@ def test_fresh_and_v6_upgrade_apply_phase_migration_seven(
     monkeypatch.setattr(control_plane_module, "_MIGRATIONS", old_migrations)
     store.initialize()
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (12,)
+        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (13,)
         assert connection.execute("SELECT count(*) FROM experiment_plans").fetchone() == (0,)
 
 

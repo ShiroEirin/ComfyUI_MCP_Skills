@@ -71,6 +71,13 @@ class _Runs:
     def save(self, job: Job, *, lease_token: str = "") -> None:
         self.jobs[(job.server_id, job.prompt_id)] = job
 
+    def admit(self, server_id: str) -> str:
+        return ""
+
+    @staticmethod
+    def release_admission(admission_id: str) -> None:
+        return None
+
 
 class _Assets:
     def __init__(self) -> None:

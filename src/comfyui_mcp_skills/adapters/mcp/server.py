@@ -174,6 +174,13 @@ G3_AUTHORING_TOOLS = frozenset(
         "comfyui.workflow.visualize",
     }
 )
+RESTART_EXECUTION_TOOL_NAMES = frozenset(
+    {
+        "comfyui.runtime.restart.approve",
+        "comfyui.runtime.restart.commit",
+        "comfyui.runtime.restart.get",
+    }
+)
 PHASE_L_TOOL_NAMES = frozenset(
     {
         "comfyui.asset.list",
@@ -601,6 +608,21 @@ def create_server(
         gateway_factory,
         controller_provider=runtime_controller_provider,
     )
+    restart_service: RuntimeRestartService | None = None
+    if repositories.store is not None and repositories.run_store == "sqlite":
+        from comfyui_mcp_skills.application.runtime_restart import RuntimeRestartService
+        from comfyui_mcp_skills.infrastructure.persistence.runtime_restart import (
+            SQLiteRuntimeRestartRepository,
+        )
+
+        restart_service = RuntimeRestartService(
+            servers,
+            SQLiteRuntimeRestartRepository(repositories.store),
+            controller_provider=runtime_controller_provider,
+        )
+        # Startup recovery: clear stale admissions and fail orphaned restart
+        # sessions (single-instance premise, never auto-retries).
+        restart_service.recover()
     discovery = DiscoveryService(servers, gateway_factory)
     observation = ObservationService(servers, gateway_factory)
     workflow_graphs = WorkflowGraphService(
@@ -641,9 +663,14 @@ def create_server(
         from comfyui_mcp_skills.application.diagnostics import RetryService
 
         retry_service = RetryService(retry_repository, execution)
+    restart_execution_available = repositories.run_store == "sqlite"
     fixed_surface = [
         *fixed_tools(),
-        *(tool for tool in phase_h_tools(include_phase_p=True)),
+        *(
+            tool
+            for tool in phase_h_tools(include_phase_p=True)
+            if restart_execution_available or tool.name not in RESTART_EXECUTION_TOOL_NAMES
+        ),
         *(phase_l_tools() if asset_library is not None else []),
         *(phase_k_tools() if routing is not None else []),
         *(phase_m_tools() if experiment_service is not None else []),
@@ -673,6 +700,10 @@ def create_server(
                 and (
                     repositories.run_store == "sqlite"
                     or spec.name != "comfyui.job.history.suggest"
+                )
+                and (
+                    repositories.run_store == "sqlite"
+                    or spec.name not in RESTART_EXECUTION_TOOL_NAMES
                 )
                 and (
                     spec.name not in PHASE_N_TOOL_NAMES
@@ -897,6 +928,10 @@ def create_server(
                     repositories.run_store == "sqlite"
                     or tool.name != "comfyui.job.history.suggest"
                 )
+                and (
+                    repositories.run_store == "sqlite"
+                    or tool.name not in RESTART_EXECUTION_TOOL_NAMES
+                )
                 and tool_visible(tool.name, authorization.toolset, active_scopes)
             )
             if authorization.toolset is not Toolset.EXECUTION:
@@ -910,6 +945,10 @@ def create_server(
                 and (
                     repositories.run_store == "sqlite"
                     or tool.name != "comfyui.job.history.suggest"
+                )
+                and (
+                    repositories.run_store == "sqlite"
+                    or tool.name not in RESTART_EXECUTION_TOOL_NAMES
                 )
                 and tool_visible(tool.name, authorization.toolset, authorization.scopes)
             )
@@ -1766,10 +1805,68 @@ def create_server(
                 return tool_result(result)
             if params.name == "comfyui.runtime.restart.plan":
                 validate_fixed_arguments(arguments, {"server_id"})
+                server_id = required_string(arguments, "server_id", max_length=128)
+                if restart_service is not None:
+                    result = await anyio.to_thread.run_sync(
+                        restart_service.plan, server_id, owner_id
+                    )
+                else:
+                    result = await anyio.to_thread.run_sync(
+                        runtime_controls.restart_plan, server_id, owner_id
+                    )
+                return tool_result(result)
+            if params.name == "comfyui.runtime.restart.approve":
+                validate_fixed_arguments(arguments, {"plan_id", "decision", "reason"})
+                if restart_service is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS,
+                        message="runtime.restart.approve requires a SQLite run store",
+                    )
+                plan_id = required_string(arguments, "plan_id", max_length=128)
+                decision = required_string(arguments, "decision", max_length=16)
+                reason = optional_string(arguments, "reason", "", max_length=512)
                 result = await anyio.to_thread.run_sync(
-                    runtime_controls.restart_plan,
-                    required_string(arguments, "server_id", max_length=128),
+                    restart_service.approve, plan_id, decision, owner_id, reason
+                )
+                return tool_result(result)
+            if params.name == "comfyui.runtime.restart.commit":
+                validate_fixed_arguments(
+                    arguments, {"plan_id", "plan_digest", "approval_id", "request_id"}
+                )
+                if restart_service is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS,
+                        message="runtime.restart.commit requires a SQLite run store",
+                    )
+                plan_id = required_string(arguments, "plan_id", max_length=128)
+                plan_digest = required_string(arguments, "plan_digest", max_length=64)
+                approval_id = required_string(arguments, "approval_id", max_length=64)
+                request_id = required_string(arguments, "request_id", max_length=128)
+                result = await anyio.to_thread.run_sync(
+                    restart_service.commit,
+                    plan_id,
+                    plan_digest,
+                    approval_id,
                     owner_id,
+                    request_id,
+                )
+                return tool_result(result)
+            if params.name == "comfyui.runtime.restart.get":
+                validate_fixed_arguments(arguments, {"plan_id", "limit", "cursor"})
+                if restart_service is None:
+                    raise MCPError(
+                        code=INVALID_PARAMS,
+                        message="runtime.restart.get requires a SQLite run store",
+                    )
+                plan_id = required_string(arguments, "plan_id", max_length=128)
+                restart_limit = bounded_integer(arguments, "limit", 200, minimum=1, maximum=1000)
+                restart_cursor = bounded_integer(
+                    arguments, "cursor", 0, minimum=0, maximum=2**31 - 1
+                )
+                result = await anyio.to_thread.run_sync(
+                    lambda: restart_service.get(
+                        plan_id, owner_id, limit=restart_limit, cursor=restart_cursor
+                    )
                 )
                 return tool_result(result)
             if params.name == "comfyui.log.read":

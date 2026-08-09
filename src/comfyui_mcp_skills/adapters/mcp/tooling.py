@@ -1325,6 +1325,10 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
         "maxLength": 128,
         "pattern": r"^(?!.*[\r\n])[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
     }
+    restart_plan_identifier = {
+        "type": "string",
+        "pattern": r"^runtime_plan_[0-9a-f]{32}$",
+    }
     public_identifier = {
         "type": "string",
         "minLength": 1,
@@ -1887,6 +1891,65 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
+        Tool(
+            name="comfyui.runtime.restart.approve",
+            description="Approve or reject a restart plan exactly once before it expires.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan_id": restart_plan_identifier,
+                    "decision": {"type": "string", "enum": ["approved", "rejected"]},
+                    "reason": {"type": "string", "maxLength": 512, "default": ""},
+                },
+                "required": ["plan_id", "decision"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False, destructive_hint=True, open_world_hint=False
+            ),
+        ),
+        Tool(
+            name="comfyui.runtime.restart.commit",
+            description=(
+                "Execute an approved restart after the drain window settles: "
+                "submissions are fenced during draining/restarting."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan_id": restart_plan_identifier,
+                    "plan_digest": {"type": "string", "minLength": 64, "maxLength": 64},
+                    "approval_id": {
+                        "type": "string",
+                        "pattern": "^runtime_approval_[0-9a-f]{32}$",
+                    },
+                    "request_id": {"type": "string", "minLength": 1, "maxLength": 128},
+                },
+                "required": ["plan_id", "plan_digest", "approval_id", "request_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False, destructive_hint=True, open_world_hint=True
+            ),
+        ),
+        Tool(
+            name="comfyui.runtime.restart.get",
+            description="Read a restart plan's status, snapshots, receipt, and impact jobs.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan_id": restart_plan_identifier,
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+                    "cursor": {"type": "integer", "minimum": 0, "default": 0},
+                },
+                "required": ["plan_id"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
     ]
     if not include_phase_p:
         phase_p_names = {
@@ -1894,6 +1957,9 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             "comfyui.queue.clear",
             "comfyui.server.interrupt",
             "comfyui.runtime.restart.plan",
+            "comfyui.runtime.restart.approve",
+            "comfyui.runtime.restart.commit",
+            "comfyui.runtime.restart.get",
         }
         tools = [tool for tool in tools if tool.name not in phase_p_names]
     return [decorate_tool(tool) for tool in tools]

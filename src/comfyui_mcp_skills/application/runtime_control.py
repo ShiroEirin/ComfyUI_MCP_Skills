@@ -169,15 +169,13 @@ class RuntimeControlService:
         affected = [row for row in active if row.get("status") not in _TERMINAL]
         if impact_coverage == "owner_jobs":
             requirement = (
-                "Restart execution is not exposed in this build: it requires persistent "
-                "approval plus drain/fence coordination infrastructure that is not yet "
-                "delivered; impact enumeration is scoped to the owner's active jobs"
+                "Restart execution requires a SQLite run store and an approved "
+                "plan; read-only preview returned for this backend"
             )
         else:
             requirement = (
-                "Restart execution is not exposed in this build: active-job enumeration "
-                "is unavailable for this server and approval plus drain/fence "
-                "coordination infrastructure is not yet delivered"
+                "Restart execution requires a SQLite run store and an approved "
+                "plan; active-job enumeration is unavailable for this server"
             )
         payload = {
             "server_id": server_id,

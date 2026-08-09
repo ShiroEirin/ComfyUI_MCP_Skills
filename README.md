@@ -196,7 +196,7 @@ scope: comfyui:execute
 - 变更、安装、删除和全局操作优先采用 plan/commit。
 - plan digest、幂等键、主体和对象所有权共同约束 commit。
 - 作业取消不会调用 ComfyUI 的全局 `/interrupt`。
-- `runtime.restart.plan` 只返回操作要求，不执行宿主 Shell；systemd 控制器适配器已接线并报告可用性，但重启执行闭环（审批 + drain/fence）未交付，本版本不执行重启。
+- `runtime.restart.plan` 提供影响快照与单次审批；`runtime.restart.commit` 在审批后执行固定 controller 命令（systemd/docker），期间 `/prompt` 提交被 drain/fence 拒绝（SQLite run store 门控；文件后端/fresh 只读预览）。
 - 远程上传、抓取、Host、Origin、正文大小、并发和速率均有边界。
 
 ## 基本使用流程
@@ -243,7 +243,7 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`938 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试，6 个 SDK 集成测试从跳过转为通过；未安装 `otel` extra 的环境对应为 `932 passed, 7 skipped`——6 个 SDK 集成测试与 1 个 Windows 符号链接用例跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`983 passed, 7 skipped, 2 subtests passed`（未安装 `otel` extra；安装后 OpenTelemetry SDK 集成测试另行纳入）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
@@ -253,7 +253,7 @@ uv build
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Windows Service 的内置 RuntimeController 适配器（Linux systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
+- Windows Service 的内置 RuntimeController 适配器（Linux systemd 与 Docker 适配器已实现并接线；重启执行闭环已交付，Windows 控制器未内置）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
 
 ### 本地单机部署边界
@@ -267,7 +267,7 @@ uv build
 
 本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。`comfyui.workflow.visualize`：已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite Workflow store 门控）；`revision.diff` 输出含 mermaid 视图（added 节点高亮），`change.plan` 的 diff 不含。`comfyui.model.guidance`：社区共识的模型家族采样器/调度器/steps/CFG/分辨率起点（9 个家族，静态数据，非引擎保证）。`comfyui.job.history.suggest`：基于本地运行历史的证据驱动参数建议（SQLite run store 门控、256 截断、仅本 principal 面可见）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。控制平面按装配分层初始化：fresh 数据目录（无 `data/control-plane.sqlite3`）走轻量路径不建控制平面数据库，既有数据库完整初始化与升级；分层说明与本地 5 分钟上手见[轻量引导文档](docs/LIGHTWEIGHT.zh-CN.md)。
 
-持久化 schema 自 1.1.0 起版本化冻结：已发布迁移不可改写（改动在初始化时被拒绝，跨版本升级由迁移回归套件验证，覆盖 v1–v12 → 当前）；升级自动应用且单向——新版本保证打开并升级任一已冻结历史前缀，新 schema 被旧版本代码打开时显式拒绝（fail-loud，不承诺降级），降级只能通过升级前备份恢复。升级前仍建议备份 `config.json`、`data/` 和控制平面数据库。
+持久化 schema 自 1.1.0 起版本化冻结：已发布迁移不可改写（改动在初始化时被拒绝，跨版本升级由迁移回归套件验证，覆盖 v1–v13 → 当前）；升级自动应用且单向——新版本保证打开并升级任一已冻结历史前缀，新 schema 被旧版本代码打开时显式拒绝（fail-loud，不承诺降级），降级只能通过升级前备份恢复。升级前仍建议备份 `config.json`、`data/` 和控制平面数据库。
 
 ## License
 

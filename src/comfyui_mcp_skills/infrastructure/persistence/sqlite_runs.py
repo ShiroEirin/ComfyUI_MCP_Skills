@@ -14,6 +14,7 @@ from comfyui_mcp_skills.domain.control_plane import (
     derive_legacy_attempt_id,
     derive_legacy_job_id,
 )
+from comfyui_mcp_skills.domain.errors import RestartFenced
 from comfyui_mcp_skills.domain.models import Job
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 
@@ -56,6 +57,7 @@ class SQLiteRunRepository:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            self._assert_not_fenced(connection, server_id)
             row = connection.execute(
                 """
                 SELECT request_digest, state, expires_at
@@ -542,6 +544,61 @@ class SQLiteRunRepository:
         finally:
             connection.close()
         return str(row[0]) if row and row[0] else ""
+
+    def admit(self, server_id: str) -> str:
+        """Atomic admission gate: reject while a restart is draining/running
+        and record the admission inside the same write lock that later opens
+        the fence, then release it when the submission settles."""
+        admission_id = "admission_" + secrets.token_hex(16)
+        now = datetime.now(timezone.utc).isoformat()
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            self._assert_not_fenced(connection, server_id)
+            connection.execute(
+                """
+                INSERT INTO runtime_submission_admissions(admission_id, server_id, created_at)
+                VALUES (?, ?, ?)
+                """,
+                (admission_id, server_id, now),
+            )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        return admission_id
+
+    def release_admission(self, admission_id: str) -> None:
+        if not admission_id:
+            return
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "DELETE FROM runtime_submission_admissions WHERE admission_id = ?",
+                (admission_id,),
+            )
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _assert_not_fenced(connection: sqlite3.Connection, server_id: str) -> None:
+        fence = connection.execute(
+            "SELECT plan_id FROM runtime_restart_plans "
+            "WHERE server_id = ? AND status IN ('draining', 'restarting')",
+            (server_id,),
+        ).fetchone()
+        if fence is not None:
+            raise RestartFenced(
+                "host restart in progress; submission is fenced",
+                details={"plan_id": str(fence[0]), "server_id": server_id},
+            )
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)

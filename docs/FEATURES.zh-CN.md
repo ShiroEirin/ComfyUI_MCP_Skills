@@ -344,6 +344,9 @@ comfyui.queue.remove
 comfyui.queue.clear
 comfyui.server.interrupt
 comfyui.runtime.restart.plan
+comfyui.runtime.restart.approve
+comfyui.runtime.restart.commit
+comfyui.runtime.restart.get
 comfyui.engine.history
 ```
 
@@ -355,9 +358,25 @@ comfyui.engine.history
 - `queue.remove`：预览并移除明确 prompt 集合。
 - `queue.clear`：全局队列操作，先返回影响。
 - `server.interrupt`：显式全局中断，不伪装成单 Job 取消。
-- `runtime.restart.plan`：返回调用方所有者影响范围内的非终态 Job（含 queued/submitted/running；`impact_coverage` 如实标注枚举范围，非全局枚举），以及审批与操作要求，不执行宿主命令。
 
-重启执行闭环（approve/commit）未交付：安全执行要求服务端持久化的影响快照、单次审批与按服务器的 drain/fence 协调（所有提交路径在入队前检查、原子启用与解除），这些基础设施尚未实现，因此本版本不暴露执行工具。systemd 与 Docker `RuntimeController` 适配器已实现并接线（`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}` 或 `runtime: {"adapter": "docker", "container": "comfyui-local"}`，只执行固定的 `systemctl restart <unit>` / `docker restart <container>`，无 shell、有超时、非法配置 fail-closed），但仅在 `restart.plan` 中报告可用性，不执行重启。Windows Service 控制器未内置。
+### 12.1 重启执行闭环（已交付）
+
+`runtime.restart.plan` → `runtime.restart.approve` → `runtime.restart.commit` → `runtime.restart.get` 构成安全重启闭环：
+
+- **plan**：枚举该服务器**全部非终态 Job（跨 owner，SQLite 事实源）**并持久化为影响快照（明细行 + 规范化 digest），返回 `plan_id`/`approval_id`/`controller_available`。同 owner+server 相同影响的未过期 pending 计划幂等复用；终态计划不复用（新计划需新审批）。
+- **approve**：单次审批（approved/rejected，绑定 plan digest 与 controller binding digest，1 小时过期）；审批后不可重复决策。
+- **commit**（需 `plan_id`+`plan_digest`+`approval_id`+`request_id`）：
+  1. receipt-first：同 `(plan_id, request_id)` 重放返回原结果（失败重放重抛同领域错误）；
+  2. 校验审批、controller binding 未漂移（配置变化需重新 plan）；
+  3. 原子开启 **drain**（fence ON：`/prompt` 提交被 `HOST_RESTART_IN_PROGRESS` 拒绝，不占用幂等键/Job）并预持久化执行影响 intent；
+  4. **有界 drain 等待**（admission 结算，默认 10s，超时失败解除 fence 不执行）；
+  5. 原子 `restarting` → 执行固定 controller 命令（systemd/docker，无 shell、有超时）→ `completed`（fence OFF）；失败 → `failed` + receipt（fence OFF）。
+- **get**：查询状态、双快照（审批快照不可变 + 执行影响摘要）、receipt 与影响明细分页。
+- **崩溃恢复**：进程启动时清理残留 admission 并把遗留 `draining`/`restarting` 置 `failed`（`restart_interrupted_unknown`）解除 fence，**不自动重试**（防双重启）；假定控制面单实例执行。
+- **门控**：`approve/commit/get` 仅 SQLite run store（`run_store == "sqlite"`）挂载；文件后端/fresh 轻量目录 `plan` 返回只读预览（`requires a SQLite run store`）。无 controller 时 commit 拒绝（fail-closed）。
+- **fence 范围**：仅 `/prompt` 入队路径（含无幂等键提交）；provisioning（Manager 安装）与资产传输不在入队路径，由编排 worker checkpoint 恢复兜底。
+
+systemd 与 Docker `RuntimeController` 适配器接线：`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}` 或 `runtime: {"adapter": "docker", "container": "comfyui-local"}`，只执行固定的 `systemctl restart <unit>` / `docker restart <container>`，无 shell、有超时、非法配置 fail-closed。Windows Service 控制器未内置。
 
 ## 13. Resources、Prompts 与订阅
 

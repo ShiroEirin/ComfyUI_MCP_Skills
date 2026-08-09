@@ -80,6 +80,13 @@ class MemoryRunRepository:
     def request_digest(self, workflow_id: str, arguments: dict[str, Any]) -> str:
         return "memory-digest"
 
+    def admit(self, server_id: str) -> str:
+        return ""
+
+    @staticmethod
+    def release_admission(admission_id: str) -> None:
+        return None
+
     def save(self, job: Job, *, lease_token: str = "") -> None:
         self.jobs[(job.server_id, job.prompt_id)] = job
 

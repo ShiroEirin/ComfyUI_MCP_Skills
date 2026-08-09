@@ -719,6 +719,33 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         RiskLevel.HIGH,
         ("runtime", "restart", "approval", "impact"),
     ),
+    CapabilitySpec(
+        "comfyui.runtime.restart.approve",
+        "Approve or reject a restart plan",
+        "Decide a restart plan exactly once before it expires.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("runtime", "restart", "approval", "decision"),
+    ),
+    CapabilitySpec(
+        "comfyui.runtime.restart.commit",
+        "Execute an approved restart",
+        "Drain submissions, fence the server, restart the host, and release the fence.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("runtime", "restart", "execute", "drain", "fence"),
+    ),
+    CapabilitySpec(
+        "comfyui.runtime.restart.get",
+        "Read a restart plan",
+        "Inspect restart plan status, snapshots, receipt, and impact jobs.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
+        RiskLevel.HIGH,
+        ("runtime", "restart", "status", "impact"),
+    ),
 )
 
 CAPABILITY_BY_NAME = {spec.name: spec for spec in CAPABILITY_SPECS}

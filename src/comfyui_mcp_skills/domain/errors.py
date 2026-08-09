@@ -154,3 +154,29 @@ class RepairPlanConflict(ComfyUISkillsError):
 
 class RetryNotAllowed(ComfyUISkillsError):
     code = "RETRY_NOT_ALLOWED"
+
+
+class RestartFenced(ComfyUISkillsError):
+    """Submission is blocked while a host restart is draining or running."""
+
+    code = "HOST_RESTART_IN_PROGRESS"
+    retryable = True
+
+
+class RestartPlanNotFound(ComfyUISkillsError):
+    code = "RESTART_PLAN_NOT_FOUND"
+
+
+class RestartPlanConflict(ComfyUISkillsError):
+    code = "RESTART_PLAN_CONFLICT"
+
+
+class RestartApprovalInvalid(ComfyUISkillsError):
+    code = "RESTART_APPROVAL_INVALID"
+
+
+class RestartExecutionFailed(ComfyUISkillsError):
+    """The approved restart command failed or the drain window timed out."""
+
+    code = "RESTART_EXECUTION_FAILED"
+    retryable = True

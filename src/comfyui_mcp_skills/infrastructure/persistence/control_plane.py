@@ -21,6 +21,7 @@ from comfyui_mcp_skills.infrastructure.persistence.routing_commit_schema import 
     PHASE_Q_ROUTING_COMMIT_UP,
 )
 from comfyui_mcp_skills.infrastructure.persistence.routing_schema import PHASE_K_ROUTING_UP
+from comfyui_mcp_skills.infrastructure.persistence.runtime_restart_schema import G2_RESTART_UP
 
 if TYPE_CHECKING:
     from comfyui_mcp_skills.application.control_plane_ports import (
@@ -2191,6 +2192,16 @@ _MIGRATIONS = (
         (),
         feasibility_note="forward-only owner-bound routing commit idempotency fencing",
     ),
+    SchemaMigration(
+        13,
+        "g2-runtime-restart-execution",
+        G2_RESTART_UP,
+        (),
+        feasibility_note=(
+            "forward-only owner-bound restart plans, normalized impact rows, and "
+            "admission gates for approved drain/fence restart execution"
+        ),
+    ),
 )
 
 # Frozen release baseline since 1.1.0: published schema migrations are append-only.
@@ -2211,6 +2222,7 @@ RELEASED_SCHEMA_MIGRATIONS: tuple[tuple[int, str, str], ...] = (
     (10, "phase-k-routing-plans", "e1854d586b0ce3c1d13d0c1718224d294d770724e752fa8eb4d68a0d14b315b7"),
     (11, "phase-j-workflow-change-hardening", "3b25b166953bdb988dfb825964aea8a099386526807aa4c4f7762f8c30654ea7"),
     (12, "phase-q-routing-commit-idempotency", "cf5394f33bc4825949fa3255b08d9ee76628855abf0e87526e0dfba115ca9bd5"),
+    (13, "g2-runtime-restart-execution", "108f6cb7561bbbeff96687201cb7ed925a3384ecef4bca1b5d66555ce67c7b53"),
 )
 
 

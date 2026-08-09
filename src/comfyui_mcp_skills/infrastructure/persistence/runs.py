@@ -149,6 +149,15 @@ class FileRunRepository:
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    def admit(self, server_id: str) -> str:
+        # File-backed runs have no SQLite admission gate; restart execution is
+        # not exposed for this backend, so every submission is admitted.
+        return ""
+
+    @staticmethod
+    def release_admission(admission_id: str) -> None:
+        return None
+
     def save(self, job: Job, *, lease_token: str = "") -> None:
         with self._migration_lock, self._retention_lock:
             self._assert_active()

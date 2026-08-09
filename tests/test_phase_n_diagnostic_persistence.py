@@ -186,7 +186,7 @@ def test_phase_n_migration_upgrades_populated_v7_without_mutating_history(
     store.initialize()
 
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (12,)
+        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (13,)
         assert connection.execute("SELECT job_id FROM jobs").fetchone() == (original["job_id"],)
         tables = {
             row[0]
