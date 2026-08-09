@@ -235,11 +235,11 @@ file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.d
 - 节点生命周期：`add_node`、`remove_node`、`replace_node`（带连接与参数目标校验）。
 - 连接与输入：`connect`、`disconnect`、`set_input`、`expose_parameter`。
 - 内联子图：`insert_subgraph`（1–100 节点、前缀重命名、内部引用重写；可传显式 `nodes`，或 `subgraph` 按名引用已提取定义）。
-- 子图提取与 recipe 应用：`extract_subgraph` 把选定节点连同边界端口契约（`boundary_inputs`/`boundary_outputs`）存入 Revision 元数据并计入内容摘要；`apply_recipe` 按注册表分发（已注册 `set_scalar_input.v1`、`upscale_image.v1`、`save_image.v1`、`lora_model.v1`）。
+- 子图提取与 recipe 应用：`extract_subgraph` 把选定节点连同边界端口契约（`boundary_inputs`/`boundary_outputs`）存入 Revision 元数据并计入内容摘要；`apply_recipe` 按注册表分发（已注册 `set_scalar_input.v1`、`upscale_image.v1`、`save_image.v1`、`lora_model.v1`、`controlnet_apply.v1`）。
 
 子图提取→复用闭环：提取定义随 Revision 持久化，同一 plan 内或已发布 Revision 均可按名实例化；按名实例化会断开定义中指向宿主图外部的连接输入（外部引用在宿主图中无效），由后续 `connect` 显式接线。`nodes` 与 `subgraph` 互斥，未提取名字在 plan 阶段被拒绝。
 
-仍属后续范围：`extract_subgraph` 只登记不剪除图节点（图内容不变，子图作为可复用单元登记）。已交付的高层 recipe：`upscale_image.v1`（在 IMAGE 输出锚点后插入 UpscaleModelLoader + ImageUpscaleWithModel 并重连消费者，暴露 `model_name`）、`save_image.v1`（插入 SaveImage，暴露 `filename_prefix`）、`lora_model.v1`（在 MODEL/CLIP 加载器后插入 LoraLoader 并重连 model/clip 消费者，暴露 `lora_name`/`strength_model`/`strength_clip`）——全部经 object_info 校验 class/输入/输出类型，未知 recipe 或参数集在 plan 阶段拒绝。ControlNet 插入（需采样器 conditioning 重连）未交付，文档不应暗示其可用。
+仍属后续范围：`extract_subgraph` 只登记不剪除图节点（图内容不变，子图作为可复用单元登记）。已交付的高层 recipe：`upscale_image.v1`（在 IMAGE 输出锚点后插入 UpscaleModelLoader + ImageUpscaleWithModel 并重连消费者，暴露 `model_name`）、`save_image.v1`（插入 SaveImage，暴露 `filename_prefix`）、`lora_model.v1`（在 MODEL/CLIP 加载器后插入 LoraLoader 并重连 model/clip 消费者，暴露 `lora_name`/`strength_model`/`strength_clip`）、`controlnet_apply.v1`（在 conditioning 链插入 ControlNetLoader + ControlNetApplyAdvanced，positive/negative 消费者分别重连到双路 CONDITIONING 输出 idx 0/1；`negative_conditioning_node_id` 缺省时复用 positive 源，单源场景消费者统一接输出 0；暴露 `control_net_name`/`strength`，`start_percent`/`end_percent` 固定 0/1）——全部经 object_info 校验 class/输入/输出类型，未知 recipe 或参数集在 plan 阶段拒绝。
 
 ## 8. 多服务器路由与 Policy
 
@@ -497,4 +497,3 @@ dependency.inspect
 - 跨主机共享租约与配额（同主机多 worker 共享限流已可用）。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；subgraph 提取/按名复用闭环已交付）。

@@ -34,11 +34,17 @@ RECIPE_CONTRACTS: dict[str, dict[str, Any]] = {
         "optional": frozenset({"strength_model", "strength_clip"}),
         "exact": False,
     },
+    "controlnet_apply.v1": {
+        "required": frozenset({"conditioning_node_id", "image_node_id", "control_net_name"}),
+        "optional": frozenset({"strength", "negative_conditioning_node_id"}),
+        "exact": False,
+    },
 }
 
 RECIPE_DEFAULTS: dict[str, dict[str, Any]] = {
     "save_image.v1": {"filename_prefix": "recipe"},
     "lora_model.v1": {"strength_model": 1.0, "strength_clip": 1.0},
+    "controlnet_apply.v1": {"strength": 1.0},
 }
 
 _IMAGE = "IMAGE"
@@ -77,6 +83,8 @@ def apply_recipe(
         _apply_save(graph, parameter_schema, normalized, object_info, index=index)
     elif recipe_id == "lora_model.v1":
         _apply_lora(graph, parameter_schema, normalized, object_info, index=index)
+    elif recipe_id == "controlnet_apply.v1":
+        _apply_controlnet(graph, parameter_schema, normalized, object_info, index=index)
     else:  # pragma: no cover - guarded by RECIPE_CONTRACTS
         raise RecipeError(f"operations[{index}].recipe_id is not registered")
 
@@ -107,17 +115,39 @@ def _normalized_arguments(
     normalized = dict(arguments)
     for key, default in RECIPE_DEFAULTS.get(recipe_id, {}).items():
         normalized.setdefault(key, default)
-    for key in ("after_node_id", "loader_node_id", "node_id", "field"):
+    for key in (
+        "after_node_id",
+        "loader_node_id",
+        "node_id",
+        "field",
+        "conditioning_node_id",
+        "image_node_id",
+    ):
         if key in normalized:
             value = normalized[key]
             if not isinstance(value, str) or not value or len(value) > 256:
                 raise RecipeError(f"operations[{index}].arguments.{key} must be a bounded string")
+    if "negative_conditioning_node_id" in normalized:
+        value = normalized["negative_conditioning_node_id"]
+        if value is not None and (
+            not isinstance(value, str) or not value or len(value) > 256
+        ):
+            raise RecipeError(
+                f"operations[{index}].arguments.negative_conditioning_node_id "
+                "must be a bounded string or null"
+            )
     for key in ("model", "lora_name", "filename_prefix"):
         if key in normalized:
             value = normalized[key]
             if not isinstance(value, str) or len(value) > 1024:
                 raise RecipeError(f"operations[{index}].arguments.{key} must be a bounded string")
-    for key in ("strength_model", "strength_clip"):
+    if "control_net_name" in normalized:
+        value = normalized["control_net_name"]
+        if not isinstance(value, str) or not value or len(value) > 1024:
+            raise RecipeError(
+                f"operations[{index}].arguments.control_net_name must be a bounded string"
+            )
+    for key in ("strength_model", "strength_clip", "strength"):
         if key in normalized:
             value = normalized[key]
             if (
@@ -249,6 +279,67 @@ def _apply_lora(
     )
     _rewire_consumers(graph, model_consumers, loader, 0, lora_id, 0)
     _rewire_consumers(graph, clip_consumers, loader, 1, lora_id, 1)
+
+
+def _apply_controlnet(
+    graph: dict[str, Any],
+    parameter_schema: dict[str, Any],
+    arguments: dict[str, Any],
+    object_info: dict[str, Any],
+    *,
+    index: int,
+) -> None:
+    positive = str(arguments["conditioning_node_id"])
+    image = str(arguments["image_node_id"])
+    negative = arguments.get("negative_conditioning_node_id")
+    negative = str(negative) if negative is not None else positive
+    _require_output_type(graph, positive, 0, "CONDITIONING", object_info, index)
+    _require_output_type(graph, image, 0, "IMAGE", object_info, index)
+    _require_output_type(graph, negative, 0, "CONDITIONING", object_info, index)
+    same_source = negative == positive
+    # Snapshot consumers BEFORE inserting so the new chain is never rewired.
+    positive_consumers = _snapshot_consumers(graph, positive, 0)
+    negative_consumers = (
+        [] if same_source else _snapshot_consumers(graph, negative, 0)
+    )
+    loader_id = _next_node_id(graph, "controlnet_loader")
+    _insert_node(
+        graph,
+        parameter_schema,
+        loader_id,
+        "ControlNetLoader",
+        {"control_net_name": str(arguments["control_net_name"])},
+        object_info,
+        exposed={"control_net_name": True},
+        index=index,
+    )
+    apply_id = _next_node_id(graph, "controlnet_apply")
+    _insert_node(
+        graph,
+        parameter_schema,
+        apply_id,
+        "ControlNetApplyAdvanced",
+        {
+            "positive": [positive, 0],
+            "negative": [negative, 0],
+            "control_net": [loader_id, 0],
+            "image": [image, 0],
+            "strength": arguments["strength"],
+            "start_percent": 0.0,
+            "end_percent": 1.0,
+        },
+        object_info,
+        exposed={"strength": False},
+        index=index,
+    )
+    if same_source:
+        # Single conditioning source: consumers all take the processed
+        # positive output; the two snapshots are identical, so rewiring once
+        # avoids the second pass overriding the first.
+        _rewire_consumers(graph, positive_consumers, positive, 0, apply_id, 0)
+    else:
+        _rewire_consumers(graph, positive_consumers, positive, 0, apply_id, 0)
+        _rewire_consumers(graph, negative_consumers, negative, 0, apply_id, 1)
 
 
 # -- shared helpers ---------------------------------------------------------

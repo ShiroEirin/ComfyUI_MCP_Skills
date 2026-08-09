@@ -515,6 +515,384 @@ def test_recipe_rejects_duplicate_parameter_name(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+CONTROLNET_OBJECT_INFO: dict[str, Any] = {
+    **OBJECT_INFO,
+    "ControlNetLoader": {
+        "input": {
+            "required": {
+                "control_net_name": [["control_v11.safetensors", "control_v2.safetensors"]]
+            }
+        },
+        "input_order": {"required": ["control_net_name"]},
+        "output": ["CONTROL_NET"],
+    },
+    "ControlNetApplyAdvanced": {
+        "input": {
+            "required": {
+                "positive": ["CONDITIONING"],
+                "negative": ["CONDITIONING"],
+                "control_net": ["CONTROL_NET"],
+                "image": ["IMAGE"],
+                "strength": ["FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0}],
+                "start_percent": ["FLOAT", {"default": 0.0}],
+                "end_percent": ["FLOAT", {"default": 1.0}],
+            }
+        },
+        "input_order": {
+            "required": [
+                "positive",
+                "negative",
+                "control_net",
+                "image",
+                "strength",
+                "start_percent",
+                "end_percent",
+            ]
+        },
+        "output": ["CONDITIONING", "CONDITIONING"],
+    },
+    "TextEncode": {
+        "input": {"required": {"text": ["STRING"]}},
+        "input_order": {"required": ["text"]},
+        "output": ["CONDITIONING"],
+    },
+    "SamplerConsumer": {
+        "input": {
+            "required": {
+                "positive": ["CONDITIONING"],
+                "negative": ["CONDITIONING"],
+                "cfg": ["FLOAT"],
+            }
+        },
+        "input_order": {"required": ["positive", "negative", "cfg"]},
+        "output": ["LATENT"],
+    },
+}
+
+CONTROLNET_GRAPH: dict[str, Any] = {
+    **BASE_GRAPH,
+    "7": {"class_type": "TextEncode", "inputs": {"text": "positive"}},
+    "8": {"class_type": "TextEncode", "inputs": {"text": "negative"}},
+    "9": {
+        "class_type": "SamplerConsumer",
+        "inputs": {"positive": ["7", 0], "negative": ["8", 0], "cfg": 7.0},
+    },
+}
+
+
+def _services_for(
+    tmp_path: Path, graph: dict[str, Any], object_info: dict[str, Any]
+) -> tuple[WorkflowChangeService, SQLiteWorkflowRepository]:
+    base = _project(tmp_path)
+    store = SQLiteControlPlaneStore((base / "data" / "control-plane.sqlite3").resolve())
+    store.initialize()
+    workflows = SQLiteWorkflowRepository(store)
+    graphs = WorkflowGraphService(
+        ParameterRoleRegistry.default(), DependencyExtractorRegistry.default()
+    )
+    validation = WorkflowValidationService()
+    imported = WorkflowImportService(graphs, validation, workflows).preview(
+        graph,
+        workflow_id="portrait",
+        server_id="local",
+        object_info=object_info,
+    )
+    created = WorkflowImportService(graphs, validation, workflows).commit(imported)
+    workflows.publish(created["deployment_id"])
+    changes = WorkflowChangeService(
+        SQLiteWorkflowChangeRepository(store),
+        graphs,
+        validation,
+        actor="recipe-test",
+    )
+    return changes, workflows
+
+
+def test_controlnet_recipe_dual_source_rewires_both_conditioning_outputs(
+    tmp_path: Path,
+) -> None:
+    changes, workflows = _services_for(tmp_path, CONTROLNET_GRAPH, CONTROLNET_OBJECT_INFO)
+
+    plan = changes.plan(
+        "portrait",
+        "local",
+        [
+            {
+                "op": "apply_recipe",
+                "recipe_id": "controlnet_apply.v1",
+                "arguments": {
+                    "conditioning_node_id": "7",
+                    "image_node_id": "2",
+                    "control_net_name": "control_v11.safetensors",
+                    "negative_conditioning_node_id": "8",
+                },
+            }
+        ],
+        object_info=CONTROLNET_OBJECT_INFO,
+    )
+    graph, schema = _after(changes, workflows, plan)
+
+    assert graph["controlnet_loader_1"]["inputs"]["control_net_name"] == "control_v11.safetensors"
+    apply_node = graph["controlnet_apply_1"]
+    assert apply_node["inputs"]["positive"] == ["7", 0]
+    assert apply_node["inputs"]["negative"] == ["8", 0]
+    assert apply_node["inputs"]["image"] == ["2", 0]
+    assert apply_node["inputs"]["strength"] == 1.0  # default
+    # Dual-source rewiring: positive -> output 0, negative -> output 1.
+    assert graph["9"]["inputs"]["positive"] == ["controlnet_apply_1", 0]
+    assert graph["9"]["inputs"]["negative"] == ["controlnet_apply_1", 1]
+    parameters = schema["parameters"]
+    assert "controlnet_loader_1.control_net_name" in parameters
+    assert "controlnet_apply_1.strength" in parameters
+    assert plan["diff"]["nodes_added"] == ["controlnet_apply_1", "controlnet_loader_1"]
+
+
+def test_controlnet_recipe_single_source_unifies_consumers_on_output_zero(
+    tmp_path: Path,
+) -> None:
+    single_source_graph = {
+        **CONTROLNET_GRAPH,
+        "9": {
+            "class_type": "SamplerConsumer",
+            "inputs": {"positive": ["7", 0], "negative": ["7", 0], "cfg": 7.0},
+        },
+    }
+    changes, workflows = _services_for(
+        tmp_path, single_source_graph, CONTROLNET_OBJECT_INFO
+    )
+
+    plan = changes.plan(
+        "portrait",
+        "local",
+        [
+            {
+                "op": "apply_recipe",
+                "recipe_id": "controlnet_apply.v1",
+                "arguments": {
+                    "conditioning_node_id": "7",
+                    "image_node_id": "2",
+                    "control_net_name": "control_v11.safetensors",
+                },
+            }
+        ],
+        object_info=CONTROLNET_OBJECT_INFO,
+    )
+    graph, _schema = _after(changes, workflows, plan)
+
+    apply_node = graph["controlnet_apply_1"]
+    assert apply_node["inputs"]["positive"] == ["7", 0]
+    assert apply_node["inputs"]["negative"] == ["7", 0]  # same source
+    # Single source: consumers unify on the processed positive output.
+    assert graph["9"]["inputs"]["positive"] == ["controlnet_apply_1", 0]
+    assert graph["9"]["inputs"]["negative"] == ["controlnet_apply_1", 0]
+
+
+def test_controlnet_recipe_rejects_wrong_anchor_types(tmp_path: Path) -> None:
+    changes, workflows = _services_for(tmp_path, CONTROLNET_GRAPH, CONTROLNET_OBJECT_INFO)
+
+    with pytest.raises(ValueError, match="must be CONDITIONING"):
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "apply_recipe",
+                    "recipe_id": "controlnet_apply.v1",
+                    "arguments": {
+                        "conditioning_node_id": "2",  # IMAGE output
+                        "image_node_id": "2",
+                        "control_net_name": "control_v11.safetensors",
+                    },
+                }
+            ],
+            object_info=CONTROLNET_OBJECT_INFO,
+        )
+    with pytest.raises(ValueError, match="must be IMAGE"):
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "apply_recipe",
+                    "recipe_id": "controlnet_apply.v1",
+                    "arguments": {
+                        "conditioning_node_id": "7",
+                        "image_node_id": "1",  # STRING output
+                        "control_net_name": "control_v11.safetensors",
+                    },
+                }
+            ],
+            object_info=CONTROLNET_OBJECT_INFO,
+        )
+
+
+def test_controlnet_recipe_rejects_unknown_class(tmp_path: Path) -> None:
+    changes, workflows = _services_for(tmp_path, CONTROLNET_GRAPH, CONTROLNET_OBJECT_INFO)
+
+    with pytest.raises(ValueError, match="not in object_info"):
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "apply_recipe",
+                    "recipe_id": "controlnet_apply.v1",
+                    "arguments": {
+                        "conditioning_node_id": "7",
+                        "image_node_id": "2",
+                        "control_net_name": "control_v11.safetensors",
+                    },
+                }
+            ],
+            object_info={
+                key: value
+                for key, value in CONTROLNET_OBJECT_INFO.items()
+                if key != "ControlNetLoader"
+            },
+        )
+
+
+def test_controlnet_recipe_argument_validation() -> None:
+    from comfyui_mcp_skills.application.workflow_recipes import apply_recipe
+
+    graph = _graph_copy(CONTROLNET_GRAPH)
+    schema: dict[str, Any] = {"parameters": {}}
+    with pytest.raises(ValueError, match="finite number"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "control_v11.safetensors",
+                "strength": float("nan"),
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+    with pytest.raises(ValueError, match="finite number"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "control_v11.safetensors",
+                "strength": True,
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+    with pytest.raises(ValueError, match="bounded string"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": 7,
+                "image_node_id": "2",
+                "control_net_name": "control_v11.safetensors",
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+    with pytest.raises(ValueError, match="bounded string"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "control_v11.safetensors",
+                "negative_conditioning_node_id": 8,
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+
+
+    with pytest.raises(ValueError, match="bounded string"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "",
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+    with pytest.raises(ValueError, match="bounded string"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": 5,
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+    with pytest.raises(ValueError, match="bounded string"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "x" * 1025,
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+    with pytest.raises(ValueError, match=r"operations\[3\].*negative_conditioning_node_id"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "control_v11.safetensors",
+                "negative_conditioning_node_id": "",
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=3,
+        )
+
+
+def test_controlnet_recipe_rejects_duplicate_parameter(tmp_path: Path) -> None:
+    from comfyui_mcp_skills.application.workflow_recipes import apply_recipe
+
+    graph = _graph_copy(CONTROLNET_GRAPH)
+    schema: dict[str, Any] = {
+        "parameters": {
+            "controlnet_apply_1.strength": {"type": "float", "node_id": "controlnet_apply_1"}
+        }
+    }
+    with pytest.raises(ValueError, match="already exists"):
+        apply_recipe(
+            graph,
+            schema,
+            "controlnet_apply.v1",
+            {
+                "conditioning_node_id": "7",
+                "image_node_id": "2",
+                "control_net_name": "control_v11.safetensors",
+            },
+            CONTROLNET_OBJECT_INFO,
+            index=0,
+        )
+
+
 def _after(
     changes: WorkflowChangeService,
     workflows: SQLiteWorkflowRepository,

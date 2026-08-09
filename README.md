@@ -243,7 +243,7 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`1014 passed, 7 skipped, 2 subtests passed`（未安装 `otel` extra；安装后 OpenTelemetry SDK 集成测试另行纳入）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`1020 passed, 7 skipped, 2 subtests passed`（未安装 `otel` extra；安装后 OpenTelemetry SDK 集成测试另行纳入）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
@@ -253,7 +253,6 @@ uv build
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- 高层分支 recipe：ControlNet 插入未交付（LoRA `lora_model.v1`、Upscaler `upscale_image.v1`、Save `save_image.v1` 已交付；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
 
 ### 本地单机部署边界
 
