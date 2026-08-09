@@ -12,6 +12,11 @@ from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
     WorkflowValidationService,
 )
+from comfyui_mcp_skills.application.workflow_recipes import (
+    RecipeError,
+    apply_recipe,
+    declared_parameter,
+)
 from comfyui_mcp_skills.domain.errors import WorkflowChangeNotFound
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.workflow_schema import (
@@ -143,7 +148,9 @@ class WorkflowChangeService:
         base_schema = _json_copy(base.get("parameter_schema"), "parameter schema")
         parameter_schema = _json_copy(base_schema, "parameter schema")
         normalized_operations = tuple(
-            _apply_operation(graph, parameter_schema, operation, index=index)
+            _apply_operation(
+                graph, parameter_schema, operation, object_info=object_info, index=index
+            )
             for index, operation in enumerate(operations)
         )
         _validate_acyclic(graph)
@@ -358,6 +365,7 @@ def _apply_operation(
     parameter_schema: dict[str, Any],
     operation: dict[str, Any],
     *,
+    object_info: dict[str, Any] | None = None,
     index: int,
 ) -> dict[str, Any]:
     if not isinstance(operation, dict):
@@ -421,21 +429,17 @@ def _apply_operation(
         subgraphs[name] = _extracted_definition(graph, node_ids)
     elif kind == "apply_recipe":
         recipe_id = _operation_string(copied, "recipe_id", index)
-        recipe_arguments = copied.get("arguments")
-        if recipe_id != "set_scalar_input.v1":
-            raise ValueError(f"operations[{index}].recipe_id is not registered")
-        if not isinstance(recipe_arguments, dict) or set(recipe_arguments) != {
-            "node_id",
-            "field",
-            "value",
-        }:
-            raise ValueError(f"operations[{index}].arguments is invalid for {recipe_id}")
-        node_id = _operation_string(recipe_arguments, "node_id", index)
-        field = _operation_string(recipe_arguments, "field", index)
-        value = recipe_arguments.get("value")
-        if _is_connection(value):
-            raise ValueError(f"operations[{index}].arguments.value must be scalar")
-        _inputs(graph, node_id, index)[field] = value
+        try:
+            apply_recipe(
+                graph,
+                parameter_schema,
+                recipe_id,
+                copied.get("arguments"),
+                object_info,
+                index=index,
+            )
+        except RecipeError as exc:
+            raise ValueError(str(exc)) from exc
     elif kind == "connect":
         source_id = _operation_string(copied, "source_node_id", index)
         target_id = _operation_string(copied, "target_node_id", index)
@@ -921,48 +925,9 @@ def _apply_exposures(
             raise ValueError(f'Workflow parameters "{previous}" and "{name}" target the same input')
 
 
-def _declared_parameter(info: object, field: str, current: object) -> dict[str, Any]:
-    if not isinstance(info, dict):
-        raise ValueError(f'Input "{field}" has no ComfyUI object_info metadata')
-    inputs = info.get("input")
-    definition: object = None
-    if isinstance(inputs, dict):
-        for section in ("required", "optional"):
-            values = inputs.get(section)
-            if isinstance(values, dict) and field in values:
-                definition = values[field]
-                break
-    if not isinstance(definition, list) or not definition:
-        raise ValueError(f'Input "{field}" has no ComfyUI object_info metadata')
-    declared = definition[0]
-    settings = definition[1] if len(definition) > 1 and isinstance(definition[1], dict) else {}
-    type_map = {
-        "INT": "int",
-        "FLOAT": "float",
-        "BOOLEAN": "boolean",
-        "STRING": "string",
-        "IMAGE": "image",
-        "AUDIO": "audio",
-        "VIDEO": "video",
-    }
-    if isinstance(declared, str):
-        parameter_type = type_map.get(declared.upper(), "string")
-    elif isinstance(declared, list):
-        parameter_type = _type_guess(declared[0]) if declared else "string"
-    else:
-        raise ValueError(f'Input "{field}" has unsupported ComfyUI object_info metadata')
-    metadata: dict[str, Any] = {"type": parameter_type, "default": current}
-    for source, target in (("min", "minimum"), ("max", "maximum")):
-        value = settings.get(source)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
-            metadata[target] = value
-    options = declared if isinstance(declared, list) else settings.get("options")
-    if isinstance(options, list) and len(options) <= 200:
-        metadata["enum"] = list(options)
-    description = settings.get("tooltip", settings.get("description"))
-    if isinstance(description, str) and description:
-        metadata["description"] = description
-    return metadata
+# declared_parameter lives in workflow_recipes (shared with recipe exposure);
+# keep the private alias for the existing expose_parameter flow.
+_declared_parameter = declared_parameter
 
 
 def _validate_acyclic(graph: dict[str, Any]) -> None:
