@@ -404,9 +404,9 @@ $env:COMFYUI_MCP_MANAGER_ORIGINS = "http://127.0.0.1:8188"
 
 每个 key 必须是 `node:<name>` 或 `model:<name>`；version 必须是固定 Git tag/commit，checksum 必须是 SHA-256，source_url 必须是 HTTPS 且 Host 在白名单内。模型条目使用 `source_type: "model"`，并设置安全的相对 `target_dir`。
 
-## 11. 可选 OpenTelemetry 追踪
+## 11. 可选 OpenTelemetry 遥测
 
-默认不启用遥测，也不需要任何 OpenTelemetry 依赖。工具调用在两种情况下被记录（traces：`tool.call` span 含工具名、主体、耗时、是否出错；metrics：`mcp.tool.calls`/`mcp.tool.errors` 计数与 `mcp.tool.duration` 直方图）：
+默认不启用遥测，也不需要任何 OpenTelemetry 依赖。工具调用在以下信号下被记录（traces：`tool.call` span 含工具名、主体、耗时、是否出错；metrics：`mcp.tool.calls`/`mcp.tool.errors` 计数与 `mcp.tool.duration` 直方图；logs：Python `logging` 记录经桥接导出）：
 
 1. 安装可选依赖：`pip install "comfyui-mcp-skills[otel]"`（或 `uv sync --extra otel`）。
 2. 设置 OTLP/HTTP 端点：
@@ -417,10 +417,10 @@ $env:COMFYUI_MCP_OTEL_SERVICE_NAME = "comfyui-mcp-prod"
 comfyui-mcp
 ```
 
-- 未设置 `COMFYUI_MCP_OTEL_ENDPOINT` 时，tracer/meter 是零开销空实现，不会导入 OpenTelemetry 包。
-- 端点按 OTLP/HTTP base URL 配置（不含信号路径）；服务自动追加 `/v1/traces` 与 `/v1/metrics` 并分别导出，两条信号绝不共用同一路径。旧的带 `/v1/traces` 完整路径值仍被接受（自动剥离后按信号重拼）。
-- 设置了端点但未安装 `otel` extra 时，启动显式报错（fail loud），不会静默丢失 span/指标。
-- 当前只提供 traces 与 metrics 信号；logs 信号未交付。
+- 未设置 `COMFYUI_MCP_OTEL_ENDPOINT` 时，tracer/meter/log 桥接是零开销空实现，不会导入 OpenTelemetry 包。
+- 端点按 OTLP/HTTP base URL 配置（不含信号路径）；服务自动追加 `/v1/traces`、`/v1/metrics` 与 `/v1/logs` 并分别导出，三条信号绝不共用同一路径。旧的带 `/v1/traces` 完整路径值仍被接受（自动剥离后按信号重拼）。
+- 设置了端点但未安装 `otel` extra 时，启动显式报错（fail loud），不会静默丢失 span/指标/日志。
+- 提供 traces、metrics 与 logs 三信号；logs 经 `LoggingHandler` 桥接 Python `logging` 记录到 `/v1/logs`（仅白名单字段导出，排除 `opentelemetry.*` 内部日志防导出循环）。
 
 ## 12. 保留策略与迁移
 

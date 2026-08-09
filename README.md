@@ -243,11 +243,11 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`1020 passed, 7 skipped, 2 subtests passed`（未安装 `otel` extra；安装后 OpenTelemetry SDK 集成测试另行纳入）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`1036 passed, 1 skipped, 2 subtests passed`（含 `otel` extra 下的 OpenTelemetry 集成测试——SDK traces/metrics 与 logs 桥接均真实执行；未安装 `otel` extra 的环境对应为 `1029 passed, 8 skipped`——6 个 SDK 集成测试、1 个 logs 桥接集成测试与 1 个 Windows 符号链接用例跳过）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
-已实现可靠执行、版本化工作流、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制、RFC 7662 introspection、审计闭环（append-only 事件 + 有界导出）与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，`COMFYUI_MCP_OTEL_ENDPOINT` base URL 配置，`otel` extra 安装，见[安装文档](docs/INSTALLATION.zh-CN.md)第 11 章）。workflow aggregate cutover 后，file-backed 的 `comfyui.admin.workflow.set_enabled`/`delete` 不再挂载（审计工具仍可用）。以下能力尚未作为正式产品能力交付：
+已实现可靠执行、版本化工作流、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制、RFC 7662 introspection、审计闭环（append-only 事件 + 有界导出）与可选 OpenTelemetry traces/metrics/logs（工具调用 span、计数与耗时直方图、`logging` 记录导出到 `/v1/logs`，`COMFYUI_MCP_OTEL_ENDPOINT` base URL 配置，`otel` extra 安装，见[安装文档](docs/INSTALLATION.zh-CN.md)第 11 章）。workflow aggregate cutover 后，file-backed 的 `comfyui.admin.workflow.set_enabled`/`delete` 不再挂载（审计工具仍可用）。以下能力尚未作为正式产品能力交付：
 - Redis/NATS 多副本订阅总线。
 - 多主机共享租约与跨主机配额（SQLite 共享限流仅限同主机多进程）。
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。

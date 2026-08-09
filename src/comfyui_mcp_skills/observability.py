@@ -8,18 +8,12 @@ from datetime import datetime, timezone
 from threading import Lock
 from typing import Any
 
-_CONTEXT_FIELDS = (
-    "request_id",
-    "method",
-    "path",
-    "status",
-    "duration_ms",
-    "client_id",
-    "server_id",
-    "workflow_id",
-    "prompt_id",
-    "error_code",
+from comfyui_mcp_skills.application.telemetry import (
+    CONTEXT_FIELDS,
+    logging_handler_from_env,
 )
+
+_CONTEXT_FIELDS = CONTEXT_FIELDS
 
 
 class JsonFormatter(logging.Formatter):
@@ -75,4 +69,7 @@ def configure_logging(level: str = "INFO") -> None:
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
+    otel_handler = logging_handler_from_env()
+    if otel_handler is not None:
+        root.addHandler(otel_handler)
     root.setLevel(level.upper())

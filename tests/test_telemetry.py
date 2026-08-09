@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -534,3 +535,323 @@ def test_admin_recording_meter_counts_is_error_results(tmp_path: Path) -> None:
     assert len(errors) == 1
     assert errors[0][1]["tool"] == "comfyui.admin.workflow.set_enabled"
     assert len(recorder.counters["mcp.tool.calls"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# OTel logs: logging handler from environment
+# ---------------------------------------------------------------------------
+
+
+class _FakeLogExporter:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+
+class _FakeBatchProcessor:
+    def __init__(self, exporter: Any) -> None:
+        self.exporter = exporter
+
+
+class _FakeLoggerProvider:
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+        self.processor: Any = None
+
+    def add_log_record_processor(self, processor: Any) -> None:
+        self.processor = processor
+
+
+class _FakeLoggingHandler(logging.Handler):
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(level=logging.NOTSET)
+        self.kwargs = kwargs
+        self._filters: list[Any] = []
+
+    def addFilter(self, f: Any) -> None:
+        self._filters.append(f)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        for entry in self._filters:
+            if callable(entry):
+                if not entry(record):
+                    return False
+            elif not entry.filter(record):
+                return False
+        return True
+
+
+class _FakeResource:
+    @staticmethod
+    def create(attributes: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        return attributes
+
+
+def _install_fake_otel(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    import sys
+
+    fake_modules = {
+        "opentelemetry": type(sys)("opentelemetry"),
+        "opentelemetry.exporter": type(sys)("opentelemetry.exporter"),
+        "opentelemetry.exporter.otlp": type(sys)("opentelemetry.exporter.otlp"),
+        "opentelemetry.exporter.otlp.proto": type(sys)("opentelemetry.exporter.otlp.proto"),
+        "opentelemetry.exporter.otlp.proto.http": type(sys)(
+            "opentelemetry.exporter.otlp.proto.http"
+        ),
+        "opentelemetry.exporter.otlp.proto.http._log_exporter": type(sys)(
+            "opentelemetry.exporter.otlp.proto.http._log_exporter"
+        ),
+        "opentelemetry.sdk": type(sys)("opentelemetry.sdk"),
+        "opentelemetry.sdk._logs": type(sys)("opentelemetry.sdk._logs"),
+        "opentelemetry.sdk._logs.export": type(sys)("opentelemetry.sdk._logs.export"),
+        "opentelemetry.sdk.resources": type(sys)("opentelemetry.sdk.resources"),
+    }
+    fake_modules["opentelemetry.sdk._logs"].LoggerProvider = _FakeLoggerProvider
+    fake_modules["opentelemetry.sdk._logs"].LoggingHandler = _FakeLoggingHandler
+    fake_modules["opentelemetry.sdk._logs.export"].BatchLogRecordProcessor = _FakeBatchProcessor
+    fake_modules["opentelemetry.exporter.otlp.proto.http._log_exporter"].OTLPLogExporter = (
+        _FakeLogExporter
+    )
+    fake_modules["opentelemetry.sdk.resources"].Resource = _FakeResource
+    for name, module in fake_modules.items():
+        monkeypatch.setitem(sys.modules, name, module)
+    return fake_modules
+
+
+def test_logging_handler_from_env_returns_none_without_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    monkeypatch.delenv(telemetry.OTEL_ENDPOINT_ENV, raising=False)
+    assert telemetry.logging_handler_from_env() is None
+
+
+def test_logging_handler_from_env_builds_handler_with_logs_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    _install_fake_otel(monkeypatch)
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    key = ("http://127.0.0.1:4318", "comfyui-mcp")
+    telemetry._log_handler_cache.pop(key, None)
+
+    handler = telemetry.logging_handler_from_env()
+
+    assert isinstance(handler, telemetry._ProjectingLogHandler)
+    provider = handler._inner.kwargs["logger_provider"]
+    assert isinstance(provider, _FakeLoggerProvider)
+    exporter = provider.processor.exporter
+    assert exporter.kwargs["endpoint"] == "http://127.0.0.1:4318/v1/logs"
+
+
+def test_logging_handler_from_env_caches_per_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    _install_fake_otel(monkeypatch)
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    telemetry._log_handler_cache.pop(("http://127.0.0.1:4318", "comfyui-mcp"), None)
+
+    first = telemetry.logging_handler_from_env()
+    second = telemetry.logging_handler_from_env()
+    assert first is second
+
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4319")
+    other = telemetry.logging_handler_from_env()
+    assert other is not first
+
+
+def test_logging_handler_from_env_fails_loudly_without_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import builtins
+
+    from comfyui_mcp_skills.application import telemetry
+
+    real_import = builtins.__import__
+
+    def blocked_otel(name: str, *args: object, **kwargs: object) -> object:
+        if name == "opentelemetry" or name.startswith("opentelemetry."):
+            raise ImportError("simulated missing otel extra")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", blocked_otel)
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4317")
+    with pytest.raises(RuntimeError, match="not installed"):
+        telemetry.logging_handler_from_env()
+
+
+def test_logging_handler_strips_legacy_traces_path_from_logs_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    _install_fake_otel(monkeypatch)
+    monkeypatch.setenv(
+        telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318/v1/traces"
+    )
+    key = ("http://127.0.0.1:4318/v1/traces", "comfyui-mcp")
+    telemetry._log_handler_cache.pop(key, None)
+
+    handler = telemetry.logging_handler_from_env()
+
+    exporter = handler._inner.kwargs["logger_provider"].processor.exporter  # type: ignore[attr-defined]
+    assert exporter.kwargs["endpoint"] == "http://127.0.0.1:4318/v1/logs"
+
+
+def test_logging_handler_filter_rejects_otel_internal_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    handler = _FakeLoggingHandler()
+    handler.addFilter(telemetry._otel_filter)
+
+    internal = logging.LogRecord(
+        "opentelemetry.sdk._logs", logging.WARNING, "x", 1, "boom", (), None
+    )
+    assert handler.filter(internal) is False
+
+    normal = logging.LogRecord(
+        "comfyui_mcp_skills.adapters.mcp.server", logging.INFO, "x", 1, "ok", (), None
+    )
+    assert handler.filter(normal) is True
+
+
+def test_configure_logging_attaches_single_otel_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+    from comfyui_mcp_skills.observability import configure_logging
+
+    _install_fake_otel(monkeypatch)
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    telemetry._log_handler_cache.pop(("http://127.0.0.1:4318", "comfyui-mcp"), None)
+
+    configure_logging("INFO")
+    configure_logging("INFO")  # repeated calls keep exactly one OTel handler
+
+    root = logging.getLogger()
+    otel_handlers = [
+        h for h in root.handlers if isinstance(h, telemetry._ProjectingLogHandler)
+    ]
+    assert len(otel_handlers) == 1
+    root.handlers.clear()
+
+
+def test_logging_handler_projects_allowlisted_fields_and_strips_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    captured: list[logging.LogRecord] = []
+
+    class _CaptureInner(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record)
+
+    _install_fake_otel(monkeypatch)
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    telemetry._log_handler_cache.pop(("http://127.0.0.1:4318", "comfyui-mcp"), None)
+
+    handler = telemetry.logging_handler_from_env()
+    handler._inner = _CaptureInner()  # type: ignore[attr-defined]
+
+    secret = logging.LogRecord(
+        "comfyui_mcp_skills.adapters.mcp.server",
+        logging.INFO,
+        "path/file.py",
+        42,
+        "ok",
+        (),
+        None,
+    )
+    secret.funcName = "handler"
+    secret.request_id = "req-1"
+    secret.Authorization = "Bearer secret-token"
+    secret.client_id = "client-x"
+    secret._secret_underscore = "hidden"
+    secret.created = 1234567890.25
+    handler.handle(secret)
+
+    assert len(captured) == 1
+    safe = captured[0]
+    assert safe.request_id == "req-1"
+    assert safe.client_id == "client-x"
+    assert not hasattr(safe, "Authorization")
+    assert safe.getMessage() == "ok"
+    assert safe.created == 1234567890.25  # event timestamp preserved
+    assert safe.funcName == "handler"
+    assert safe.lineno == 42
+    assert not hasattr(safe, "_secret_underscore")  # underscore extras also stripped
+
+
+def test_logging_handler_cache_keys_on_service_name_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from comfyui_mcp_skills.application import telemetry
+
+    _install_fake_otel(monkeypatch)
+    monkeypatch.setenv(telemetry.OTEL_ENDPOINT_ENV, "http://127.0.0.1:4318")
+    monkeypatch.setenv(telemetry.OTEL_SERVICE_NAME_ENV, "svc-a")
+    telemetry._log_handler_cache.pop(("http://127.0.0.1:4318", "svc-a"), None)
+    telemetry._log_handler_cache.pop(("http://127.0.0.1:4318", "svc-b"), None)
+
+    first = telemetry.logging_handler_from_env()
+    monkeypatch.setenv(telemetry.OTEL_SERVICE_NAME_ENV, "svc-b")
+    second = telemetry.logging_handler_from_env()
+
+    assert second is not first
+    assert (
+        first._inner.kwargs["logger_provider"].kwargs["resource"]["service.name"]  # type: ignore[attr-defined]
+        == "svc-a"
+    )
+    assert (
+        second._inner.kwargs["logger_provider"].kwargs["resource"]["service.name"]  # type: ignore[attr-defined]
+        == "svc-b"
+    )
+
+
+def test_otel_log_handler_exports_real_sdk_records_with_projection() -> None:
+    """Real SDK integration: emit through the projecting handler and assert the
+    exported record carries only allowlisted extras after force_flush."""
+    pytest.importorskip("opentelemetry.sdk._logs")
+    from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler
+    from opentelemetry.sdk._logs.export import (
+        BatchLogRecordProcessor,
+        InMemoryLogExporter,
+    )
+    from opentelemetry.sdk.resources import Resource
+
+    from comfyui_mcp_skills.application import telemetry
+
+    exporter = InMemoryLogExporter()
+    provider = LoggerProvider(resource=Resource.create({"service.name": "it-test"}))
+    provider.add_log_record_processor(BatchLogRecordProcessor(exporter))
+    inner = LoggingHandler(level=logging.NOTSET, logger_provider=provider)
+    inner.addFilter(telemetry._otel_filter)
+    handler = telemetry._ProjectingLogHandler(inner)
+
+    record = logging.LogRecord(
+        "comfyui_mcp_skills.adapters.mcp.server",
+        logging.INFO,
+        "x",
+        1,
+        "real sdk log",
+        (),
+        None,
+    )
+    record.request_id = "req-99"
+    record.Authorization = "Bearer secret"
+    handler.handle(record)
+    provider.force_flush()
+
+    finished = exporter.get_finished_logs()
+    assert len(finished) == 1
+    body = finished[0].log_record.body
+    assert "real sdk log" in str(body)
+    attrs = dict(finished[0].log_record.attributes or {})
+    assert attrs.get("request_id") == "req-99"
+    assert "Authorization" not in attrs
