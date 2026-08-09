@@ -55,7 +55,7 @@
 
 ## 1.0 GA 路径（Beta → 正式）
 
-> 状态：**进行中**。装配分层（前置）、G1（schema 冻结）、G2（重启执行闭环）已交付；剩余 G3（Windows Service RuntimeController）为**后续任务，尚未开始**。当前 1.1.0 Beta 卡在"承诺性"门槛，均为生产可用性要求（功能增强不构成 beta 理由）。
+> 状态：**承诺门槛已全部交付，进入 1.0 GA 发布评估**。装配分层（前置）、G1（schema 冻结）、G2（重启执行闭环）、G3（Windows Service RuntimeController）均已交付；发布评估项（schema 冻结承诺已兑现、重启闭环已交付、适配器三平台齐备）不再有功能性 blocker。当前 1.1.0 Beta，正式 GA 需发布流程决策（版本号/发布渠道/迁移文档）。
 
 ### G1. 持久化 schema 冻结承诺（最高优先级）
 > 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v12 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：每个历史版本 v1..v12 → 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
@@ -65,18 +65,18 @@
 - **验收**：文档移除"不保证兼容"声明；CI 有跨版本升级测试。
 
 ### G2. 重启执行闭环（approve/commit + drain/fence）
-> 状态：**已交付**（2026-08-08）。`runtime.restart.plan`（server-wide 跨 owner 非终态快照 + 明细表 + 规范化 digest + 单次审批 approval_id）→ `runtime.restart.approve` → `runtime.restart.commit`（receipt-first 幂等/失败重放重抛、controller binding digest 漂移拒绝、原子 drain 开 fence + execution intent 预持久化、有界 admission 结算等待、per-server active 唯一索引串行、失败解除 fence）→ `runtime.restart.get`。fence 原子门下沉 SQLite 幂等 claim 事务（含无幂等键路径的 admission gate + finally 释放）；崩溃恢复 Recoverer（启动清理 admission + 遗留 draining/restarting 置 failed 不自动重试，单实例前提）；v13 迁移三表 + 冻结清单 append；门控：approve/commit/get 仅 SQLite run store，plan 在文件后端/fresh 返回只读预览。17 测试（状态机/串行/崩溃恢复/admission 生命周期/门控/MCP 集成）。
+> 状态：**已交付**（2026-08-08）。`runtime.restart.plan`（server-wide 跨 owner 非终态快照 + 明细表 + 规范化 digest + 单次审批 approval_id）→ `runtime.restart.approve` → `runtime.restart.commit`（receipt-first 幂等/失败重放重抛、controller binding digest 漂移拒绝、原子 drain 开 fence + execution intent 预持久化、有界 admission 结算等待、per-server active 唯一索引串行、失败解除 fence）→ `runtime.restart.get`。fence 原子门下沉 SQLite 幂等 claim 事务（含无幂等键路径的 admission gate + finally 释放）；崩溃恢复 Recoverer（启动清理 admission + 遗留 draining/restarting 置 failed 不自动重试，单实例前提）；v13 迁移三表 + 冻结清单 append；门控：approve/commit/get 仅 SQLite run store，plan 在文件后端/fresh 返回只读预览。24 测试（状态机/串行/崩溃恢复/admission 生命周期/门控/MCP 集成/分页无遗漏/错误重放同构/时钟一致性/边界 10000）。
 - **问题**：`runtime.restart.plan` 只读预览；执行闭环未交付（无影响快照、无单次审批、无按服务器 drain/fence 协调），管理员无法安全重启引擎。
 - **交付**：服务端持久化影响快照 + 单次审批 + 所有提交路径入队前检查 + 原子启用/解除（drain/fence）；`runtime.restart.commit` 在审批后执行固定重启命令。
 - **验收**：并发/恢复场景测试（重启中提交被 fence、审批后原子执行）；诚实不可用原则保持（未完成前不暴露执行工具）。
 
-### G3. Windows Service RuntimeController（依赖 G2）
-> 状态：**后续任务，未开始**（G2 已交付，依赖解除，可开工）。
-- systemd/Docker 适配器已实现并接线（固定命令 + 超时 + fail-closed）；Windows 服务控制器需服务管理 API 集成，执行动作复用 G2 闭环。
+### G3. Windows Service RuntimeController
+> 状态：**已交付**（2026-08-08）。`runtime: {"adapter": "windows_service", "service": "<name>"}` 绑定 + `WindowsServiceController`（固定 `sc.exe stop` → 有界轮询 `sc.exe query` 至 `STATE : 1` STOPPED（1062 未运行直通——returncode 优先 + 非零结果 stdout/stderr 文本兼容，行首锚定数值解析防服务名含 "STATE : 1"/"STOPPED"/"1062" 字样误判；轮询受总预算约束——query timeout 与 sleep 均按剩余时间截断、query 后重算 remaining）→ `sc.exe start`；无 shell、超时、fail-closed）；`controller_from_config` 接线（延迟 import 无循环）+ `_controller_binding` 规范化（service 字段入 digest，G2 plan/commit pin 完整）；19 测试（全 mock subprocess 跨平台：校验/1062 双通道（FAILED 1062 精确模式 + 服务名含 1062 fail-closed 回归）/轮询/剩余预算/慢 query 预算/query 1062 fail-closed/超时/接线/digest/G2 全链路）。
+- systemd/Docker 适配器已实现并接线（固定命令 + 超时 + fail-closed）；Windows 服务控制器已完成服务管理 CLI 集成（`sc.exe`），执行动作复用 G2 闭环。
 - **交付**：接入 Windows Service 适配器 + 测试。
 
 ### 建议迭代顺序
-装配分层（前置原则 + 懒初始化 + 引导文档）→ G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每项独立可验证、不阻塞。当前进度：装配分层 ✅、G1 ✅、G2 ✅、G3 未开始。
+装配分层（前置原则 + 懒初始化 + 引导文档）→ G1（schema 冻结）→ G2（重启闭环）→ G3（Windows 控制器）。每项独立可验证、不阻塞。当前进度：装配分层 ✅、G1 ✅、G2 ✅、G3 ✅——GA 路径三项承诺门槛全部交付，进入 1.0 GA 发布评估。
 
 ---
 

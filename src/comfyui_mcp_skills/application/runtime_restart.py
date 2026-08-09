@@ -53,6 +53,8 @@ def _controller_binding(config: dict[str, Any]) -> tuple[dict[str, Any], str]:
         binding = {"adapter": "systemd", "unit": runtime.get("unit")}
     elif adapter == "docker":
         binding = {"adapter": "docker", "container": runtime.get("container")}
+    elif adapter == "windows_service":
+        binding = {"adapter": "windows_service", "service": runtime.get("service")}
     else:
         binding = {"adapter": adapter}
     return binding, _digest(binding)

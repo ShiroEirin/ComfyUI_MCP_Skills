@@ -66,9 +66,9 @@ class SystemdController:
 def controller_from_config(config: dict[str, Any]) -> RuntimeController | None:
     """Build the configured controller; any malformed binding fails closed to None.
 
-    Supported adapters: ``systemd`` (unit) and ``docker`` (container). An
-    unknown or malformed binding keeps the controller unavailable instead of
-    falling back to shell execution.
+    Supported adapters: ``systemd`` (unit), ``docker`` (container), and
+    ``windows_service`` (service). An unknown or malformed binding keeps the
+    controller unavailable instead of falling back to shell execution.
     """
     raw = config.get("runtime")
     if not isinstance(raw, dict) or not isinstance(raw.get("adapter"), str):
@@ -87,6 +87,16 @@ def controller_from_config(config: dict[str, Any]) -> RuntimeController | None:
             )
 
             return DockerController(docker_container_from_config(config))
+        except RuntimeConfigError:
+            return None
+    if adapter == "windows_service":
+        try:
+            from comfyui_mcp_skills.infrastructure.runtime.windows_service import (
+                WindowsServiceController,
+                windows_service_from_config,
+            )
+
+            return WindowsServiceController(windows_service_from_config(config))
         except RuntimeConfigError:
             return None
     return None

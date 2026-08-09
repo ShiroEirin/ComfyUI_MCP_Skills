@@ -9,7 +9,7 @@
 | 默认可用 | execution Toolset + 文件仓库 | 动态执行、上传、Job get/cancel、基础发现（`job.list` 需 run cutover） |
 | 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置 | 队列、日志、运行时、服务器/配置管理、Dependency/Provisioning |
 | 显式授权且完成对应 cutover | Authoring 或 Execution + 对应 SQLite aggregate | 工作流理解、Revision、Artifact/Lineage、Plan、Experiment、Diagnostic、Routing |
-| 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation、Windows Service RuntimeController |
+| 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation |
 
 当前发行版提供只读 `comfyui-mcp-migration-dry-run` 演练和显式 `comfyui-mcp-migrate` 生产切换命令（需精确确认短语与备份证据）。全新安装默认仍保留文件仓库，第三层能力在对应 aggregate 切换前不会启用；不要手工伪造切换证据。
 
@@ -376,7 +376,7 @@ comfyui.engine.history
 - **门控**：`approve/commit/get` 仅 SQLite run store（`run_store == "sqlite"`）挂载；文件后端/fresh 轻量目录 `plan` 返回只读预览（`requires a SQLite run store`）。无 controller 时 commit 拒绝（fail-closed）。
 - **fence 范围**：仅 `/prompt` 入队路径（含无幂等键提交）；provisioning（Manager 安装）与资产传输不在入队路径，由编排 worker checkpoint 恢复兜底。
 
-systemd 与 Docker `RuntimeController` 适配器接线：`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}` 或 `runtime: {"adapter": "docker", "container": "comfyui-local"}`，只执行固定的 `systemctl restart <unit>` / `docker restart <container>`，无 shell、有超时、非法配置 fail-closed。Windows Service 控制器未内置。
+systemd、Docker 与 Windows Service `RuntimeController` 适配器接线：`config.json` 服务器记录配置 `runtime: {"adapter": "systemd", "unit": "comfyui-local.service"}`、`runtime: {"adapter": "docker", "container": "comfyui-local"}` 或 `runtime: {"adapter": "windows_service", "service": "ComfyUI Local"}`。systemd/docker 执行固定的 `systemctl restart <unit>` / `docker restart <container>`；windows_service 执行固定的 `sc.exe stop <service>` → 有界轮询 `sc.exe query` 至 `STATE : 1`（STOPPED；未运行服务按 1062 直通）→ `sc.exe start <service>`。全部无 shell、有超时、非法配置 fail-closed；`sc start` 返回 completed 表示命令被接受，不探测服务就绪。
 
 ## 13. Resources、Prompts 与订阅
 
@@ -497,5 +497,4 @@ dependency.inspect
 - 跨主机共享租约与配额（同主机多 worker 共享限流已可用）。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Windows Service RuntimeController（systemd 与 Docker 适配器已实现并接线，执行闭环未交付）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；subgraph 提取/按名复用闭环已交付）。

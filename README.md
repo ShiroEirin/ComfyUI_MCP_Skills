@@ -196,7 +196,7 @@ scope: comfyui:execute
 - 变更、安装、删除和全局操作优先采用 plan/commit。
 - plan digest、幂等键、主体和对象所有权共同约束 commit。
 - 作业取消不会调用 ComfyUI 的全局 `/interrupt`。
-- `runtime.restart.plan` 提供影响快照与单次审批；`runtime.restart.commit` 在审批后执行固定 controller 命令（systemd/docker），期间 `/prompt` 提交被 drain/fence 拒绝（SQLite run store 门控；文件后端/fresh 只读预览）。
+- `runtime.restart.plan` 提供影响快照与单次审批；`runtime.restart.commit` 在审批后执行固定 controller 命令（systemd/docker/windows_service 适配器），期间 `/prompt` 提交被 drain/fence 拒绝（SQLite run store 门控；文件后端/fresh 只读预览）。
 - 远程上传、抓取、Host、Origin、正文大小、并发和速率均有边界。
 
 ## 基本使用流程
@@ -243,7 +243,7 @@ uv run pytest -q
 uv build
 ```
 
-当前本地交付验证：`983 passed, 7 skipped, 2 subtests passed`（未安装 `otel` extra；安装后 OpenTelemetry SDK 集成测试另行纳入）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
+当前本地交付验证：`1002 passed, 7 skipped, 2 subtests passed`（未安装 `otel` extra；安装后 OpenTelemetry SDK 集成测试另行纳入）。这表示代码与 contract harness 通过，不等于任意新数据目录已经完成所有 aggregate cutover。CI 在 Windows 与 Ubuntu 上覆盖 Python 3.10–3.13。
 
 ## 项目状态与边界
 
@@ -253,7 +253,6 @@ uv build
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
 - MCP Tasks 扩展映射。
 - MCP Elicitation 审批。
-- Windows Service 的内置 RuntimeController 适配器（Linux systemd 与 Docker 适配器已实现并接线；重启执行闭环已交付，Windows 控制器未内置）。
 - 高层分支 recipe（LoRA/ControlNet/Upscaler/Save 等插入；节点生命周期与 subgraph 提取/按名复用闭环已交付）。
 
 ### 本地单机部署边界
