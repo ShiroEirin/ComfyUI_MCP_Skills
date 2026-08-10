@@ -28,7 +28,7 @@ ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影�
 | 批量实验 | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化 |
 | 多服务器路由 | 根据 Deployment、依赖、队列、显存和 Policy 生成不可变执行计划，并以摘要绑定提交 |
 | 管理与供应 | Server/Config 管理、依赖检查、审批、ComfyUI Manager 安装计划、Provisioning 恢复和审计闭环（append-only 事件 + `admin.audit.get/retry/export` 有界导出） |
-| 运行时控制 | 明确区分单作业取消、队列操作、全局 interrupt 和 restart 影响预览 |
+| 运行时控制 | 明确区分单作业取消、队列操作、全局 interrupt；审批式重启执行闭环（`runtime.restart` plan→approve→commit→get，SQLite run store 门控，文件后端 plan 只读预览） |
 | MCP 原生交互 | Tools、Resources、Prompts、参数补全、资源订阅以及 provider-safe 工具名兼容模式 |
 | 远程部署 | Streamable HTTP、静态 Bearer Token、RFC 7662 Token Introspection、Host/Origin/大小/并发边界 |
 
