@@ -1,6 +1,6 @@
 # 功能与使用模型
 
-本文说明 ComfyUI MCP Skills 1.1.0 Beta 的代码能力、启用条件和安全边界。这里的“已实现”不等于默认 Agent 全部可见：Toolset/Scope 决定授权面，SQLite aggregate cutover 决定高级持久化服务是否启用。安装配置见[安装教程](INSTALLATION.zh-CN.md)。
+本文说明 ComfyUI MCP Skills 1.1.0 的代码能力、启用条件和安全边界。这里的“已实现”不等于默认 Agent 全部可见：Toolset/Scope 决定授权面，SQLite aggregate cutover 决定高级持久化服务是否启用。安装配置见[安装教程](INSTALLATION.zh-CN.md)。
 
 ## 可用性分层
 

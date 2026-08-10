@@ -53,9 +53,9 @@
 
 ---
 
-## 1.0 GA 路径（Beta → 正式）
+## 1.0 GA 路径（已完成）
 
-> 状态：**承诺门槛已全部交付，进入 1.0 GA 发布评估**。装配分层（前置）、G1（schema 冻结）、G2（重启执行闭环）、G3（Windows Service RuntimeController）均已交付；发布评估项（schema 冻结承诺已兑现、重启闭环已交付、适配器三平台齐备）不再有功能性 blocker。当前 1.1.0 Beta，正式 GA 需发布流程决策（版本号/发布渠道/迁移文档）。
+> 状态：**1.1.0 已正式发布（2026-08-10，移除 Beta 预发布标记）**。装配分层（前置）、G1（schema 冻结）、G2（重启执行闭环）、G3（Windows Service RuntimeController）均已交付；发布评估项（schema 冻结承诺已兑现、重启闭环已交付、适配器三平台齐备、五份文档与代码一致）全部满足。
 
 ### G1. 持久化 schema 冻结承诺（最高优先级）
 > 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v13 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：按 `RELEASED_SCHEMA_MIGRATIONS` 动态覆盖每个冻结版本（当前 v1..v13）→ 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。

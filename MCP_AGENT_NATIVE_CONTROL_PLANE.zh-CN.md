@@ -1,7 +1,7 @@
 # ComfyUI MCP Skills：Agent 原生超级控制平面设计与开发路线
 
 > 状态：G0–G6、H–Q 已完成当前定义的后端纵向切片；高级宿主集成仍有明确边界
-> 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0 Beta
+> 基线：`comfyui-skill-cli` 0.2.13、ComfyUI MCP Skills 1.1.0
 > 目标读者：项目维护者、后续开发 Agent、安全审查者
 > 更新日期：2026-08-06
 

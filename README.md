@@ -4,7 +4,7 @@
 
 ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影为结构化 MCP Tools、Resources 与 Prompts。Agent 无需拼接 Shell 命令，也无需直接修改工作流 JSON，即可完成工作流发现、参数校验、执行、结果复用、诊断、实验和受控运维。
 
-项目当前版本为 `1.1.0 Beta`。包元数据要求 Python `>=3.10`；CI 已验证 3.10–3.13，更新版本尚未纳入验证矩阵。
+项目当前版本为 `1.1.0`（正式发布）。包元数据要求 Python `>=3.10`；CI 已验证 3.10–3.13，更新版本尚未纳入验证矩阵。
 
 > 本项目不是 ComfyUI 自定义节点。它是独立运行的 MCP 服务，通过 HTTP 和 WebSocket 连接一个或多个 ComfyUI 实例。
 

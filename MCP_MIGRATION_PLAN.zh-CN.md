@@ -1,6 +1,6 @@
 # ComfyUI Skill CLI → MCP 2026-07-28 迁移方案与架构审查
 
-> 状态：已实施（v1.1.0 Beta）
+> 状态：已实施（v1.1.0 正式发布）
 > 目标读者：项目维护者、MCP 服务实现者、安全审查者  
 > 迁移输入基线：`comfyui-skill-cli` 0.2.13
 > 协议目标：MCP `2026-07-28`，MCP Python SDK v2
