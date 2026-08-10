@@ -438,6 +438,16 @@ Windows 服务托管：先用 WinSW/NSSM 等真实服务宿主把 **ComfyUI 引�
 
 ## 13. 保留策略与迁移
 
+### 13.0 版本升级双路径（1.1.0 正式发布）
+
+- **已有控制面数据库（`data/control-plane.sqlite3` 存在，含 v1–v13 任一冻结前缀）**：新版本启动时自动、单向 schema 升级（先按 13.1 备份，再启动自动升级，最后验证）；旧版本代码打开新 schema 时显式拒绝（fail-loud，不承诺降级），降级只能通过备份恢复。
+- **仅旧文件仓库（无 `control-plane.sqlite3`）**：默认保持 file-backed（装配分层轻量路径）；生产 cutover 需显式演练后执行——`comfyui-mcp-migration-dry-run`（生成清单/校验和/备份证据）→ 校验冲突（无效历史/坏记录先修复或归档）→ 带确认短语与备份证据的 `comfyui-mcp-migrate`；不得手工写入 `store_migrations`。
+
+### 13.1 备份一致性契约（区分两种备份语义）
+
+- **迁移 manifest backup**（`comfyui-mcp-migration-dry-run` 产出）：只捕获 `data/` 下 JSON，作为 cutover 的 evidence——**不是**回滚备份，不得混同。
+- **全工作区回滚备份**（升级/恢复用）：升级/恢复前**停止全部使用该工作区的进程**（MCP/HTTP/Admin/worker）；对整个工作区做同一时点备份（`config.json` + 完整 `data/`，含 SQLite 主库与 `-wal`/`-shm` sidecar，或用 SQLite 一致性备份 API）；恢复同样停机整体恢复后启动验证。运行时降级 = 旧程序版本 + 升级前备份恢复（旧代码不直接打开新 schema）。
+
 显式运行维护：
 
 ```powershell
