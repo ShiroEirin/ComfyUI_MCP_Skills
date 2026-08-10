@@ -49,7 +49,7 @@
 
 ### 任务
 1. **本地轻量引导文档**（零代码）：分层说明 + 本地 5 分钟上手（operations 单条目：OBSERVE principal/scopes/toolset + `COMFYUI_MCP_ENABLE_HIGH_RISK=1`，覆盖观察/节点/插件/历史；跑图需 execution 第二条目——单条目不暴露动态工作流）；同步修正 INSTALLATION "立即初始化控制平面"旧说明。
-2. **入口懒初始化**（代码）：`__main__.py`/`http_main.py` 按 DB 是否存在决定初始化；fresh 不建 control-plane.sqlite3、既有 DB 完整升级；编排 worker 门控。回归：fresh 无库、all-file pending provisioning/outbox 推进、混合/全 SQLite 升级、932 基线。
+2. **入口懒初始化**（代码）：`__main__.py`/`http_main.py` 按 DB 是否存在决定初始化；fresh 不建 control-plane.sqlite3、既有 DB 完整升级；编排 worker 门控。回归：fresh 无库、all-file pending provisioning/outbox 推进、混合/全 SQLite 升级、1029 通过/8 跳过基线。
 
 ---
 
@@ -58,7 +58,7 @@
 > 状态：**承诺门槛已全部交付，进入 1.0 GA 发布评估**。装配分层（前置）、G1（schema 冻结）、G2（重启执行闭环）、G3（Windows Service RuntimeController）均已交付；发布评估项（schema 冻结承诺已兑现、重启闭环已交付、适配器三平台齐备）不再有功能性 blocker。当前 1.1.0 Beta，正式 GA 需发布流程决策（版本号/发布渠道/迁移文档）。
 
 ### G1. 持久化 schema 冻结承诺（最高优先级）
-> 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v13 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：每个历史版本 v1..v12 → 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
+> 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v13 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：按 `RELEASED_SCHEMA_MIGRATIONS` 动态覆盖每个冻结版本（当前 v1..v13）→ 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
 - **问题**：README 明示"Beta 阶段不保证持久化 schema 永久兼容；升级前应备份"——数据层无冻结承诺，升级需备份重迁，生产不敢用。
 - **现状**：已有 `store_migrations` + cutover + fencing 基础设施（迁移治理能力在），缺的是**冻结承诺 + 长期升级验证**。
 - **交付**：schema 版本化冻结；向前/向后兼容保证；从旧版本一键升级路径验证（迁移回归套件覆盖历史版本 → 当前版本）。
@@ -66,8 +66,8 @@
 
 ### G2. 重启执行闭环（approve/commit + drain/fence）
 > 状态：**已交付**（2026-08-08）。`runtime.restart.plan`（server-wide 跨 owner 非终态快照 + 明细表 + 规范化 digest + 单次审批 approval_id）→ `runtime.restart.approve` → `runtime.restart.commit`（receipt-first 幂等/失败重放重抛、controller binding digest 漂移拒绝、原子 drain 开 fence + execution intent 预持久化、有界 admission 结算等待、per-server active 唯一索引串行、失败解除 fence）→ `runtime.restart.get`。fence 原子门下沉 SQLite 幂等 claim 事务（含无幂等键路径的 admission gate + finally 释放）；崩溃恢复 Recoverer（启动清理 admission + 遗留 draining/restarting 置 failed 不自动重试，单实例前提）；v13 迁移三表 + 冻结清单 append；门控：approve/commit/get 仅 SQLite run store，plan 在文件后端/fresh 返回只读预览。24 测试（状态机/串行/崩溃恢复/admission 生命周期/门控/MCP 集成/分页无遗漏/错误重放同构/时钟一致性/边界 10000）。
-- **问题**：`runtime.restart.plan` 只读预览；执行闭环未交付（无影响快照、无单次审批、无按服务器 drain/fence 协调），管理员无法安全重启引擎。
-- **交付**：服务端持久化影响快照 + 单次审批 + 所有提交路径入队前检查 + 原子启用/解除（drain/fence）；`runtime.restart.commit` 在审批后执行固定重启命令。
+- **原问题（已解决）**：`runtime.restart.plan` 只读预览、执行闭环缺失（无影响快照/单次审批/drain-fence 协调）。
+- **已交付**：服务端持久化影响快照 + 单次审批 + 所有提交路径入队前检查 + 原子启用/解除（drain/fence）；`runtime.restart.commit` 在审批后执行固定重启命令。
 - **验收**：并发/恢复场景测试（重启中提交被 fence、审批后原子执行）；诚实不可用原则保持（未完成前不暴露执行工具）。
 
 ### G3. Windows Service RuntimeController

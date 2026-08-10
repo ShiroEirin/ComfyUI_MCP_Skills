@@ -22,7 +22,7 @@ ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影�
 |---|---|
 | 工作流执行 | 每个已启用工作流参与动态工具目录；默认暴露 8 个，可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 调整到 1–128，超出部分仍可通过目录/Resource 管理 |
 | 工作流理解 | 提供有界的节点、边、参数、输出和依赖语义视图，不向 Agent 暴露无界原始图 |
-| 版本与编辑 | 不可变 Revision、结构化 diff、变更 plan/commit、发布、回滚和损失感知导入 | 高层 recipe（upscale/save/lora/controlnet 分支，经 `apply_recipe` 变更操作）
+| 版本与编辑 | 不可变 Revision、结构化 diff、变更 plan/commit、发布、回滚、损失感知导入；高层 recipe（upscale/save/lora/controlnet 分支，经 `apply_recipe` 变更操作） |
 | 作业与队列 | Job 查询、分页、取消、诊断、安全重试、队列查看与受控清理 |
 | 资产与产物 | 上传、Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要和完整血缘 |
 | 批量实验 | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化 |

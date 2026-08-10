@@ -434,7 +434,7 @@ comfyui-mcp
 
 可用条件：已有数据库且 job aggregate 已完成 SQLite run cutover（`run_store == "sqlite"`）；文件后端仅 `plan` 可见并返回只读预览。服务器记录需配置 `runtime` 绑定（见 §3 字段表）。
 
-Windows 服务托管：用 `sc create` 将 `comfyui-mcp-http` 注册为 Windows 服务后，在服务器记录配置 `runtime: {"adapter": "windows_service", "service": "<服务名>"}` 即可让重启闭环执行该服务的重启（固定 `sc.exe stop → 有界轮询 → start`，1–256 字符服务名校验，fail-closed）。
+Windows 服务托管：先用 WinSW/NSSM 等真实服务宿主把 **ComfyUI 引擎进程**包装为 Windows 服务，再把该服务的 SCM 名称写入服务器记录的 `runtime: {"adapter": "windows_service", "service": "<ComfyUI 服务名>"}`——`comfyui.runtime.restart` 闭环将执行该引擎服务的重启（固定 `sc.exe stop → 有界轮询 → start`，1–256 字符服务名校验，fail-closed）。注意：不要把 MCP 自身进程（`comfyui-mcp-http`）注册为被控目标，否则 commit 会停止正在执行闭环的 MCP 服务；`comfyui-mcp-http` 不是原生 Windows 服务，需用服务宿主包装且与被控 ComfyUI 服务分离。
 
 ## 13. 保留策略与迁移
 

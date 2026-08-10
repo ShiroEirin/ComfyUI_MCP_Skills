@@ -189,7 +189,6 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 | MCP Tasks 扩展映射 | 未交付 |
 | MCP Elicitation 审批 | 未交付 |
 | MCP App 完整界面 | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
-| 完整 recipe/subgraph 高层图编辑 | 节点生命周期与 subgraph 提取/按名复用闭环已交付；高层分支 recipe（upscale_image/save_image/lora_model/controlnet_apply.v1）已交付 |
 
 旧 CLI 尚未迁移的条目保留在后续路线中，不能按当前 MCP Tool 使用。
 
@@ -1653,7 +1652,7 @@ Published Revision + arguments + Asset URI
 - SSRF、恶意重定向、浮动 Git 来源、超大模型和未知校验和都有拒绝策略。
 
 ### 阶段 P：高级运行时控制与宿主适配器（P2）
-> 实施状态：2026-08-06 已完成当前切片。已交付 owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界，以及按服务器配置的可选 systemd/Docker `RuntimeController` 适配器（仅报告可用性）。重启执行闭环已交付（2026-08-08）：持久化影响快照、单次审批、drain/fence 原子协调与 `runtime.restart.approve/commit/get`（SQLite run store 门控）；Windows Service 适配器已内置（2026-08-08）。文件后端 `restart.plan` 保持只读预览。
+> 实施状态：2026-08-06 完成当前切片（owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界）；2026-08-08 补齐重启执行闭环（持久化影响快照、单次审批、drain/fence 原子协调与 `runtime.restart.approve/commit/get`，SQLite run store 门控）与 Windows Service 适配器。适配器三平台齐备（systemd/Docker/Windows Service），执行复用审批闭环。文件后端 `restart.plan` 保持只读预览。
 
 
 交付：
@@ -1674,7 +1673,7 @@ Published Revision + arguments + Asset URI
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）
-> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，OTLP HTTP 导出）；OpenTelemetry logs 已交付（2026-08-10，OTLP /v1/logs、CONTEXT_FIELDS 白名单、防导出循环）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks 与 Elicitation 仍未交付。
+> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，OTLP HTTP 导出）；OpenTelemetry traces/metrics/logs 均已交付（logs：OTLP /v1/logs、CONTEXT_FIELDS 白名单、防导出循环）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks 与 Elicitation 仍未交付。
 
 
 已交付：
@@ -1693,7 +1692,7 @@ Published Revision + arguments + Asset URI
 - 跨主机租约与全局配额（当前限流仅限同主机多 worker）
 - 基于 MRTR `InputRequiredResult` 的 Elicitation 审批及持久化 Approval 后备
 - 评估 `io.modelcontextprotocol/tasks` 扩展映射，不替换领域 Job 或 Orchestrator
-- 可选 OpenTelemetry traces/metrics/logs 已交付（工具调用 span、计数与耗时直方图 + 日志导出，OTLP/HTTP 按信号端点，`COMFYUI_MCP_OTEL_ENDPOINT` 配置，`otel` extra 安装）；更完整 MCP App 图库未交付
+- 更完整 MCP App 图库（只读 Job 查看器已交付；图库/实验对比 UI 未交付）
 
 验收：
 
