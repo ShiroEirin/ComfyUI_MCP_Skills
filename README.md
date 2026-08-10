@@ -22,7 +22,7 @@ ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影�
 |---|---|
 | 工作流执行 | 每个已启用工作流参与动态工具目录；默认暴露 8 个，可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 调整到 1–128，超出部分仍可通过目录/Resource 管理 |
 | 工作流理解 | 提供有界的节点、边、参数、输出和依赖语义视图，不向 Agent 暴露无界原始图 |
-| 版本与编辑 | 不可变 Revision、结构化 diff、变更 plan/commit、发布、回滚和损失感知导入 |
+| 版本与编辑 | 不可变 Revision、结构化 diff、变更 plan/commit、发布、回滚和损失感知导入 | 高层 recipe（upscale/save/lora/controlnet 分支，经 `apply_recipe` 变更操作）
 | 作业与队列 | Job 查询、分页、取消、诊断、安全重试、队列查看与受控清理 |
 | 资产与产物 | 上传、Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要和完整血缘 |
 | 批量实验 | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化 |
@@ -247,7 +247,7 @@ uv build
 
 ## 项目状态与边界
 
-已实现可靠执行、版本化工作流、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制、RFC 7662 introspection、审计闭环（append-only 事件 + 有界导出）与可选 OpenTelemetry traces/metrics/logs（工具调用 span、计数与耗时直方图、`logging` 记录导出到 `/v1/logs`，`COMFYUI_MCP_OTEL_ENDPOINT` base URL 配置，`otel` extra 安装，见[安装文档](docs/INSTALLATION.zh-CN.md)第 11 章）。workflow aggregate cutover 后，file-backed 的 `comfyui.admin.workflow.set_enabled`/`delete` 不再挂载（审计工具仍可用）。以下能力尚未作为正式产品能力交付：
+已实现可靠执行、版本化工作流（含高层 recipe：upscale_image/save_image/lora_model/controlnet_apply.v1）、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制（审批式重启闭环 + systemd/Docker/Windows Service 控制器）、RFC 7662 introspection、审计闭环（append-only 事件 + 有界导出）与可选 OpenTelemetry traces/metrics/logs（工具调用 span、计数与耗时直方图、`logging` 记录导出到 `/v1/logs`，`COMFYUI_MCP_OTEL_ENDPOINT` base URL 配置，`otel` extra 安装，见[安装文档](docs/INSTALLATION.zh-CN.md)第 11 章）。workflow aggregate cutover 后，file-backed 的 `comfyui.admin.workflow.set_enabled`/`delete` 不再挂载（审计工具仍可用）。以下能力尚未作为正式产品能力交付：
 - Redis/NATS 多副本订阅总线。
 - 多主机共享租约与跨主机配额（SQLite 共享限流仅限同主机多进程）。
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。

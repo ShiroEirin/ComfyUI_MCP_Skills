@@ -4,10 +4,13 @@
 
 ## 可用性分层
 
+> fresh 数据目录（`data/control-plane.sqlite3` 不存在）走轻量装配：不创建控制面数据库、编排 worker/outbox 不启动，动态执行经文件仓库可用（`store=None`）；已存在数据库（含 all-file 未 cutover）启动时完整初始化并升级（fail-closed）。详见 [LIGHTWEIGHT.zh-CN.md](LIGHTWEIGHT.zh-CN.md)。
+
+
 | 层级 | 新项目状态 | 示例 |
 |---|---|---|
 | 默认可用 | execution Toolset + 文件仓库 | 动态执行、上传、Job get/cancel、基础发现（`job.list` 需 run cutover） |
-| 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置 | 队列、日志、运行时、服务器/配置管理、Dependency/Provisioning |
+| 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置 | 队列、日志、运行时（runtime.restart approve/commit/get 需 run cutover；plan 在文件后端仅只读预览）、服务器/配置管理、Dependency/Provisioning |
 | 显式授权且完成对应 cutover | Authoring 或 Execution + 对应 SQLite aggregate | 工作流理解、Revision、Artifact/Lineage、Plan、Experiment、Diagnostic、Routing |
 | 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation |
 

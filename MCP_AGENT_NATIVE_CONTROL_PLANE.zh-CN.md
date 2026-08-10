@@ -45,7 +45,7 @@ MCP 完整能力
   + CLI 难以表达的图、资产与执行智能
 ```
 
-当前实现已经完成 G0–G6 与 H–Q 的当前后端纵向切片：可靠执行与观察内核、语义导入和边界化图级变更（含节点生命周期与 subgraph 提取/复用闭环）、资产血缘、Experiment、结构化诊断、服务器/配置/依赖供应链、多服务器路由、显式运行时控制（含可选 systemd/Docker 重启控制器）、静态 Bearer Token 与 RFC 7662 Token Introspection、基于 SQLite 的同主机多 worker 共享限流，以及 MCP Apps 只读 Job 查看器。仍未交付的是高层分支 recipe（LoRA/ControlNet/Upscaler 插入）、Windows Service RuntimeController、多副本 SubscriptionBus、跨主机租约、MCP Tasks、Elicitation、OpenTelemetry logs 和完整 App 图库；因此“超级控制平面”定位已具备主体能力，但不能把这些宿主与多副本扩展描述为现有功能。
+当前实现已经完成 G0–G6 与 H–Q 的当前后端纵向切片：可靠执行与观察内核、语义导入和边界化图级变更（含节点生命周期与 subgraph 提取/复用闭环）、资产血缘、Experiment、结构化诊断、服务器/配置/依赖供应链、多服务器路由、显式运行时控制（含可选 systemd/Docker 重启控制器）、静态 Bearer Token 与 RFC 7662 Token Introspection、基于 SQLite 的同主机多 worker 共享限流，以及 MCP Apps 只读 Job 查看器。仍未交付的是多副本 SubscriptionBus、跨主机租约、MCP Tasks、Elicitation 和完整 App 图库；高层分支 recipe（upscale/save/lora/controlnet）、Windows Service RuntimeController 与 OpenTelemetry logs 已交付；因此“超级控制平面”定位已具备主体能力，但不能把这些宿主与多副本扩展描述为现有功能。
 
 后续开发不能再以“一条 CLI 命令对应一个 MCP Tool”为主线，也不能把 CLI 没有的能力视为非必要范围。应从 Agent 完成目标所需的信息、决策和闭环出发设计能力。
 
@@ -176,7 +176,7 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 | Asset/Artifact/Lineage | Execution Toolset + G1 Asset/Job 与相关 Artifact cutover |
 | Plan、Route、Experiment、Diagnostic、Retry | Execution Toolset + 对应 SQLite aggregate cutover |
 | Server/Config/Dependency/Provisioning | 独立 Admin + 配置、来源白名单和依赖 catalog |
-| Runtime queue/remove/clear/interrupt + restart plan | Operations Toolset；重启执行闭环（审批与 drain/fence）未交付 |
+| Runtime queue/remove/clear/interrupt + restart plan/approve/commit/get | Operations Toolset；重启执行闭环已交付（SQLite run store 门控；文件后端 plan 只读预览） |
 
 ### 4.2 尚未交付
 
@@ -189,8 +189,7 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 | MCP Tasks 扩展映射 | 未交付 |
 | MCP Elicitation 审批 | 未交付 |
 | MCP App 完整界面 | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
-| Windows Service RuntimeController（systemd 与 Docker 适配器已实现并接线，执行闭环未交付） | 未交付 |
-| 完整 recipe/subgraph 高层图编辑 | 节点生命周期与 subgraph 提取/按名复用闭环已交付；高层分支 recipe（LoRA/ControlNet/Upscaler 插入）未交付 |
+| 完整 recipe/subgraph 高层图编辑 | 节点生命周期与 subgraph 提取/按名复用闭环已交付；高层分支 recipe（upscale_image/save_image/lora_model/controlnet_apply.v1）已交付 |
 
 旧 CLI 尚未迁移的条目保留在后续路线中，不能按当前 MCP Tool 使用。
 
@@ -1019,7 +1018,7 @@ ComfyUI HTTP / WebSocket / Manager gateways
 OperationOrchestrator / SubscriptionBus
 ```
 
-当前装配已经覆盖 Planning、Routing、Experiment、Workflow inspection/change、Diagnostic/Retry、Orchestrator、同主机多 worker 的 SQLite 共享限流，以及可选 systemd RuntimeController；是否实例化由 Toolset、Scope、后端 cutover、配置绑定与可选 gateway 决定。共享多副本事件总线和跨主机租约仍未交付。
+当前装配已经覆盖 Planning、Routing、Experiment、Workflow inspection/change、Diagnostic/Retry、Orchestrator、同主机多 worker 的 SQLite 共享限流，以及可选 systemd/Docker/Windows Service RuntimeController、审批式重启执行闭环（runtime.restart plan→approve→commit→get，SQLite 门控）、高层 recipe 注册表；是否实例化由 Toolset、Scope、后端 cutover、配置绑定与可选 gateway 决定。共享多副本事件总线和跨主机租约仍未交付。
 
 ### 8.2 依赖方向
 
@@ -1497,7 +1496,7 @@ Published Revision + arguments + Asset URI
 - 旧转换 fixture 在新服务上结果等价；Reroute、connected widget 和 control marker 各有直接回归用例。
 
 ### 阶段 J：图级编辑、diff 与发布（P0）
-> 实施状态：2026-07-31 完成最小闭环；2026-08-06 补齐节点生命周期与 subgraph 提取/复用闭环。已交付十一种领域操作的 plan/commit（`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`、`insert_subgraph`、`extract_subgraph`、`apply_recipe`、边界化的 recipe 注册表）、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；高层分支 recipe（LoRA/ControlNet/Upscaler 等插入）仍留待后续阶段。
+> 实施状态：2026-07-31 完成最小闭环；2026-08-06 补齐节点生命周期与 subgraph 提取/复用闭环。已交付十一种领域操作的 plan/commit（`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`、`insert_subgraph`、`extract_subgraph`、`apply_recipe`、边界化的 recipe 注册表）、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；高层分支 recipe（upscale_image/save_image/lora_model/controlnet_apply.v1）已交付（2026-08-09）。
 
 
 交付：
@@ -1507,7 +1506,7 @@ Published Revision + arguments + Asset URI
 - Revision list、diff、publish 和 rollback
 - 领域操作：`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`
 - 子图：`insert_subgraph` 支持显式 `nodes` 或按名引用已提取定义（`subgraph`），提取定义带边界端口契约（`boundary_inputs`/`boundary_outputs`），按名实例化断开外部引用并随 Revision 持久化
-- recipe：注册表按 `recipe_id` 分发（当前注册 `set_scalar_input.v1`）
+- recipe：注册表按 `recipe_id` 分发（当前注册 `set_scalar_input.v1`、`upscale_image.v1`、`save_image.v1`、`lora_model.v1`、`controlnet_apply.v1`）
 - Draft Revision 与 Deployment 的 `published` 状态分离
 - Tool/Resource list changed 和 Revision subscription
 
@@ -1654,7 +1653,7 @@ Published Revision + arguments + Asset URI
 - SSRF、恶意重定向、浮动 Git 来源、超大模型和未知校验和都有拒绝策略。
 
 ### 阶段 P：高级运行时控制与宿主适配器（P2）
-> 实施状态：2026-08-06 已完成当前切片。已交付 owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界，以及按服务器配置的可选 systemd/Docker `RuntimeController` 适配器（仅报告可用性）。重启执行闭环未交付：需要服务端持久化影响快照、单次审批与 drain/fence 协调基础设施。Windows Service 适配器尚未内置。
+> 实施状态：2026-08-06 已完成当前切片。已交付 owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界，以及按服务器配置的可选 systemd/Docker `RuntimeController` 适配器（仅报告可用性）。重启执行闭环已交付（2026-08-08）：持久化影响快照、单次审批、drain/fence 原子协调与 `runtime.restart.approve/commit/get`（SQLite run store 门控）；Windows Service 适配器已内置（2026-08-08）。文件后端 `restart.plan` 保持只读预览。
 
 
 交付：
@@ -1662,8 +1661,8 @@ Published Revision + arguments + Asset URI
 - `comfyui.queue.remove`
 - `comfyui.queue.clear`
 - 显式全局 `comfyui.server.interrupt`
-- `comfyui.runtime.restart.plan`（影响分析，不执行宿主命令）
-- 可选 systemd/Docker `RuntimeController` 适配器：实现并接线，仅在 plan 中报告可用性；执行与审批闭环未交付
+- `comfyui.runtime.restart.plan`（影响分析）→ `approve`（单次审批，1 小时 TTL）→ `commit`（审批后 drain/fence 执行固定重启命令）→ `get`
+- 可选 systemd/Docker/Windows Service `RuntimeController` 适配器：实现并接线，执行复用审批闭环
 
 验收：
 
@@ -1671,11 +1670,11 @@ Published Revision + arguments + Asset URI
 - 跨主体操作必须具有管理权限。
 - 所有全局操作先返回受影响 Job。
 - 没有 RuntimeController 时只返回操作需求，不执行 Shell。
-- 重启执行不在当前版本暴露：审批、持久化影响快照与 drain/fence 协调为后续前置项。
+- 重启执行在 SQLite run store 下暴露（approve/commit/get）；文件后端仅返回只读预览；审批、持久化影响快照与 drain/fence 已交付。
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）
-> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，OTLP HTTP 导出）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks、Elicitation 与 OpenTelemetry logs 仍未交付。
+> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，OTLP HTTP 导出）；OpenTelemetry logs 已交付（2026-08-10，OTLP /v1/logs、CONTEXT_FIELDS 白名单、防导出循环）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks 与 Elicitation 仍未交付。
 
 
 已交付：
@@ -1694,7 +1693,7 @@ Published Revision + arguments + Asset URI
 - 跨主机租约与全局配额（当前限流仅限同主机多 worker）
 - 基于 MRTR `InputRequiredResult` 的 Elicitation 审批及持久化 Approval 后备
 - 评估 `io.modelcontextprotocol/tasks` 扩展映射，不替换领域 Job 或 Orchestrator
-- 可选 OpenTelemetry traces/metrics 已交付（工具调用 span、计数与耗时直方图，OTLP/HTTP，`COMFYUI_MCP_OTEL_ENDPOINT` 配置，`otel` extra 安装）；logs 导出与更完整 MCP App 图库未交付
+- 可选 OpenTelemetry traces/metrics/logs 已交付（工具调用 span、计数与耗时直方图 + 日志导出，OTLP/HTTP 按信号端点，`COMFYUI_MCP_OTEL_ENDPOINT` 配置，`otel` extra 安装）；更完整 MCP App 图库未交付
 
 验收：
 

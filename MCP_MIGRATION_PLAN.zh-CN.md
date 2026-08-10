@@ -956,9 +956,10 @@ mcp = ">=2,<3"
 - **M**：持久化 Experiment、参数扫描、预算、评分和 Revision 固化。
 - **N**：确定性诊断、脱敏证据、修复计划及可恢复重试 lineage。
 - **O**：owner-bound Server 配置、Config Bundle、审批和依赖供应编排。
-- **P**：队列删除/清理、服务中断和重启影响预览；即时 `server.free` 暴露但强制 intent-first 审计与 `request_id` 幂等（重复执行被拒绝）。
+- **P**：队列删除/清理、服务中断和重启影响预览；即时 `server.free` 暴露但强制 intent-first 审计与 `request_id` 幂等（重复执行被拒绝）；重启执行闭环（`runtime.restart` plan→approve→commit→get，SQLite run store 门控，drain/fence）与 systemd/Docker/Windows Service RuntimeController 适配器。
 - **Q**：OAuth introspection 主体/受众绑定、预认证限流、owner-aware Server 连接、Revision 隔离、路由 commit fencing 和发布安全收口。
 - 后续切片（2026-08-07 已交付）：引擎历史 `engine.history`（有界 + 扁平投影）、节点感知 `node.blueprint`/`model.guidance`/`job.history.suggest`、可视化 `workflow.visualize` 与 `revision.diff` mermaid 视图、第三方整合包兼容 `local.plugins`（server 条目 `local_root`）、`change.plan` 校验失败定位与 hint、admin portable 工具名（`COMFYUI_MCP_PORTABLE_TOOL_NAMES` 对 admin 面同样生效）、node/model/插件目录工具在 AUTHORING 与 ADMIN 面可见（授权对齐）。
+- 后续切片（2026-08-08~10 已交付）：装配分层（fresh 轻量、既有 DB fail-closed）、schema 冻结（RELEASED_SCHEMA_MIGRATIONS v1–v13 + 跨版本升级套件）、重启执行闭环、Windows Service RuntimeController、高层分支 recipe（upscale/save/lora/controlnet）、OpenTelemetry logs。
 
 阶段 G–Q 的验收覆盖 owner 隔离、并发幂等、迁移升级、MCP schema、HTTP 安全边界、真实 ComfyUI 推理及输出校验。
 
@@ -1012,7 +1013,7 @@ uv build
 
 当前结果：
 
-- 938 个测试通过、1 个跳过、2 个 subtest 通过（含 `otel` extra；未安装 `otel` extra 的环境为 932 通过、7 跳过）；语句覆盖率超过 80% 门禁。
+- 未安装 `otel` extra 环境实测 1029 通过、8 跳过、2 个 subtest 通过（含 `otel` extra 的环境通过数需在有 opentelemetry.sdk 的 CI 上重测）；语句覆盖率超过 80% 门禁。
 - Ruff 与 Mypy 通过。
 - `pip-audit` 未发现第三方依赖已知漏洞。
 - sdist 与 wheel 构建成功；wheel 包含 MCP 和兼容 CLI 两套入口。

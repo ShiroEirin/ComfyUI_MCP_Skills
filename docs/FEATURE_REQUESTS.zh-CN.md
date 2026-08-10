@@ -58,7 +58,7 @@
 > 状态：**承诺门槛已全部交付，进入 1.0 GA 发布评估**。装配分层（前置）、G1（schema 冻结）、G2（重启执行闭环）、G3（Windows Service RuntimeController）均已交付；发布评估项（schema 冻结承诺已兑现、重启闭环已交付、适配器三平台齐备）不再有功能性 blocker。当前 1.1.0 Beta，正式 GA 需发布流程决策（版本号/发布渠道/迁移文档）。
 
 ### G1. 持久化 schema 冻结承诺（最高优先级）
-> 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v12 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：每个历史版本 v1..v12 → 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
+> 状态：**已交付**（2026-08-08）。`RELEASED_SCHEMA_MIGRATIONS` 冻结清单（v1–v13 的 version/name/checksum）+ initialize 前缀一致 fail-fast 校验（改名/改 SQL/重排/删头部拒绝；追加新迁移允许）；参数化跨版本升级回归套件（`tests/test_schema_freeze.py`：每个历史版本 v1..v12 → 当前，schema 完整 + 基础数据保留 + 幂等；篡改拒绝/追加允许/未来库被旧代码 fail-loud 拒绝）；README 移除「不保证兼容」声明并写明冻结与单向升级契约（向后=新代码升级任一冻结历史前缀，向前=新 schema 被旧代码显式拒绝、不承诺降级、备份恢复）；INSTALLATION 同步措辞。尾部删除（缩减发布版本）由冻结清单测试拦截（`len(_MIGRATIONS) >= len(RELEASED)` 断言）。
 - **问题**：README 明示"Beta 阶段不保证持久化 schema 永久兼容；升级前应备份"——数据层无冻结承诺，升级需备份重迁，生产不敢用。
 - **现状**：已有 `store_migrations` + cutover + fencing 基础设施（迁移治理能力在），缺的是**冻结承诺 + 长期升级验证**。
 - **交付**：schema 版本化冻结；向前/向后兼容保证；从旧版本一键升级路径验证（迁移回归套件覆盖历史版本 → 当前版本）。
@@ -86,3 +86,5 @@
 - 2026-08-07：P0-1/P0-2/P0-3、P2 可视化、P1 知识库、本地化 engine.history、第三方整合包兼容（local.plugins）全部已交付。
 - 2026-08-07：登记 1.0 GA 路径（G1 schema 冻结 / G2 重启闭环 / G3 Windows 控制器）。
 - 2026-08-07：登记装配分层原则（诊断经 3 轮方案审查 PASS；轻量仅限 fresh，既有 DB fail-closed 保持）。
+- 2026-08-09：高层分支 recipe 交付（upscale_image/save_image/lora_model/controlnet_apply.v1，经 `apply_recipe` 变更操作）。
+- 2026-08-10：OpenTelemetry logs 交付（OTLP /v1/logs、CONTEXT_FIELDS 白名单、防导出循环）；G2 重启闭环与 G3 Windows 控制器交付。

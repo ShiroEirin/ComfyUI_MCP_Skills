@@ -80,6 +80,7 @@ D:/comfyui-mcp-workspace/
 | `enabled` | 是否参与发现和执行 |
 | `default_server` | 未显式指定服务器时使用的默认 ID |
 | `local_root` | 可选，本地 ComfyUI 安装根目录（如 aki 整合包 `D:\\ConfyUI-aki\\ComfyUI-aki-v1.6`）；供 `comfyui.local.plugins` 扫描 custom_nodes，未配置/不可用时该工具报告 `available:false` |
+| `runtime` | 可选，运行时重启控制器绑定：`{"adapter":"systemd","unit":"<unit>"}` / `{"adapter":"docker","container":"<名>"}` / `{"adapter":"windows_service","service":"<SCM 服务名>"}`；驱动 `comfyui.runtime.restart.*` 控制器解析，畸形绑定 fail-closed 为无控制器 |
 
 工作流目录结构：
 
@@ -367,7 +368,7 @@ $env:COMFYUI_MCP_WORKERS = "2"
 - **未认证请求同样消耗** per-IP 速率预算与并发槽（限流覆盖未认证流量，认证失败发生在槽内）。
 - **Introspection 模式每请求两次校验**：限流中间件为主体归因校验一次，SDK 认证再校验一次，均为网络往返。introspection 端点故障时请求最多阻塞至超时后返回 401（fail-closed，无放行），可用性随端点延迟降级。`/assets` 路由只校验一次（复用 `request.state.access_token`）。
 
-日志级别统一由 `COMFYUI_MCP_LOG_LEVEL` 控制（stdio、HTTP、Admin、维护入口均读取，默认 `INFO`）。
+日志级别统一由 `COMFYUI_MCP_LOG_LEVEL` 控制（stdio、HTTP、Admin 入口读取，默认 `INFO`；维护/迁移入口不读取该变量）。
 
 ## 10. Manager 与供应来源白名单
 
@@ -422,7 +423,20 @@ comfyui-mcp
 - 设置了端点但未安装 `otel` extra 时，启动显式报错（fail loud），不会静默丢失 span/指标/日志。
 - 提供 traces、metrics 与 logs 三信号；logs 经 `LoggingHandler` 桥接 Python `logging` 记录到 `/v1/logs`（仅白名单字段导出，排除 `opentelemetry.*` 内部日志防导出循环）。
 
-## 12. 保留策略与迁移
+## 12. 运行时重启执行闭环
+
+重启采用审批式闭环（Operations Toolset，`comfyui:operate`）：
+
+1. `comfyui.runtime.restart.plan`：影响预览（不执行）。
+2. `comfyui.runtime.restart.approve`：单次有效审批（与 plan 各自 1 小时 TTL）。
+3. `comfyui.runtime.restart.commit`：需 `plan_digest` + `approval_id` + `request_id`，审批后 drain 窗口内 fence 新提交，执行固定重启命令。
+4. `comfyui.runtime.restart.get`：查询闭环状态。
+
+可用条件：已有数据库且 job aggregate 已完成 SQLite run cutover（`run_store == "sqlite"`）；文件后端仅 `plan` 可见并返回只读预览。服务器记录需配置 `runtime` 绑定（见 §3 字段表）。
+
+Windows 服务托管：用 `sc create` 将 `comfyui-mcp-http` 注册为 Windows 服务后，在服务器记录配置 `runtime: {"adapter": "windows_service", "service": "<服务名>"}` 即可让重启闭环执行该服务的重启（固定 `sc.exe stop → 有界轮询 → start`，1–256 字符服务名校验，fail-closed）。
+
+## 13. 保留策略与迁移
 
 显式运行维护：
 
@@ -457,7 +471,7 @@ comfyui-mcp-migrate
 - 未配置精确确认短语时退出码为 3 且不写任何内容。全新目录默认保留文件仓库；不要手工写入 `store_migrations`。迁移器对无效历史记录保守拒绝（如缺 `request_digest` 的旧 history、带无法确定性映射 outputs 的记录）——dry-run 会列出这些冲突，需要先修复或归档无效记录才能通过 preflight。
 
 
-持久化 schema 自 1.1.0 起版本化冻结（已发布迁移不可改写，跨版本升级由迁移回归套件验证，覆盖 v1–v12 → 当前）。升级自动应用且单向：新版本保证打开并升级任一已冻结历史前缀；新 schema 被旧版本代码打开时显式拒绝（fail-loud，不承诺降级）；降级只能通过升级前备份恢复。升级前必须备份：
+持久化 schema 自 1.1.0 起版本化冻结（已发布迁移不可改写，跨版本升级由迁移回归套件验证，覆盖 RELEASED_SCHEMA_MIGRATIONS 全部已发布版本 → 当前，现为 v1–v13）。升级自动应用且单向：新版本保证打开并升级任一已冻结历史前缀；新 schema 被旧版本代码打开时显式拒绝（fail-loud，不承诺降级）；降级只能通过升级前备份恢复。升级前必须备份：
 
 ```text
 config.json
@@ -465,7 +479,7 @@ data/
 控制平面 SQLite 数据库
 ```
 
-## 13. 验证与排错
+## 14. 验证与排错
 
 源码验证：
 
