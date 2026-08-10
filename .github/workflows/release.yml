@@ -15,7 +15,7 @@ jobs:
         with:
           python-version: "3.13"
           enable-cache: true
-      - run: uv sync --locked --extra dev
+      - run: uv sync --locked --extra dev --extra otel
       - run: uv run ruff check src/comfyui_mcp_skills
       - run: uv run mypy src/comfyui_mcp_skills
       - run: uv run python -m pytest --cov --cov-report=term-missing -q

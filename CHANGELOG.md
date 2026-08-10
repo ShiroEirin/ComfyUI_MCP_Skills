@@ -10,6 +10,12 @@
 
 **控制面与执行**
 - 控制面身份体系：Workflow/Revision/Deployment/Plan/Job/ExecutionAttempt/IdempotencyRecord/Asset/Artifact 的 schema、规范 ID 与 canonical URI。
+- 能力目录与评估基线（`capability.search/describe`，Toolset/Scope 驱动的可见性）。
+- Operations 观察面（Phase H：queue/log/server 能力探测/模板/子图）与授权 Toolset/Scope 体系。
+- 资产库与血缘（Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要与完整血缘）。
+- Experiment 与参数扫描（`experiment.*` 工具面、预算、评分与 Revision 固化）。
+- Admin/配置/依赖供应控制面（Config Bundle、审批、Provisioning）。
+- MCP Apps 只读 Job 查看器（图库/实验对比 UI 未交付）。
 - job/asset SQLite cutover 与生产迁移（dry-run 演练、一致性校验、原子切换、失败回滚续传、store fencing）。
 - 不可变 Revision/Deployment 发布、rollback 与载荷完整性保护。
 - 幂等执行（idempotency_key 双层校验）、execution plan/commit、崩溃恢复与 Job reconciliation。
