@@ -406,6 +406,12 @@ def test_connection_source_accepts_integer_source_ids() -> None:
     assert _connection_source(graph, "3", "missing") == ""
     assert _connection_source(graph, "3", "filename_prefix") == ""
 
+    from comfyui_mcp_skills.application.workflow_graph import _is_connection
+
+    assert _is_connection([True, 0]) is False
+    assert _is_connection([1, 0]) is True
+    assert _is_connection([1, True]) is False
+
 
 def test_change_commit_conflicts_when_published_base_changes(tmp_path: Path) -> None:
     changes, _workflows = _services(tmp_path)

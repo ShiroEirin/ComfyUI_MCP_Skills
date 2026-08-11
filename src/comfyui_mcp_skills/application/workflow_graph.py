@@ -402,6 +402,7 @@ def _is_connection(value: object) -> bool:
         isinstance(value, list)
         and len(value) == 2
         and isinstance(value[0], (str, int))
+        and not isinstance(value[0], bool)
         and isinstance(value[1], int)
         and not isinstance(value[1], bool)
         and value[1] >= 0
