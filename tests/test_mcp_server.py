@@ -577,6 +577,7 @@ async def test_admin_server_changes_and_deletes_workflow(tmp_path: Path) -> None
             "comfyui.admin.audit.export",
             "comfyui.node.list",
             "comfyui.node.describe",
+            "comfyui.node.blueprint",
             "comfyui.model.list",
             "comfyui.local.plugins",
         }
@@ -2527,6 +2528,7 @@ async def test_admin_server_mounts_node_catalog_tools_end_to_end(
         names = {tool.name for tool in (await client.list_tools()).tools}
         assert "comfyui.node.list" in names
         assert "comfyui.node.describe" in names
+        assert "comfyui.node.blueprint" in names
         assert "comfyui.model.list" in names
         listed = await client.call_tool(
             "comfyui.node.list", {"server_id": "local"}
@@ -2534,6 +2536,10 @@ async def test_admin_server_mounts_node_catalog_tools_end_to_end(
         described = await client.call_tool(
             "comfyui.node.describe",
             {"server_id": "local", "node_class": "KSampler"},
+        )
+        blueprint = await client.call_tool(
+            "comfyui.node.blueprint",
+            {"server_id": "local", "query": "sampler"},
         )
         models = await client.call_tool(
             "comfyui.model.list", {"server_id": "local"}
@@ -2543,7 +2549,75 @@ async def test_admin_server_mounts_node_catalog_tools_end_to_end(
     assert listed.structured_content["items"][0]["class"] == "KSampler"
     assert described.is_error is False
     assert described.structured_content["node_class"] == "KSampler"
+    assert blueprint.is_error is False
+    assert blueprint.structured_content["items"][0]["class_type"] == "KSampler"
     assert models.is_error is False
+
+
+@pytest.mark.anyio
+async def test_admin_change_plan_failure_carries_suggested_queries(
+    tmp_path: Path,
+) -> None:
+    """P0-3: change.plan validation failures surface WORKFLOW_CHANGE_INVALID
+    with executable suggested_queries through the admin endpoint."""
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    _copy_file_workflow_to_sqlite(tmp_path, store)
+
+    class _Gateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {
+                "CLIPTextEncode": {
+                    "display_name": "CLIPTextEncode",
+                    "category": "conditioning",
+                    "input": {"required": {"text": ["STRING"]}},
+                    "input_order": {"required": ["text"]},
+                    "output": ["CONDITIONING"],
+                },
+                "KSampler": {
+                    "display_name": "KSampler",
+                    "category": "sampling",
+                    "input": {"required": {"cfg": ["FLOAT"]}},
+                    "input_order": {"required": ["cfg"]},
+                    "output": ["LATENT"],
+                },
+            }
+
+    server = create_admin_server(
+        tmp_path,
+        enabled=True,
+        gateway_factory=lambda _config: _Gateway(),
+    )
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.change.plan",
+            {
+                "server_id": "local",
+                "workflow_id": "txt2img",
+                "operations": [
+                    {
+                        "op": "add_node",
+                        "node_id": "9",
+                        "class_type": "FutureNode",
+                        "inputs": {},
+                    }
+                ],
+            },
+        )
+
+    assert result.is_error is True
+    error = result.structured_content
+    assert error["code"] == "WORKFLOW_CHANGE_INVALID"
+    assert error["retryable"] is False
+    assert error["details"]["issues"][0]["code"] == "unknown_node_type"
+    assert error["details"]["suggested_queries"] == [
+        {
+            "tool": "comfyui.node.blueprint",
+            "arguments": {"server_id": "local", "query": "FutureNode"},
+        },
+        {"tool": "comfyui.node.list", "arguments": {"server_id": "local"}},
+    ]
 
 
 @pytest.mark.anyio

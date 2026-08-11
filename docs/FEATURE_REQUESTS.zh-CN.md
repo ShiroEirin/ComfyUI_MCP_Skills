@@ -17,7 +17,7 @@
 ### P0 节点能力感知
 1. **授权对齐**（最小，改两处 frozenset + 测试）：`node.list` / `node.describe` / `model.list` 的 Toolset 从 OPERATIONS 扩展到 AUTHORING。
 2. **`comfyui.node.blueprint`**（**已交付**）：目标驱动的节点模板投影——关键词匹配 class/display_name/category（加权评分），紧凑签名（≤8 字段：类型 + 枚举 ≤8 项截断 + 输出 ≤4 类型），limit ≤10；fixed_tools 成员 + OBSERVE。
-3. **`change.plan` 校验增强 + 失败引导**（**已交付**）：plan 阶段对照 object_info 校验（validate_api 覆盖 class_type/required/枚举/范围）；失败错误带节点/字段定位与修复路径 hint（`comfyui.node.describe <class_type>`）；`suggested_queries` 字段标记可选未做。
+3. **`change.plan` 校验增强 + 失败引导**（**已交付**）：plan 阶段对照 object_info 校验（validate_api 覆盖 class_type/required/枚举/范围）；失败错误带节点/字段定位与修复路径 hint（`comfyui.node.describe <class_type>`）；`suggested_queries` 结构化字段（**已交付**）：错误 details 携带可执行查询建议（`comfyui.node.blueprint`/`node.describe`/`node.list`，含 server_id），未知类型双建议、`output_port_out_of_range` 指向源节点。
 4. 节点目录快照 Resource（**未交付，可选/后续范围**）：`comfyui://server/{id}/nodes` 紧凑投影 + 缓存 + 订阅失效。
 
 ### P1 采样器/模型经验知识（**已交付**）

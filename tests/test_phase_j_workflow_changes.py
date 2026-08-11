@@ -17,7 +17,11 @@ from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowValidationService,
 )
 from comfyui_mcp_skills.application.workflow_import import WorkflowImportService
-from comfyui_mcp_skills.domain.errors import WorkflowChangeConflict, WorkflowChangeNotFound
+from comfyui_mcp_skills.domain.errors import (
+    WorkflowChangeConflict,
+    WorkflowChangeNotFound,
+    WorkflowChangeValidationError,
+)
 from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
@@ -325,7 +329,9 @@ def test_expose_parameter_uses_declared_object_info_type_and_constraints(
 def test_change_plan_rejects_illegal_connection_with_port_types(tmp_path: Path) -> None:
     changes, _workflows = _services(tmp_path)
 
-    with pytest.raises(ValueError, match="STRING is incompatible with IMAGE"):
+    with pytest.raises(
+        WorkflowChangeValidationError, match="STRING is incompatible with IMAGE"
+    ) as excinfo:
         changes.plan(
             "portrait",
             "local",
@@ -340,6 +346,47 @@ def test_change_plan_rejects_illegal_connection_with_port_types(tmp_path: Path) 
             ],
             object_info=OBJECT_INFO,
         )
+
+    details = excinfo.value.details
+    assert details["suggested_queries"] == [
+        {
+            "tool": "comfyui.node.describe",
+            "arguments": {"server_id": "local", "node_class": "SaveImage"},
+        }
+    ]
+
+
+def test_change_plan_output_port_issue_hints_at_source_node(
+    tmp_path: Path,
+) -> None:
+    """output_port_out_of_range is reported on the consuming node, so the
+    suggested query must point at the connection source's class type."""
+    changes, _workflows = _services(tmp_path)
+
+    with pytest.raises(WorkflowChangeValidationError) as excinfo:
+        changes.plan(
+            "portrait",
+            "local",
+            [
+                {
+                    "op": "connect",
+                    "source_node_id": "1",
+                    "source_output": 3,
+                    "target_node_id": "3",
+                    "target_input": "images",
+                }
+            ],
+            object_info=OBJECT_INFO,
+        )
+
+    details = excinfo.value.details
+    assert details["issues"][0]["code"] == "output_port_out_of_range"
+    assert details["suggested_queries"] == [
+        {
+            "tool": "comfyui.node.describe",
+            "arguments": {"server_id": "local", "node_class": "Text"},
+        }
+    ]
 
 
 def test_change_commit_conflicts_when_published_base_changes(tmp_path: Path) -> None:
@@ -799,7 +846,7 @@ def test_change_plan_unknown_class_type_reports_location_and_hint(
     the node catalog tool instead of a bare message list."""
     changes, _workflows = _services(tmp_path)
 
-    with pytest.raises(ValueError, match=r"node 9 \[unknown_node_type\]") as excinfo:
+    with pytest.raises(WorkflowChangeValidationError, match=r"node 9 \[unknown_node_type\]") as excinfo:
         changes.plan(
             "portrait",
             "local",
@@ -810,6 +857,14 @@ def test_change_plan_unknown_class_type_reports_location_and_hint(
     message = str(excinfo.value)
     assert "node 9 [unknown_node_type]: Unknown node type: FutureNode" in message
     assert "hint: 该节点类型不存在于服务器，用 comfyui.node.list 搜索可用节点类型" in message
+    details = excinfo.value.details
+    assert details["suggested_queries"] == [
+        {
+            "tool": "comfyui.node.blueprint",
+            "arguments": {"server_id": "local", "query": "FutureNode"},
+        },
+        {"tool": "comfyui.node.list", "arguments": {"server_id": "local"}},
+    ]
 
 
 def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None:
@@ -817,7 +872,7 @@ def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None
     class_type so the describe hint is executable."""
     changes, _workflows = _services(tmp_path)
 
-    with pytest.raises(ValueError, match=r"node 9 field cfg") as excinfo:
+    with pytest.raises(WorkflowChangeValidationError, match=r"node 9 field cfg") as excinfo:
         changes.plan(
             "portrait",
             "local",
@@ -835,6 +890,13 @@ def test_change_plan_invalid_enum_reports_field_and_hint(tmp_path: Path) -> None
     message = str(excinfo.value)
     assert "node 9 field cfg [input_out_of_range]" in message
     assert "hint: 用 comfyui.node.describe KSampler 查看该节点的输入签名与枚举值" in message
+    details = excinfo.value.details
+    assert details["suggested_queries"] == [
+        {
+            "tool": "comfyui.node.describe",
+            "arguments": {"server_id": "local", "node_class": "KSampler"},
+        }
+    ]
 
 
 def test_change_diff_includes_highlighted_mermaid(tmp_path: Path) -> None:

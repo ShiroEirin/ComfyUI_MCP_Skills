@@ -17,7 +17,10 @@ from comfyui_mcp_skills.application.workflow_recipes import (
     apply_recipe,
     declared_parameter,
 )
-from comfyui_mcp_skills.domain.errors import WorkflowChangeNotFound
+from comfyui_mcp_skills.domain.errors import (
+    WorkflowChangeNotFound,
+    WorkflowChangeValidationError,
+)
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.workflow_schema import (
     build_input_schema,
@@ -156,7 +159,14 @@ class WorkflowChangeService:
         _validate_acyclic(graph)
         validation = self._validation.validate_api(graph, object_info)
         if not validation["valid"]:
-            raise ValueError(_change_validation_error(validation["issues"][:10], graph))
+            issues = validation["issues"][:10]
+            raise WorkflowChangeValidationError(
+                _change_validation_error(issues, graph),
+                details={
+                    "issues": _issue_summaries(issues),
+                    "suggested_queries": _suggested_queries(issues, graph, server_id),
+                },
+            )
         after_semantic = self._graphs.describe(graph, object_info=object_info)
         generated_parameters = after_semantic["parameters"]
         explicit = parameter_schema.get("parameters")
@@ -358,6 +368,135 @@ def _change_validation_error(issues: list[dict[str, str]], graph: dict[str, Any]
                     "comfyui.node.describe 查看输入签名与枚举值"
                 )
     return "Workflow change is invalid: " + "; ".join(parts)
+
+
+def _issue_summaries(issues: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Bounded, transport-safe projection of validation issues."""
+    return [
+        {
+            key: str(issue.get(key, ""))
+            for key in ("code", "message", "node_id", "field")
+            if issue.get(key) not in (None, "")
+        }
+        for issue in issues
+    ]
+
+
+def _suggested_queries(
+    issues: list[dict[str, Any]], graph: dict[str, Any], server_id: str
+) -> list[dict[str, Any]]:
+    """Executable follow-up queries for each validation issue.
+
+    Every issue yields at least one suggestion so agents can repair the
+    workflow without parsing message text (FEATURE_REQUESTS P0-3). Arguments
+    always carry the server_id and stay within the tool schemas (blueprint
+    query is capped at its 256-char maxLength).
+    """
+    suggestions: list[dict[str, Any]] = []
+    for issue in issues:
+        code = str(issue.get("code", ""))
+        node_id = issue.get("node_id", "")
+        field = issue.get("field", "")
+        if code == "unknown_node_type":
+            class_type = _issue_class_type(issue, graph)
+            query = (class_type or "").strip()[:256]
+            if query:
+                suggestions.append(
+                    {
+                        "tool": "comfyui.node.blueprint",
+                        "arguments": {"server_id": server_id, "query": query},
+                    }
+                )
+            suggestions.append(
+                {"tool": "comfyui.node.list", "arguments": {"server_id": server_id}}
+            )
+        elif code == "output_port_out_of_range":
+            source = _connection_source(graph, node_id, field)
+            if source:
+                suggestions.append(
+                    {
+                        "tool": "comfyui.node.describe",
+                        "arguments": {
+                            "server_id": server_id,
+                            "node_class": source,
+                        },
+                    }
+                )
+            else:
+                suggestions.append(
+                    {"tool": "comfyui.node.list", "arguments": {"server_id": server_id}}
+                )
+        elif code in {
+            "missing_required_input",
+            "invalid_input_name",
+            "input_too_large",
+            "unknown_input_port",
+            "invalid_connection",
+            "missing_source_node",
+            "port_type_mismatch",
+            "invalid_enum_value",
+            "invalid_input_type",
+            "input_out_of_range",
+            "unsafe_media_path",
+        }:
+            class_type = _issue_class_type(issue, graph)
+            if class_type:
+                suggestions.append(
+                    {
+                        "tool": "comfyui.node.describe",
+                        "arguments": {
+                            "server_id": server_id,
+                            "node_class": class_type,
+                        },
+                    }
+                )
+            else:
+                suggestions.append(
+                    {"tool": "comfyui.node.list", "arguments": {"server_id": server_id}}
+                )
+        else:
+            suggestions.append(
+                {"tool": "comfyui.node.list", "arguments": {"server_id": server_id}}
+            )
+    return suggestions
+
+
+def _issue_class_type(
+    issue: dict[str, Any], graph: dict[str, Any]
+) -> str:
+    """Class type of the node named by the issue, if it can be located."""
+    node_id = issue.get("node_id", "")
+    node = graph.get(str(node_id))
+    if isinstance(node, dict):
+        raw_class_type = node.get("class_type")
+        if isinstance(raw_class_type, str):
+            return raw_class_type.strip()
+    return ""
+
+
+def _connection_source(
+    graph: dict[str, Any], node_id: Any, field: Any
+) -> str:
+    """Class type of the source node feeding graph[node_id].inputs[field].
+
+    output_port_out_of_range issues are reported on the consuming node, but
+    the offending port belongs to the connection source, so the repair hint
+    must point there (see workflow_graph validation).
+    """
+    node = graph.get(str(node_id))
+    if not isinstance(node, dict):
+        return ""
+    inputs = node.get("inputs")
+    if not isinstance(inputs, dict):
+        return ""
+    connection = inputs.get(str(field))
+    if (
+        isinstance(connection, list)
+        and len(connection) >= 1
+        and isinstance(connection[0], str)
+    ):
+        return _issue_class_type({"node_id": connection[0]}, graph)
+    return ""
 
 
 def _apply_operation(

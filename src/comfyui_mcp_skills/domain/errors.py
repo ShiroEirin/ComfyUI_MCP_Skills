@@ -57,6 +57,16 @@ class ServerOffline(ComfyUISkillsError):
     retryable = True
 
 
+class WorkflowChangeValidationError(ComfyUISkillsError):
+    """A change plan failed graph validation against the server object_info.
+
+    Carries structured details (issues and executable suggested_queries) so
+    MCP callers can act on the failure instead of parsing the message text.
+    """
+
+    code = "WORKFLOW_CHANGE_INVALID"
+
+
 class AssetNotFound(ComfyUISkillsError):
     code = "ASSET_NOT_FOUND"
 

@@ -626,6 +626,7 @@ def create_admin_server(
                 in {
                     "comfyui.node.list",
                     "comfyui.node.describe",
+                    "comfyui.node.blueprint",
                     "comfyui.model.list",
                     "comfyui.local.plugins",
                 }
@@ -706,6 +707,17 @@ def create_admin_server(
                 node_class = _required_string(arguments, "node_class")
                 result = await anyio.to_thread.run_sync(
                     lambda: discovery.node(server_id, node_class)
+                )
+                return _result(result)
+            if params.name == "comfyui.node.blueprint":
+                _validate_keys(arguments, {"server_id", "query", "limit"})
+                server_id = _required_string(arguments, "server_id")
+                query = _required_string(arguments, "query")
+                if len(query) > 256:
+                    raise ValueError("query must be at most 256 characters")
+                limit = _bounded_integer(arguments, "limit", 5, minimum=1, maximum=10)
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.blueprint(server_id, query=query, limit=limit)
                 )
                 return _result(result)
             if params.name == "comfyui.model.list":
