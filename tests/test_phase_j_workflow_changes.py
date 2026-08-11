@@ -870,7 +870,9 @@ def test_change_plan_unknown_class_type_reports_location_and_hint(
     the node catalog tool instead of a bare message list."""
     changes, _workflows = _services(tmp_path)
 
-    with pytest.raises(WorkflowChangeValidationError, match=r"node 9 \[unknown_node_type\]") as excinfo:
+    with pytest.raises(
+        WorkflowChangeValidationError, match=r"node 9 \[unknown_node_type\]"
+    ) as excinfo:
         changes.plan(
             "portrait",
             "local",
