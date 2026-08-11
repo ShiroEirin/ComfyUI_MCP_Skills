@@ -74,7 +74,7 @@ async function loadPage() {
     const data = JSON.parse(text);
     grid.textContent = "";
     if (data.available === false) {
-      statusEl.textContent = "任务列表不可用: " + escapeHtml(data.reason || "未知原因");
+      statusEl.textContent = "任务列表不可用: " + (data.reason || "未知原因");
       pager.textContent = "";
       return;
     }
@@ -86,13 +86,30 @@ async function loadPage() {
     for (const item of data.items) {
       const card = document.createElement("div");
       card.className = "card";
-      card.innerHTML =
-        "<div><span class='status " + (item.status || "") + "'>" +
-        escapeHtml(item.status || "?") + "</span> " +
-        "<strong>" + escapeHtml(item.workflow_id || "?") + "</strong></div>" +
-        "<div class='out'>" + escapeHtml(item.job_id || "") + "</div>" +
-        "<div class='out'>server: " + escapeHtml(item.server_id || "") +
-        " · " + escapeHtml(item.created_at || "") + "</div><pre hidden></pre>";
+      const header = document.createElement("div");
+      const statusBadge = document.createElement("span");
+      statusBadge.className = "status";
+      const statusClass = {completed: true, error: true, failed: true}[item.status];
+      if (statusClass) statusBadge.classList.add(item.status);
+      statusBadge.textContent = item.status || "?";
+      const title = document.createElement("strong");
+      title.textContent = item.workflow_id || "?";
+      header.appendChild(statusBadge);
+      header.appendChild(document.createTextNode(" "));
+      header.appendChild(title);
+      card.appendChild(header);
+      const idLine = document.createElement("div");
+      idLine.className = "out";
+      idLine.textContent = item.job_id || "";
+      card.appendChild(idLine);
+      const metaLine = document.createElement("div");
+      metaLine.className = "out";
+      metaLine.textContent = "server: " + (item.server_id || "") +
+        " · " + (item.created_at || "");
+      card.appendChild(metaLine);
+      const pre = document.createElement("pre");
+      pre.hidden = true;
+      card.appendChild(pre);
       card.addEventListener("click", () => expandCard(card, item));
       grid.appendChild(card);
     }
@@ -112,22 +129,28 @@ async function loadPage() {
 
 async function expandCard(card, item) {
   const pre = card.querySelector("pre");
-  if (pre.textContent) { pre.hidden = !pre.hidden; return; }
+  const strip = card.querySelector(".media-strip");
+  if (pre.textContent || strip) {
+    pre.hidden = !pre.hidden;
+    if (strip) strip.hidden = !strip.hidden;
+    return;
+  }
   pre.hidden = false;
   pre.textContent = "读取任务详情…";
   try {
     const job = JSON.parse(await readText("comfyui://jobs/" + encodeURIComponent(item.job_id)));
     const outputs = job.outputs && job.outputs.length ? job.outputs : [];
-    let html = "状态: " + escapeHtml(job.status || "?") + "\\n";
+    let html = "状态: " + (job.status || "?") + "\\n";
     if (!outputs.length) { html += "无输出\\n"; }
     for (let i = 0; i < outputs.length; i++) {
       const out = outputs[i];
-      html += "输出[" + i + "] " + escapeHtml(out.filename || "") +
-              " (" + escapeHtml(out.media_type || out.mime_type || "") + ")\\n";
+      html += "输出[" + i + "] " + (out.filename || "") +
+              " (" + (out.media_type || out.mime_type || "") + ")\\n";
     }
     pre.textContent = html;
     if (outputs.length) {
       const strip = document.createElement("div");
+      strip.className = "media-strip";
       strip.style.cssText = "margin-top:.5rem;display:grid;gap:.5rem";
       pre.after(strip);
       outputs.forEach((out, index) => {
@@ -147,8 +170,8 @@ async function renderOutput(strip, out, item, index) {
   box.style.cssText = "border-top:1px solid #e2e8f0;padding-top:.5rem";
   const label = document.createElement("div");
   label.className = "out";
-  label.textContent = "[" + index + "] " + escapeHtml(out.filename || uri) +
-    " (" + escapeHtml(out.media_type || out.mime_type || "") + ")";
+  label.textContent = "[" + index + "] " + (out.filename || uri) +
+    " (" + (out.media_type || out.mime_type || "") + ")";
   box.appendChild(label);
   try {
     const result = await client.readResource({uri});
@@ -183,7 +206,7 @@ async function renderOutput(strip, out, item, index) {
       audio.controls = true;
       box.appendChild(audio);
     } else {
-      box.appendChild(document.createTextNode("（" + escapeHtml(mime) + "）"));
+      box.appendChild(document.createTextNode("（" + mime + "）"));
     }
     strip.appendChild(box);
   } catch (error) {
@@ -193,12 +216,6 @@ async function renderOutput(strip, out, item, index) {
     box.appendChild(fail);
     strip.appendChild(box);
   }
-}
-
-function escapeHtml(value) {
-  return String(value).replace(/[&<>"']/g, (ch) => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
-  })[ch]);
 }
 
 loadPage();
