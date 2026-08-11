@@ -64,7 +64,7 @@ MCP / HTTP / CLI adapters
 CLI 与 MCP 共用业务服务、ComfyUI Gateway 和持久化层；MCP handler 不启动 CLI 子进程。
 
 ## 快速安装
-`comfyui-mcp-skills` 1.1.0 已正式发布（PyPI + GitHub Releases；发布流程见 docs/RELEASING.zh-CN.md）。安装方式见下（GitHub 源码安装与 PyPI 均可）。
+`comfyui-mcp-skills` 1.1.0 已进入正式发布流程（渠道与流程见 docs/RELEASING.zh-CN.md；PyPI 可见前请从 GitHub 安装或使用源码运行）。
 
 ### 方式一：从 GitHub 安装
 
