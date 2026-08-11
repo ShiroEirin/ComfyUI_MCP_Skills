@@ -389,6 +389,24 @@ def test_change_plan_output_port_issue_hints_at_source_node(
     ]
 
 
+def test_connection_source_accepts_integer_source_ids() -> None:
+    """output_port_out_of_range hints resolve integer source node ids the
+    same way the graph validator does (str | int connection sources)."""
+    from comfyui_mcp_skills.application.workflow_change import _connection_source
+
+    graph = {
+        "1": {"class_type": "Text", "inputs": {"text": "before"}},
+        "2": {"class_type": "Image", "inputs": {}},
+        "3": {
+            "class_type": "SaveImage",
+            "inputs": {"images": [2, 5], "filename_prefix": "result"},
+        },
+    }
+    assert _connection_source(graph, "3", "images") == "Image"
+    assert _connection_source(graph, "3", "missing") == ""
+    assert _connection_source(graph, "3", "filename_prefix") == ""
+
+
 def test_change_commit_conflicts_when_published_base_changes(tmp_path: Path) -> None:
     changes, _workflows = _services(tmp_path)
     stale = changes.plan(

@@ -493,9 +493,10 @@ def _connection_source(
     if (
         isinstance(connection, list)
         and len(connection) >= 1
-        and isinstance(connection[0], str)
+        and isinstance(connection[0], (str, int))
+        and not isinstance(connection[0], bool)
     ):
-        return _issue_class_type({"node_id": connection[0]}, graph)
+        return _issue_class_type({"node_id": str(connection[0])}, graph)
     return ""
 
 
