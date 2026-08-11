@@ -435,7 +435,7 @@ Streamable HTTP 支持：
 - TLS 由反向代理终止。
 - 默认 `process` 限流拒绝多 worker；`COMFYUI_MCP_LIMIT_MODE=external` 启用 SQLite 共享限流后可多 worker 同主机部署。
 - Introspection 已实现，但不等于完整 OAuth Authorization Server 或动态客户端注册。
-- MCP Apps：已提供只读 Job 状态查看器（`ui://comfyui/job.html`），仅对声明 UI 扩展与 app MIME 的客户端注入工具元数据；文本/结构化输出与 Resource Link 保留为降级路径。
+- MCP Apps：已提供只读 Job 状态查看器（`ui://comfyui/job.html`，绑定 `comfyui.job.get`）与输出图库（`ui://comfyui/gallery.html`，绑定 `comfyui.job.list`；数据经 `comfyui://gallery/jobs` 资源按 owner 隔离列出最近任务，卡片展开自动懒加载 image/video/audio 输出预览；SQLite run store 不可用时降级提示）；仅对声明 UI 扩展与 app MIME 的客户端注入工具元数据；文本/结构化输出与 Resource Link 保留为降级路径。
 - 多副本 SubscriptionBus、跨主机租约和更完整 MCP App 界面尚未交付；可选 OpenTelemetry traces、metrics 与 logs 已交付（工具调用 span、调用/错误计数与耗时直方图；logs 经 `LoggingHandler` 桥接 Python `logging` 记录到 `/v1/logs`，排除 `opentelemetry.*` 内部日志防导出循环）：安装 `comfyui-mcp-skills[otel]` 并设置 `COMFYUI_MCP_OTEL_ENDPOINT`（OTLP/HTTP base URL，自动按信号追加 `/v1/traces`、`/v1/metrics`、`/v1/logs`）后启用，未设置端点时零依赖零开销。
 
 ## 16. 推荐 Agent 操作方式

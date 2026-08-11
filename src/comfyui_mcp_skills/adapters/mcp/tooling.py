@@ -47,10 +47,10 @@ def client_supports_apps(ctx: Any) -> bool:
     return isinstance(mime_types, (list, tuple)) and UI_MIME_TYPE in mime_types
 
 
-def with_ui_metadata(tool: Tool) -> Tool:
-    """Attach the Job viewer app reference to a tool's metadata."""
+def with_ui_metadata(tool: Tool, *, uri: str = JOB_VIEWER_URI) -> Tool:
+    """Attach an app reference to a tool's metadata (default Job viewer)."""
     return tool.model_copy(
-        update={"meta": {**(tool.meta or {}), "ui": {"resourceUri": JOB_VIEWER_URI}}}
+        update={"meta": {**(tool.meta or {}), "ui": {"resourceUri": uri}}}
     )
 
 

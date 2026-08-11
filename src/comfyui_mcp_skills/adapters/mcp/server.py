@@ -36,6 +36,7 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
+from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_URI
 from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
 from comfyui_mcp_skills.adapters.mcp.prompts import create_prompt_handlers
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
@@ -954,7 +955,11 @@ def create_server(
             )
         if apps_supported:
             canonical_tools = [
-                with_ui_metadata(tool) if tool.name == "comfyui.job.get" else tool
+                with_ui_metadata(tool, uri=GALLERY_URI)
+                if tool.name == "comfyui.job.list"
+                else with_ui_metadata(tool)
+                if tool.name == "comfyui.job.get"
+                else tool
                 for tool in canonical_tools
             ]
         if not portable_tool_names:

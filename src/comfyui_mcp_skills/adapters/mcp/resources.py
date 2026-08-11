@@ -9,7 +9,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import anyio
 from mcp.server import ServerRequestContext
@@ -27,6 +27,11 @@ from mcp.types import (
 )
 from mcp_types import INVALID_PARAMS
 
+from comfyui_mcp_skills.adapters.mcp.gallery_app import (
+    GALLERY_DATA_URI,
+    GALLERY_URI,
+    gallery_html,
+)
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     JOB_VIEWER_URI,
     UI_MIME_TYPE,
@@ -356,7 +361,30 @@ def create_resource_handlers(
                 description="Read-only Job status app bound to comfyui.job.get",
                 mime_type=UI_MIME_TYPE,
             ),
-            *[
+        ]
+        if _resource_scope_allowed(
+            "job", required=require_authorization, authorization=authorization
+        ):
+            resources.append(
+                Resource(
+                    uri=GALLERY_URI,
+                    name="ComfyUI Gallery",
+                    title="ComfyUI 输出图库",
+                    description="Output gallery app listing the caller's recent Jobs",
+                    mime_type=UI_MIME_TYPE,
+                )
+            )
+            resources.append(
+                Resource(
+                    uri=GALLERY_DATA_URI,
+                    name="ComfyUI Gallery data",
+                    title="ComfyUI 输出图库数据",
+                    description="Owner-bound recent Job list for the gallery app",
+                    mime_type="application/json",
+                )
+            )
+        resources.extend(
+            [
                 Resource(
                     uri=f"comfyui://workflows/{workflow.server_id}/{workflow.workflow_id}",
                     name=f"{workflow.server_id}/{workflow.workflow_id}",
@@ -365,8 +393,8 @@ def create_resource_handlers(
                     mime_type="application/json",
                 )
                 for workflow in enabled_workflows()
-            ],
-        ]
+            ]
+        )
         if asset_library is not None and _resource_scope_allowed(
             "asset", required=require_authorization, authorization=authorization
         ):
@@ -420,6 +448,44 @@ def create_resource_handlers(
                     )
                 ]
             )
+        if params.uri == GALLERY_URI:
+            return ReadResourceResult(
+                contents=[
+                    TextResourceContents(
+                        uri=GALLERY_URI,
+                        mime_type=UI_MIME_TYPE,
+                        text=gallery_html(),
+                    )
+                ]
+            )
+        uri_text = str(params.uri)
+        if uri_text == GALLERY_DATA_URI or uri_text.startswith(GALLERY_DATA_URI + "?"):
+            _require_resource_scope(
+                "job", required=require_authorization, authorization=authorization
+            )
+            cursor = ""
+            query = urlsplit(uri_text).query
+            if query:
+                parsed = parse_qs(query, strict_parsing=True)
+                if set(parsed) != {"cursor"} or len(parsed["cursor"]) != 1:
+                    raise ValueError("Gallery data URI accepts exactly one cursor parameter")
+                cursor = parsed["cursor"][0]
+            try:
+                page = await anyio.to_thread.run_sync(
+                    lambda: jobs.list(
+                        owner_id=_resource_owner(authorization),
+                        limit=50,
+                        cursor=cursor,
+                    )
+                )
+            except NotImplementedError:
+                page = {
+                    "items": [],
+                    "next_cursor": "",
+                    "available": False,
+                    "reason": "job listing requires the SQLite run store",
+                }
+            return _json_resource(uri_text, page)
         try:
             return await _read_resource(
                 ctx,

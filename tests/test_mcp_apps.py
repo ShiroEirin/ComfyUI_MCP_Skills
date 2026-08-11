@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,99 @@ async def test_job_get_gets_ui_metadata_only_for_apps_clients(tmp_path: Path) ->
             tool for tool in (await client.list_tools()).tools if tool.name == "comfyui.job.get"
         )
         meta = job_tool.meta or {}
+        assert "ui" not in meta
+
+
+@pytest.mark.anyio
+async def test_gallery_resources_are_listed_and_served(tmp_path: Path) -> None:
+    from comfyui_mcp_skills.adapters.mcp.gallery_app import (
+        GALLERY_DATA_URI,
+        GALLERY_URI,
+    )
+
+    async with Client(_server(tmp_path)) as client:
+        resources = await client.list_resources()
+        uris = {resource.uri for resource in resources.resources}
+        assert GALLERY_URI in uris
+        assert GALLERY_DATA_URI in uris
+        gallery = next(
+            resource for resource in resources.resources if resource.uri == GALLERY_URI
+        )
+        assert gallery.mime_type == UI_MIME_TYPE
+
+        content = await client.read_resource(GALLERY_URI)
+        assert any("图库" in block.text for block in content.contents)
+
+        data = await client.read_resource(GALLERY_DATA_URI)
+        payload = json.loads(data.contents[0].text)
+        assert "items" in payload
+        assert "next_cursor" in payload
+        assert isinstance(payload["items"], list)
+
+
+@pytest.mark.anyio
+async def test_gallery_data_rejects_unknown_query_parameters(tmp_path: Path) -> None:
+    from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_DATA_URI
+
+    async with Client(_server(tmp_path)) as client:
+        with pytest.raises(Exception):
+            await client.read_resource(GALLERY_DATA_URI + "?limit=5")
+        with pytest.raises(Exception):
+            await client.read_resource(
+                GALLERY_DATA_URI + "?cursor=a&cursor=b"
+            )
+
+
+@pytest.mark.anyio
+async def test_job_list_gets_gallery_ui_metadata_only_for_apps_clients(
+    tmp_path: Path,
+) -> None:
+    from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_URI
+    from comfyui_mcp_skills.infrastructure.persistence.control_plane import (
+        SQLiteControlPlaneStore,
+    )
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    import sqlite3
+    from datetime import datetime, timezone
+
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("job", "execution_attempt", "idempotency_record", "artifact"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    def _sqlite_server():
+        return create_server(tmp_path, gateway_factory=lambda _config: _Gateway())
+
+    options = [
+        advertise(UI_EXTENSION_ID, {"mimeTypes": [UI_MIME_TYPE]}),
+    ]
+
+    async with Client(_sqlite_server(), extensions=options) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.job.list" in names
+        list_tool = next(
+            tool for tool in (await client.list_tools()).tools
+            if tool.name == "comfyui.job.list"
+        )
+        meta = list_tool.meta or {}
+        assert meta.get("ui", {}).get("resourceUri") == GALLERY_URI
+
+    async with Client(_sqlite_server()) as client:
+        names = {tool.name for tool in (await client.list_tools()).tools}
+        assert "comfyui.job.list" in names
+        list_tool = next(
+            tool for tool in (await client.list_tools()).tools
+            if tool.name == "comfyui.job.list"
+        )
+        meta = list_tool.meta or {}
         assert "ui" not in meta
 
 

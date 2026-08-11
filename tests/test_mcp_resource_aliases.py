@@ -444,6 +444,8 @@ async def test_resource_listing_omits_unavailable_artifacts(
     available = await handlers.list_resources(None, None)
     assert [str(resource.uri) for resource in available.resources] == [
         "ui://comfyui/job.html",
+        "ui://comfyui/gallery.html",
+        "comfyui://gallery/jobs",
         _CANONICAL_ARTIFACT_URI,
     ]
 
@@ -460,7 +462,11 @@ async def test_resource_listing_omits_unavailable_artifacts(
         )
 
     unavailable = await handlers.list_resources(None, None)
-    assert [str(resource.uri) for resource in unavailable.resources] == ["ui://comfyui/job.html"]
+    assert [str(resource.uri) for resource in unavailable.resources] == [
+        "ui://comfyui/job.html",
+        "ui://comfyui/gallery.html",
+        "comfyui://gallery/jobs",
+    ]
 
 
 @pytest.mark.anyio
