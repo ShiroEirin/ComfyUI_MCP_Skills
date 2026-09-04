@@ -49,17 +49,17 @@ flowchart LR
 
 关键模块：
 
-| 模块 | 当前职责 |
-|---|---|
-| `comfyui_skills_cli/main.py` | Typer 入口、全局选项和命令注册 |
-| `comfyui_skills_cli/commands/*.py` | 命令参数、业务逻辑、输出和异常处理 |
-| `comfyui_skills_cli/utils.py` | 通过 `comfyui_mcp_skills.infrastructure.comfyui` 复用 ComfyUI HTTP/WebSocket 客户端 |
-| `comfyui_skills_cli/storage.py` | 工作流和 schema 文件读取 |
-| `comfyui_skills_cli/config.py` | `config.json` 读取和写入 |
-| `comfyui_skills_cli/output.py` | Text、JSON、NDJSON 输出 |
-| `comfyui_skills_cli/history_writer.py` | 执行记录和幂等缓存 |
-| `comfyui_skills_cli/commands/workflow.py` | 工作流转换和参数 schema 生成 |
-| `comfyui_skills_cli/commands/run.py` | 参数注入、自动上传、提交、等待、下载结果 |
+| 模块                                      | 当前职责                                                                            |
+| ----------------------------------------- | ----------------------------------------------------------------------------------- |
+| `comfyui_skills_cli/main.py`              | Typer 入口、全局选项和命令注册                                                      |
+| `comfyui_skills_cli/commands/*.py`        | 命令参数、业务逻辑、输出和异常处理                                                  |
+| `comfyui_skills_cli/utils.py`             | 通过 `comfyui_mcp_skills.infrastructure.comfyui` 复用 ComfyUI HTTP/WebSocket 客户端 |
+| `comfyui_skills_cli/storage.py`           | 工作流和 schema 文件读取                                                            |
+| `comfyui_skills_cli/config.py`            | `config.json` 读取和写入                                                            |
+| `comfyui_skills_cli/output.py`            | Text、JSON、NDJSON 输出                                                             |
+| `comfyui_skills_cli/history_writer.py`    | 执行记录和幂等缓存                                                                  |
+| `comfyui_skills_cli/commands/workflow.py` | 工作流转换和参数 schema 生成                                                        |
+| `comfyui_skills_cli/commands/run.py`      | 参数注入、自动上传、提交、等待、下载结果                                            |
 
 ### 3.1 应保留的现有能力
 
@@ -98,16 +98,16 @@ server status
 
 ### 4.2 MCP 带来的改进
 
-| CLI 问题 | MCP 改进 |
-|---|---|
-| Shell 引号和 JSON 转义 | 原生结构化参数 |
-| `list/info/run` 多步发现 | 工作流直接成为带 schema 的工具 |
-| stderr + exit code | Tool error / JSON-RPC error |
-| NDJSON 进度 | MCP progress notification |
-| 文件名和路径字符串 | 明确的上传输入类型或 Resource URI |
-| 输出文件路径 | Resource link |
-| Agent 不知道参数约束 | `inputSchema` |
-| 返回结构不稳定 | `outputSchema` + `structuredContent` |
+| CLI 问题                 | MCP 改进                             |
+| ------------------------ | ------------------------------------ |
+| Shell 引号和 JSON 转义   | 原生结构化参数                       |
+| `list/info/run` 多步发现 | 工作流直接成为带 schema 的工具       |
+| stderr + exit code       | Tool error / JSON-RPC error          |
+| NDJSON 进度              | MCP progress notification            |
+| 文件名和路径字符串       | 明确的上传输入类型或 Resource URI    |
+| 输出文件路径             | Resource link                        |
+| Agent 不知道参数约束     | `inputSchema`                        |
+| 返回结构不稳定           | `outputSchema` + `structuredContent` |
 
 ### 4.3 不建议的实现方式
 
@@ -403,11 +403,11 @@ comfyui.run.gpu2.video-generate
 
 默认执行型 MCP 建议只提供：
 
-| 工具 | 作用 |
-|---|---|
-| 动态 `comfyui.run.*` | 运行具体工作流 |
-| `comfyui.job.get` | 查询作业状态和结果 |
-| `comfyui.job.cancel` | 显式取消作业 |
+| 工具                   | 作用                           |
+| ---------------------- | ------------------------------ |
+| 动态 `comfyui.run.*`   | 运行具体工作流                 |
+| `comfyui.job.get`      | 查询作业状态和结果             |
+| `comfyui.job.cancel`   | 显式取消作业                   |
 | `comfyui.asset.upload` | 上传图像、蒙版、音频或视频输入 |
 
 > 实现说明：`comfyui.server.health`、`node.list/describe`、`model.list` 等只读发现要求 `comfyui:observe` scope，实际位于 Operations/Authoring Toolset（默认执行型 stdio 仅 `comfyui:execute`，看不到这些工具）。
@@ -503,10 +503,7 @@ stdio 场景下，MCP 服务通常与 Agent host 位于同一台机器，可以�
 
 ```json
 {
-  "upload_roots": [
-    "D:/ComfyUI/inputs",
-    "D:/agent-shared"
-  ]
+  "upload_roots": ["D:/ComfyUI/inputs", "D:/agent-shared"]
 }
 ```
 
@@ -517,7 +514,7 @@ stdio 场景下，MCP 服务通常与 Agent host 位于同一台机器，可以�
 远程 MCP 服务看不到客户端本地路径。以下输入没有正确语义：
 
 ```json
-{"path": "/home/user/cat.png"}
+{ "path": "/home/user/cat.png" }
 ```
 
 因为该路径属于客户端，不属于 MCP 服务所在机器。
@@ -959,6 +956,7 @@ mcp = ">=2,<3"
 - **P**：队列删除/清理、服务中断和重启影响预览；即时 `server.free` 暴露但强制 intent-first 审计与 `request_id` 幂等（重复执行被拒绝）；重启执行闭环（`runtime.restart` plan→approve→commit→get，SQLite run store 门控，drain/fence）与 systemd/Docker/Windows Service RuntimeController 适配器。
 - **Q**：OAuth introspection 主体/受众绑定、预认证限流、owner-aware Server 连接、Revision 隔离、路由 commit fencing 和发布安全收口。
 - 后续切片（2026-08-07 已交付）：引擎历史 `engine.history`（有界 + 扁平投影）、节点感知 `node.blueprint`/`model.guidance`/`job.history.suggest`、可视化 `workflow.visualize` 与 `revision.diff` mermaid 视图、第三方整合包兼容 `local.plugins`（server 条目 `local_root`）、`change.plan` 校验失败定位与 hint、admin portable 工具名（`COMFYUI_MCP_PORTABLE_TOOL_NAMES` 对 admin 面同样生效）、node/model/插件目录工具在 AUTHORING 与 ADMIN 面可见（授权对齐）。
+- 后续切片（2026-09-04 已交付）：`change.plan`/`change.commit` 从 ADMIN Toolset 下放到 AUTHORING Toolset（`comfyui:author`，工具名保持 `comfyui.admin.` 前缀不变）；ADMIN 面仅保留部署指针操作（publish/rollback/import）。
 - 后续切片（2026-08-08~10 已交付）：装配分层（fresh 轻量、既有 DB fail-closed）、schema 冻结（RELEASED_SCHEMA_MIGRATIONS v1–v13 + 跨版本升级套件）、重启执行闭环、Windows Service RuntimeController、高层分支 recipe（upscale/save/lora/controlnet）、OpenTelemetry logs。
 
 阶段 G–Q 的验收覆盖 owner 隔离、并发幂等、迁移升级、MCP schema、HTTP 安全边界、真实 ComfyUI 推理及输出校验。

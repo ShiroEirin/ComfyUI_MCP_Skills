@@ -546,7 +546,7 @@ class _Gateway:
 
 
 @pytest.mark.anyio
-async def test_admin_change_plan_commit_and_publish_tools(tmp_path: Path) -> None:
+async def test_authoring_change_plan_commit_and_admin_publish_tools(tmp_path: Path) -> None:
     (tmp_path / "config.json").write_text(
         json.dumps(
             {

@@ -18,19 +18,19 @@ ComfyUI MCP Skills 把 ComfyUI 工作流、作业、资产和控制平面投影�
 
 ## 核心能力
 
-| 领域 | 能力 |
-|---|---|
-| 工作流执行 | 每个已启用工作流参与动态工具目录；默认暴露 8 个，可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 调整到 1–128，超出部分仍可通过目录/Resource 管理 |
-| 工作流理解 | 提供有界的节点、边、参数、输出和依赖语义视图，不向 Agent 暴露无界原始图 |
-| 版本与编辑 | 不可变 Revision、结构化 diff、变更 plan/commit、发布、回滚、损失感知导入；高层 recipe（upscale/save/lora/controlnet 分支，经 `apply_recipe` 变更操作） |
-| 作业与队列 | Job 查询、分页、取消、诊断、安全重试、队列查看与受控清理 |
-| 资产与产物 | 上传、Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要和完整血缘 |
-| 批量实验 | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化 |
-| 多服务器路由 | 根据 Deployment、依赖、队列、显存和 Policy 生成不可变执行计划，并以摘要绑定提交 |
-| 管理与供应 | Server/Config 管理、依赖检查、审批、ComfyUI Manager 安装计划、Provisioning 恢复和审计闭环（append-only 事件 + `admin.audit.get/retry/export` 有界导出） |
-| 运行时控制 | 明确区分单作业取消、队列操作、全局 interrupt；审批式重启执行闭环（`runtime.restart` plan→approve→commit→get，SQLite run store 门控，文件后端 plan 只读预览） |
-| MCP 原生交互 | Tools、Resources、Prompts、参数补全、资源订阅以及 provider-safe 工具名兼容模式 |
-| 远程部署 | Streamable HTTP、静态 Bearer Token、RFC 7662 Token Introspection、Host/Origin/大小/并发边界 |
+| 领域         | 能力                                                                                                                                                                                                                      |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 工作流执行   | 每个已启用工作流参与动态工具目录；默认暴露 8 个，可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 调整到 1–128，超出部分仍可通过目录/Resource 管理                                                                                  |
+| 工作流理解   | 提供有界的节点、边、参数、输出和依赖语义视图，不向 Agent 暴露无界原始图                                                                                                                                                   |
+| 版本与编辑   | 不可变 Revision、结构化 diff、变更 plan/commit（AUTHORING 面，2026-09-04 起从 ADMIN 下放，工具名不变）、发布/回滚（ADMIN 面）、损失感知导入；高层 recipe（upscale/save/lora/controlnet 分支，经 `apply_recipe` 变更操作） |
+| 作业与队列   | Job 查询、分页、取消、诊断、安全重试、队列查看与受控清理                                                                                                                                                                  |
+| 资产与产物   | 上传、Asset/Artifact 目录、输出复用、跨服务器传输、内容摘要和完整血缘                                                                                                                                                     |
+| 批量实验     | Experiment plan/commit、矩阵与采样 Variant、预算约束、恢复、评分和结果固化                                                                                                                                                |
+| 多服务器路由 | 根据 Deployment、依赖、队列、显存和 Policy 生成不可变执行计划，并以摘要绑定提交                                                                                                                                           |
+| 管理与供应   | Server/Config 管理、依赖检查、审批、ComfyUI Manager 安装计划、Provisioning 恢复和审计闭环（append-only 事件 + `admin.audit.get/retry/export` 有界导出）                                                                   |
+| 运行时控制   | 明确区分单作业取消、队列操作、全局 interrupt；审批式重启执行闭环（`runtime.restart` plan→approve→commit→get，SQLite run store 门控，文件后端 plan 只读预览）                                                              |
+| MCP 原生交互 | Tools、Resources、Prompts、参数补全、资源订阅以及 provider-safe 工具名兼容模式                                                                                                                                            |
+| 远程部署     | Streamable HTTP、静态 Bearer Token、RFC 7662 Token Introspection、Host/Origin/大小/并发边界                                                                                                                               |
 
 工作流、Revision、Plan、Job 和 Asset 的高级能力依赖对应 SQLite aggregate cutover。全新目录默认先使用兼容文件仓库；执行本教程只保证基础工作流发现、动态执行、上传和 `job.get` 查询，不能把高级控制平面能力当作已自动启用。`job.list`（历史分页）只在 SQLite run cutover 后挂载。
 
@@ -64,6 +64,7 @@ MCP / HTTP / CLI adapters
 CLI 与 MCP 共用业务服务、ComfyUI Gateway 和持久化层；MCP handler 不启动 CLI 子进程。
 
 ## 快速安装
+
 `comfyui-mcp-skills` 1.1.0 已进入正式发布流程（渠道与流程见 docs/RELEASING.zh-CN.md；PyPI 可见前请从 GitHub 安装或使用源码运行）。
 
 ### 方式一：从 GitHub 安装
@@ -82,17 +83,17 @@ uv sync --locked --extra dev
 
 安装后主要入口：
 
-| 命令 | 用途 |
-|---|---|
-| `comfyui-mcp` | 本地 stdio MCP 服务 |
-| `comfyui-mcp-http` | Streamable HTTP 服务 |
-| `comfyui-mcp-admin` | 独立高风险管理面 |
-| `comfyui-mcp-maintain` | 保留策略与元数据清理 |
-| `comfyui-mcp-migration-dry-run` | 旧文件数据迁移演练 |
-| `comfyui-mcp-migrate` | 生产 aggregate 切换（需精确确认短语与备份） |
-| `comfyui-mcp-eval` | 工具选择 Eval 基线 |
-| `comfyui-mcp-eval-deepseek` | 使用 OMP 配置的 `deepseek-v4-flash` 的 Eval |
-| `comfyui-skill` | 兼容原 CLI |
+| 命令                            | 用途                                        |
+| ------------------------------- | ------------------------------------------- |
+| `comfyui-mcp`                   | 本地 stdio MCP 服务                         |
+| `comfyui-mcp-http`              | Streamable HTTP 服务                        |
+| `comfyui-mcp-admin`             | 独立高风险管理面                            |
+| `comfyui-mcp-maintain`          | 保留策略与元数据清理                        |
+| `comfyui-mcp-migration-dry-run` | 旧文件数据迁移演练                          |
+| `comfyui-mcp-migrate`           | 生产 aggregate 切换（需精确确认短语与备份） |
+| `comfyui-mcp-eval`              | 工具选择 Eval 基线                          |
+| `comfyui-mcp-eval-deepseek`     | 使用 OMP 配置的 `deepseek-v4-flash` 的 Eval |
+| `comfyui-skill`                 | 兼容原 CLI                                  |
 
 ## 最小项目配置
 
@@ -248,6 +249,7 @@ uv build
 ## 项目状态与边界
 
 已实现可靠执行、版本化工作流（含高层 recipe：upscale_image/save_image/lora_model/controlnet_apply.v1）、资产血缘、Experiment、诊断恢复、供应编排、多服务器路由、显式运行时控制（审批式重启闭环 + systemd/Docker/Windows Service 控制器）、RFC 7662 introspection、审计闭环（append-only 事件 + 有界导出）与可选 OpenTelemetry traces/metrics/logs（工具调用 span、计数与耗时直方图、`logging` 记录导出到 `/v1/logs`，`COMFYUI_MCP_OTEL_ENDPOINT` base URL 配置，`otel` extra 安装，见[安装文档](docs/INSTALLATION.zh-CN.md)第 11 章）。workflow aggregate cutover 后，file-backed 的 `comfyui.admin.workflow.set_enabled`/`delete` 不再挂载（审计工具仍可用）。以下能力尚未作为正式产品能力交付：
+
 - Redis/NATS 多副本订阅总线。
 - 多主机共享租约与跨主机配额（SQLite 共享限流仅限同主机多进程）。
 - Dependency Provisioning 需要维护者提供 `dependency-catalog.json`，否则只可检查而不能解析安装来源。
@@ -259,8 +261,16 @@ uv build
 以下能力直接 proxy 引擎公共 API，不依赖控制平面存储：`queue.list`→`/queue`、`server.health`→`/system_stats`、`node.list/describe`→`/object_info`、`model.list`→`/models`、`template.list`/`subgraph.list`→`/userdata`、动态 `run_*`→`/prompt`、`asset.upload`→`/upload`。执行记录（`job.*`、幂等、Artifact 聚合、诊断/重试 lineage）是持久执行层而非引擎历史缓存——引擎 `/history` 只保留运行中/近期记录且引擎重启即失，因此 `job.list` 不退化为引擎历史 proxy。`comfyui.local.plugins`（本地会话）从 server 条目配置的 `local_root` 读取 custom_nodes 插件清单（双布局兼容 aki 的 `ComfyUI/custom_nodes` 与标准 `custom_nodes`，有界扫描 + reparse/symlink 拒绝 + TOCTOU 复核）；云端/未配置会话返回 `available:false` 固定原因码。aki 等第三方整合包接入示例：
 
 ```json
-{"servers": [{"id": "aki", "name": "Aki ComfyUI", "url": "http://127.0.0.1:8188",
-              "local_root": "D:\\ConfyUI-aki\\ComfyUI-aki-v1.6"}]}
+{
+  "servers": [
+    {
+      "id": "aki",
+      "name": "Aki ComfyUI",
+      "url": "http://127.0.0.1:8188",
+      "local_root": "D:\\ConfyUI-aki\\ComfyUI-aki-v1.6"
+    }
+  ]
+}
 ```
 
 本地 vs 云端节点信息策略：本地会话 = `local.plugins`（插件级能力）+ `node.blueprint/list/describe`（API 节点级）；云端会话 = 仅 API 节点级（`local.plugins` 明确降级）。`comfyui.workflow.visualize`：已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite Workflow store 门控）；`revision.diff` 输出含 mermaid 视图（added 节点高亮），`change.plan` 的 diff 不含。`comfyui.model.guidance`：社区共识的模型家族采样器/调度器/steps/CFG/分辨率起点（9 个家族，静态数据，非引擎保证）。`comfyui.job.history.suggest`：基于本地运行历史的证据驱动参数建议（SQLite run store 门控、256 截断、仅本 principal 面可见）。本地查看跑图历史的最短路径是直接查询引擎 `GET /history`，或使用 CLI `history` 命令读取本地 `data/` 目录；独立的只读引擎历史工具 `comfyui.engine.history` 已交付（扁平投影 prompt_id/status/outputs_count，8 MiB 有界解码，limit ≤50），避免污染 `job.list` 的 owner-bound 持久记录契约。控制平面按装配分层初始化：fresh 数据目录（无 `data/control-plane.sqlite3`）走轻量路径不建控制平面数据库，既有数据库完整初始化与升级；分层说明与本地 5 分钟上手见[轻量引导文档](docs/LIGHTWEIGHT.zh-CN.md)。

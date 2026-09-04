@@ -144,12 +144,12 @@ comfyui.run.<server>.<workflow>
 
 ### 3.2 显式授权面
 
-| Toolset | 配置要求 | 能力范围 |
-|---|---|---|
-| `execution` | 默认 `comfyui:execute` | 执行、Job、Asset、Experiment、Routing |
-| `authoring` | `comfyui:observe,comfyui:author` + 高风险开关 | Workflow、Revision、diff、依赖检查 |
-| `operations` | `comfyui:observe,comfyui:operate` + 高风险开关 | Server、Queue、Log、Runtime |
-| `admin` | `comfyui:observe,comfyui:configure,comfyui:provision,comfyui:audit` + 独立 Admin | 配置、供应、审批、审计、节点/模型/插件只读目录 |
+| Toolset      | 配置要求                                                                         | 能力范围                                       |
+| ------------ | -------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `execution`  | 默认 `comfyui:execute`                                                           | 执行、Job、Asset、Experiment、Routing          |
+| `authoring`  | `comfyui:observe,comfyui:author` + 高风险开关                                    | Workflow、Revision、diff、依赖检查             |
+| `operations` | `comfyui:observe,comfyui:operate` + 高风险开关                                   | Server、Queue、Log、Runtime                    |
+| `admin`      | `comfyui:observe,comfyui:configure,comfyui:provision,comfyui:audit` + 独立 Admin | 配置、供应、审批、审计、节点/模型/插件只读目录 |
 
 授权不等于存储切换。没有对应 SQLite cutover 时，工具可能不出现在工具面，或明确返回 backend unavailable。
 
@@ -169,26 +169,26 @@ Canonical URI 与旧兼容 URI 都由当前 MCP Resource handler 投影；高级
 
 下表表示代码中已有实现，不表示新项目默认已经切换或每个 Agent 都能看到：
 
-| 能力 | 实现条件 |
-|---|---|
-| Job list、Queue、Log、Template、Subgraph | `job.list` 属 Execution Toolset 且需 G1 run SQLite cutover（文件仓库下不挂载）；Queue/Log/Template/Subgraph 属 Operations Toolset |
-| Workflow describe、Revision、diff、依赖检查 | Authoring Toolset + G3 Workflow SQLite cutover |
-| Asset/Artifact/Lineage | Execution Toolset + G1 Asset/Job 与相关 Artifact cutover |
-| Plan、Route、Experiment、Diagnostic、Retry | Execution Toolset + 对应 SQLite aggregate cutover |
-| Server/Config/Dependency/Provisioning | 独立 Admin + 配置、来源白名单和依赖 catalog |
-| Runtime queue/remove/clear/interrupt + restart plan/approve/commit/get | Operations Toolset；重启执行闭环已交付（SQLite run store 门控；文件后端 plan 只读预览） |
+| 能力                                                                   | 实现条件                                                                                                                          |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Job list、Queue、Log、Template、Subgraph                               | `job.list` 属 Execution Toolset 且需 G1 run SQLite cutover（文件仓库下不挂载）；Queue/Log/Template/Subgraph 属 Operations Toolset |
+| Workflow describe、Revision、diff、依赖检查                            | Authoring Toolset + G3 Workflow SQLite cutover                                                                                    |
+| Asset/Artifact/Lineage                                                 | Execution Toolset + G1 Asset/Job 与相关 Artifact cutover                                                                          |
+| Plan、Route、Experiment、Diagnostic、Retry                             | Execution Toolset + 对应 SQLite aggregate cutover                                                                                 |
+| Server/Config/Dependency/Provisioning                                  | 独立 Admin + 配置、来源白名单和依赖 catalog                                                                                       |
+| Runtime queue/remove/clear/interrupt + restart plan/approve/commit/get | Operations Toolset；重启执行闭环已交付（SQLite run store 门控；文件后端 plan 只读预览）                                           |
 
 ### 4.2 尚未交付
 
 以下不是当前可用功能：
 
-| 能力 | 状态 |
-|---|---|
-| Redis/NATS 多副本订阅与事件 fan-out | 未交付 |
-| 跨主机共享租约与全局配额（同主机 SQLite 共享限流已可用） | 未交付 |
-| MCP Tasks 扩展映射 | 未交付 |
-| MCP Elicitation 审批 | 未交付 |
-| MCP App 完整界面 | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
+| 能力                                                     | 状态                                           |
+| -------------------------------------------------------- | ---------------------------------------------- |
+| Redis/NATS 多副本订阅与事件 fan-out                      | 未交付                                         |
+| 跨主机共享租约与全局配额（同主机 SQLite 共享限流已可用） | 未交付                                         |
+| MCP Tasks 扩展映射                                       | 未交付                                         |
+| MCP Elicitation 审批                                     | 未交付                                         |
+| MCP App 完整界面                                         | 已交付只读 Job 查看器；图库/实验对比 UI 未交付 |
 
 旧 CLI 尚未迁移的条目保留在后续路线中，不能按当前 MCP Tool 使用。
 
@@ -441,23 +441,23 @@ comfyui:observe
 
 新增工具：
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.workflow.list` | 按标签、媒体类型、节点、模型和发布状态搜索工作流 |
-| `comfyui.queue.list` | 查看运行中和等待中的 ComfyUI 队列 |
-| `comfyui.log.read` | 读取经过脱敏、限制行数的服务日志 |
-| `comfyui.template.list` | 分页列出工作流模板 |
-| `comfyui.template.subgraph.list` | 分页列出全局子图 |
-| `comfyui.workflow.dependencies.check` | 检查工作流所需节点和模型 |
-| `comfyui.model.describe` | 读取模型元数据、引用工作流、哈希和可用服务器 |
-| `comfyui.node.compatibility` | 检查节点端口、版本和替换关系 |
-| `comfyui.server.capabilities` | 探测可选 API、Manager 和版本能力 |
-| `comfyui.engine.history` | 只读引擎历史（8 MiB 有界 + 扁平投影） |
-| `comfyui.node.blueprint` | 目标驱动节点投影（≤10 节点 × ≤8 字段 + 枚举） |
-| `comfyui.model.guidance` | 模型家族静态起点（sampler/steps/CFG/resolution） |
-| `comfyui.job.history.suggest` | 本地运行历史证据建议（SQLite run store 门控） |
-| `comfyui.workflow.visualize` | 已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite 门控） |
-| `comfyui.local.plugins` | 本地 custom_nodes 插件清单（server 条目 `local_root`；云端降级 `available:false`） |
+| Tool                                  | 用途                                                                               |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| `comfyui.workflow.list`               | 按标签、媒体类型、节点、模型和发布状态搜索工作流                                   |
+| `comfyui.queue.list`                  | 查看运行中和等待中的 ComfyUI 队列                                                  |
+| `comfyui.log.read`                    | 读取经过脱敏、限制行数的服务日志                                                   |
+| `comfyui.template.list`               | 分页列出工作流模板                                                                 |
+| `comfyui.template.subgraph.list`      | 分页列出全局子图                                                                   |
+| `comfyui.workflow.dependencies.check` | 检查工作流所需节点和模型                                                           |
+| `comfyui.model.describe`              | 读取模型元数据、引用工作流、哈希和可用服务器                                       |
+| `comfyui.node.compatibility`          | 检查节点端口、版本和替换关系                                                       |
+| `comfyui.server.capabilities`         | 探测可选 API、Manager 和版本能力                                                   |
+| `comfyui.engine.history`              | 只读引擎历史（8 MiB 有界 + 扁平投影）                                              |
+| `comfyui.node.blueprint`              | 目标驱动节点投影（≤10 节点 × ≤8 字段 + 枚举）                                      |
+| `comfyui.model.guidance`              | 模型家族静态起点（sampler/steps/CFG/resolution）                                   |
+| `comfyui.job.history.suggest`         | 本地运行历史证据建议（SQLite run store 门控）                                      |
+| `comfyui.workflow.visualize`          | 已发布工作流有界 Mermaid 渲染（≤50 节点，SQLite 门控）                             |
+| `comfyui.local.plugins`               | 本地 custom_nodes 插件清单（server 条目 `local_root`；云端降级 `available:false`） |
 
 > 未交付（设计蓝图表）：`comfyui.template.subgraph.list`、`comfyui.model.describe`、`comfyui.node.compatibility` 未实现。`comfyui.workflow.list` 已实现（分页 + `query`/`include_disabled` 过滤，`describe` 附加部署事实）。子图/节点/模型信息由 `comfyui.subgraph.list`、`comfyui.node.list/describe`、`comfyui.model.list` 提供。
 
@@ -478,12 +478,12 @@ comfyui:operate
 
 新增工具：
 
-| Tool | 用途 | 风险控制 |
-|---|---|---|
-| `comfyui.server.free` | 卸载模型、释放显存 | 参数必须至少选择一项（已实现：intent-first 审计 + `request_id` 幂等，`free_output` 返回审计状态） |
-| `comfyui.queue.remove` | 删除指定排队任务 | 验证所有权或管理员权限 |
-| `comfyui.queue.clear` | 清空等待队列 | `dry_run` + 精确确认 + 审计 |
-| `comfyui.server.interrupt` | 调用全局 `/interrupt` | 明确标记为全局操作，禁止伪装成单 Job 取消 |
+| Tool                       | 用途                  | 风险控制                                                                                          |
+| -------------------------- | --------------------- | ------------------------------------------------------------------------------------------------- |
+| `comfyui.server.free`      | 卸载模型、释放显存    | 参数必须至少选择一项（已实现：intent-first 审计 + `request_id` 幂等，`free_output` 返回审计状态） |
+| `comfyui.queue.remove`     | 删除指定排队任务      | 验证所有权或管理员权限                                                                            |
+| `comfyui.queue.clear`      | 清空等待队列          | `dry_run` + 精确确认 + 审计                                                                       |
+| `comfyui.server.interrupt` | 调用全局 `/interrupt` | 明确标记为全局操作，禁止伪装成单 Job 取消                                                         |
 
 若 Compatibility Matrix 探测到新版 ComfyUI 的 `/api/jobs/{upstream_job_id}/cancel`，`job.cancel` 可以使用其原子定向取消语义；否则运行中 Job 返回 `UNSAFE_CANCEL`，并在 `next_actions` 中指向需要 `comfyui:operate`、影响预览和审批的 `comfyui.server.interrupt`。旧 `/interrupt` 始终是全局操作，不能根据一次 404 静默降级调用。
 
@@ -537,11 +537,11 @@ comfyui:author
 
 补充工具：
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.admin.workflow.set_enabled` | 已实现；**workflow aggregate cutover 后隐藏**（file-backed 仓库被封存，工具不再挂载，调用返回不可用） |
-| `comfyui.admin.workflow.delete` | 已实现；**workflow aggregate cutover 后隐藏**（同上） |
-| `comfyui.admin.workflow.validate` | 验证 workflow、schema、节点和模型，不执行（已实现：图校验 + 语义校验 + 参数目标校验 + 缺失模型清单，库存不可读时如实报告 `is_ready=false`） |
+| Tool                                 | 用途                                                                                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `comfyui.admin.workflow.set_enabled` | 已实现；**workflow aggregate cutover 后隐藏**（file-backed 仓库被封存，工具不再挂载，调用返回不可用）                                       |
+| `comfyui.admin.workflow.delete`      | 已实现；**workflow aggregate cutover 后隐藏**（同上）                                                                                       |
+| `comfyui.admin.workflow.validate`    | 验证 workflow、schema、节点和模型，不执行（已实现：图校验 + 语义校验 + 参数目标校验 + 缺失模型清单，库存不可读时如实报告 `is_ready=false`） |
 
 不建议提供一个带任意 `action` 字符串的万能 `workflow.manage`。导入、图变更和删除的风险及输入契约不同，应保持独立。
 
@@ -551,14 +551,14 @@ comfyui:author
 
 > Admin 面还挂载只读目录工具（`comfyui:observe` 可见）：`comfyui.node.list`、`comfyui.node.describe`、`comfyui.model.list`、`comfyui.local.plugins`——供改工作流时查询节点/模型/插件知识。
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.admin.server.upsert` | 新增或更新服务器配置 |
-| `comfyui.admin.server.set_enabled` | 启用或停用服务器 |
-| `comfyui.admin.server.set_default` | 设置默认服务器 |
-| `comfyui.admin.server.delete` | 删除服务器配置 |
-| `comfyui.admin.config.export` | 导出不含密钥的可迁移 Bundle |
-| `comfyui.admin.config.import` | 预览或导入 Bundle |
+| Tool                               | 用途                        |
+| ---------------------------------- | --------------------------- |
+| `comfyui.admin.server.upsert`      | 新增或更新服务器配置        |
+| `comfyui.admin.server.set_enabled` | 启用或停用服务器            |
+| `comfyui.admin.server.set_default` | 设置默认服务器              |
+| `comfyui.admin.server.delete`      | 删除服务器配置              |
+| `comfyui.admin.config.export`      | 导出不含密钥的可迁移 Bundle |
+| `comfyui.admin.config.import`      | 预览或导入 Bundle           |
 
 服务器配置要求：
 
@@ -587,11 +587,11 @@ comfyui:provision
 
 新增工具：
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.admin.dependency.plan` | 生成缺失节点和模型安装计划 |
-| `comfyui.admin.dependency.install` | 提交已确认的安装计划 |
-| `comfyui.admin.provisioning.get` | 查询持久化安装任务 |
+| Tool                                | 用途                              |
+| ----------------------------------- | --------------------------------- |
+| `comfyui.admin.dependency.plan`     | 生成缺失节点和模型安装计划        |
+| `comfyui.admin.dependency.install`  | 提交已确认的安装计划              |
+| `comfyui.admin.provisioning.get`    | 查询持久化安装任务                |
 | `comfyui.admin.provisioning.cancel` | 在 Manager 支持时取消未执行安装项 |
 
 安装不能直接接受未经约束的 Git URL 后立即执行。推荐两阶段协议：
@@ -613,23 +613,22 @@ comfyui:provision
 - 明确返回 `restart_required`，不自动执行任意宿主机重启命令。
 - 每个安装步骤写审计记录。
 
-
 ### 5.7 图与 Revision 工具
 
-图编辑采用“计划 → 提交”双阶段，不直接覆盖 workflow 文件。
+图编辑采用“计划 → 提交”双阶段，不直接覆盖 workflow 文件。2026-09-04 起 `change.plan`/`change.commit` 归属 AUTHORING Toolset（`comfyui:author`，工具名保持 `comfyui.admin.` 前缀不变），发布指针（publish/rollback）仍属 ADMIN。
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.workflow.describe` | 返回语义摘要、拓扑、参数、依赖和输出契约 |
-| `comfyui.admin.workflow.change.plan` | 解析领域图操作，返回 diff、验证结果和 plan digest；校验失败消息带 `node <id> field <field>` 定位 + describe hint（已知类带 class_type 指向 `comfyui.node.describe`，未知类指向 `comfyui.node.list`） |
-| `comfyui.admin.workflow.change.commit` | 提交未过期且 revision 未冲突的 change plan |
-| `comfyui.revision.list` | 分页列出 Revision |
-| `comfyui.revision.diff` | 返回两个 Revision 的结构化差异；输出含 mermaid 视图（added 节点高亮）；`change.plan` 的 diff 不含 mermaid |
-| `comfyui.admin.workflow.publish` | 将草稿 Revision 发布为动态 Tool 当前版本 |
-| `comfyui.admin.workflow.rollback` | 基于历史 Revision 创建新的回滚提交 |
-| `comfyui.workflow.visualize` | 已发布工作流有界 Mermaid 渲染（≤50 节点、节点别名防注入；SQLite workflow store 门控） |
-| `comfyui.workflow.preset.list` | 分页列出参数 preset 及继承关系（未交付） |
-| `comfyui.admin.workflow.preset.upsert` | 创建或更新版本化 preset（未交付；preset 固化经 `experiment.variant.promote` 交付） |
+| Tool                                   | 用途                                                                                                                                                                                                              |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `comfyui.workflow.describe`            | 返回语义摘要、拓扑、参数、依赖和输出契约                                                                                                                                                                          |
+| `comfyui.admin.workflow.change.plan`   | （AUTHORING）解析领域图操作，返回 diff、验证结果和 plan digest；校验失败消息带 `node <id> field <field>` 定位 + describe hint（已知类带 class_type 指向 `comfyui.node.describe`，未知类指向 `comfyui.node.list`） |
+| `comfyui.admin.workflow.change.commit` | （AUTHORING）提交未过期且 revision 未冲突的 change plan                                                                                                                                                           |
+| `comfyui.revision.list`                | 分页列出 Revision                                                                                                                                                                                                 |
+| `comfyui.revision.diff`                | 返回两个 Revision 的结构化差异；输出含 mermaid 视图（added 节点高亮）；`change.plan` 的 diff 不含 mermaid                                                                                                         |
+| `comfyui.admin.workflow.publish`       | 将草稿 Revision 发布为动态 Tool 当前版本                                                                                                                                                                          |
+| `comfyui.admin.workflow.rollback`      | 基于历史 Revision 创建新的回滚提交                                                                                                                                                                                |
+| `comfyui.workflow.visualize`           | 已发布工作流有界 Mermaid 渲染（≤50 节点、节点别名防注入；SQLite workflow store 门控）                                                                                                                             |
+| `comfyui.workflow.preset.list`         | 分页列出参数 preset 及继承关系（未交付）                                                                                                                                                                          |
+| `comfyui.admin.workflow.preset.upsert` | 创建或更新版本化 preset（未交付；preset 固化经 `experiment.variant.promote` 交付）                                                                                                                                |
 
 `change.plan` 输入示例：
 
@@ -689,11 +688,11 @@ set_metadata
 
 简单执行继续保留动态 `comfyui.run.*` 的单次调用体验（通用 `comfyui.workflow.execute` 未实现，不属于当前工具面）。该快速路径必须在服务端物化不可变 Execution Plan 并自动 commit：只有单服务器、低风险、依赖与 Policy 已通过且无需审批的计划才能自动提交。需要自动路由、审批、预算或批量时，显式使用计划型接口：
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.execution.plan` | 解析 Revision、参数、资产、策略和候选服务器 |
-| `comfyui.execution.commit` | 按 `plan_digest` 提交已经验证的执行计划 |
-| `comfyui.route.explain` | 解释候选服务器排序及排除原因 |
+| Tool                       | 用途                                        |
+| -------------------------- | ------------------------------------------- |
+| `comfyui.execution.plan`   | 解析 Revision、参数、资产、策略和候选服务器 |
+| `comfyui.execution.commit` | 按 `plan_digest` 提交已经验证的执行计划     |
+| `comfyui.route.explain`    | 解释候选服务器排序及排除原因                |
 
 `execution.plan` 返回至少包含：
 
@@ -727,15 +726,15 @@ set_metadata
 
 ### 5.9 Experiment 与批量执行工具
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.experiment.plan` | 规范化参数矩阵并计算 Variant 数量和预算 |
-| `comfyui.experiment.commit` | 提交已验证实验计划 |
-| `comfyui.experiment.get` | 查询实验汇总状态 |
-| `comfyui.experiment.cancel` | 停止提交新 Variant，并按策略处理已排队项 |
-| `comfyui.experiment.variant.list` | 分页读取 Variant 与关联 Job |
-| `comfyui.experiment.select` | 将选中 Variant 固化为 preset 或 Revision（未交付；实际为 `experiment.variant.promote`） |
-| `comfyui.experiment.variant.rate` | 回写外部 Agent 或人工评分，不由服务端隐藏调用 LLM |
+| Tool                              | 用途                                                                                    |
+| --------------------------------- | --------------------------------------------------------------------------------------- |
+| `comfyui.experiment.plan`         | 规范化参数矩阵并计算 Variant 数量和预算                                                 |
+| `comfyui.experiment.commit`       | 提交已验证实验计划                                                                      |
+| `comfyui.experiment.get`          | 查询实验汇总状态                                                                        |
+| `comfyui.experiment.cancel`       | 停止提交新 Variant，并按策略处理已排队项                                                |
+| `comfyui.experiment.variant.list` | 分页读取 Variant 与关联 Job                                                             |
+| `comfyui.experiment.select`       | 将选中 Variant 固化为 preset 或 Revision（未交付；实际为 `experiment.variant.promote`） |
+| `comfyui.experiment.variant.rate` | 回写外部 Agent 或人工评分，不由服务端隐藏调用 LLM                                       |
 
 失败策略必须是枚举：
 
@@ -751,15 +750,15 @@ Variant 评分必须记录 `rater_principal_id`、`rubric_id`、`rubric_revision
 
 ### 5.10 资产和 Artifact 工具
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.asset.list` | 分页筛选当前主体可见资产 |
-| `comfyui.asset.describe` | 读取媒体元数据、来源、引用和保留状态 |
-| `comfyui.asset.import_output` | 按消费节点和存储可达性选择 output 直引、服务端复制或下载上传，并保留血缘 |
-| `comfyui.asset.metadata.extract` | 解析 PNG 等媒体中的工作流和生成信息 |
-| `comfyui.asset.collection.update` | 管理标签和集合成员关系 |
-| `comfyui.asset.delete.plan` | 返回引用、血缘和删除影响 |
-| `comfyui.asset.delete.commit` | 提交通过摘要绑定的删除计划 |
+| Tool                              | 用途                                                                     |
+| --------------------------------- | ------------------------------------------------------------------------ |
+| `comfyui.asset.list`              | 分页筛选当前主体可见资产                                                 |
+| `comfyui.asset.describe`          | 读取媒体元数据、来源、引用和保留状态                                     |
+| `comfyui.asset.import_output`     | 按消费节点和存储可达性选择 output 直引、服务端复制或下载上传，并保留血缘 |
+| `comfyui.asset.metadata.extract`  | 解析 PNG 等媒体中的工作流和生成信息                                      |
+| `comfyui.asset.collection.update` | 管理标签和集合成员关系                                                   |
+| `comfyui.asset.delete.plan`       | 返回引用、血缘和删除影响                                                 |
+| `comfyui.asset.delete.commit`     | 提交通过摘要绑定的删除计划                                               |
 
 跨服务器资产复制使用独立 transfer plan：
 
@@ -773,12 +772,12 @@ comfyui.asset.transfer.get
 
 ### 5.11 诊断和恢复工具
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.job.diagnose` | 生成结构化 Diagnostic Report |
-| `comfyui.job.retry.plan` | 基于原 Job 创建可审查的重试或修复计划 |
-| `comfyui.job.retry.commit` | 按摘要提交重试，记录 `retry_of` |
-| `comfyui.server.diagnose` | 汇总健康、队列、节点加载、Manager 和日志异常 |
+| Tool                       | 用途                                         |
+| -------------------------- | -------------------------------------------- |
+| `comfyui.job.diagnose`     | 生成结构化 Diagnostic Report                 |
+| `comfyui.job.retry.plan`   | 基于原 Job 创建可审查的重试或修复计划        |
+| `comfyui.job.retry.commit` | 按摘要提交重试，记录 `retry_of`              |
+| `comfyui.server.diagnose`  | 汇总健康、队列、节点加载、Manager 和日志异常 |
 
 稳定诊断代码至少覆盖：
 
@@ -801,13 +800,13 @@ POLICY_DENIED
 
 ### 5.12 Policy 与 Approval 工具
 
-| Tool | 用途 |
-|---|---|
-| `comfyui.policy.evaluate` | 在不执行的情况下评估计划或操作 |
-| `comfyui.policy.describe` | 读取当前主体的有效限制，不泄露其他主体策略（未交付） |
-| `comfyui.admin.policy.upsert` | 创建或更新版本化 Policy（未交付） |
-| `comfyui.approval.get` | 查询审批状态（实际为 Admin 面 `comfyui.admin.approval.get`） |
-| `comfyui.approval.cancel` | 撤销未使用审批（未交付） |
+| Tool                          | 用途                                                         |
+| ----------------------------- | ------------------------------------------------------------ |
+| `comfyui.policy.evaluate`     | 在不执行的情况下评估计划或操作                               |
+| `comfyui.policy.describe`     | 读取当前主体的有效限制，不泄露其他主体策略（未交付）         |
+| `comfyui.admin.policy.upsert` | 创建或更新版本化 Policy（未交付）                            |
+| `comfyui.approval.get`        | 查询审批状态（实际为 Admin 面 `comfyui.admin.approval.get`） |
+| `comfyui.approval.cancel`     | 撤销未使用审批（未交付）                                     |
 
 审批对象必须绑定：
 
@@ -824,12 +823,12 @@ POLICY_DENIED
 
 超级增强不等于让每个 Agent 同时看到几十个工具。MCP `2026-07-28` 已取消协议级会话，`tools/list` 不得因连接内 profile、session pin 或先前 Tool 调用而变化；它可以按每次请求携带的授权上下文过滤，也可以因底层发布目录真实变化发送 `tools/list_changed`。
 
-| 部署 Toolset | 主要工具 | 单端点活动面目标 |
-|---|---|---|
-| Execute | 动态 run、Job、Asset、Execution Plan（`workflow.execute` 未实现） | 固定工具 ≤ 硬上限 32（`HARD_FIXED_LIMIT`）；动态工作流默认 8 个，可配置 1–128 |
-| Observe/Ops | Queue、Log、Diagnostic、Runtime、节点感知/建议工具 | base surface ≤ 25（预算测试断言）；全量装配 29–30；固定工具默认预算 `DEFAULT_FIXED_LIMIT=24`、硬上限 `HARD_FIXED_LIMIT=32` |
-| Authoring | Workflow、Graph、Revision、Template | 8–16 个 |
-| Admin/Provision | Server、Config、Dependency、Policy、Audit | 8–16 个 |
+| 部署 Toolset    | 主要工具                                                          | 单端点活动面目标                                                                                                           |
+| --------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| Execute         | 动态 run、Job、Asset、Execution Plan（`workflow.execute` 未实现） | 固定工具 ≤ 硬上限 32（`HARD_FIXED_LIMIT`）；动态工作流默认 8 个，可配置 1–128                                              |
+| Observe/Ops     | Queue、Log、Diagnostic、Runtime、节点感知/建议工具                | base surface ≤ 25（预算测试断言）；全量装配 29–30；固定工具默认预算 `DEFAULT_FIXED_LIMIT=24`、硬上限 `HARD_FIXED_LIMIT=32` |
+| Authoring       | Workflow、Graph、Revision、Template                               | 8–16 个                                                                                                                    |
+| Admin/Provision | Server、Config、Dependency、Policy、Audit                         | 8–16 个                                                                                                                    |
 
 活动面通过**独立逻辑 MCP 端点、启动配置和授权 scope** 固定，而不是在连接中切换。每个端点的 Tool 顺序保持确定，返回 `ttlMs` 和正确的 `cacheScope`，便于 Host 缓存和提高 prompt cache 命中率。
 
@@ -878,12 +877,12 @@ comfyui.capability.describe
 
 所有 Tool 使用同一元数据策略：
 
-| Tool 类型 | `readOnlyHint` | `destructiveHint` | `idempotentHint` | `openWorldHint` |
-|---|---:|---:|---:|---:|
-| list、get、describe 等纯读取 | `true` | `false` | 省略（只读时无意义） | 访问 ComfyUI/Manager 时 `true` |
-| diagnose、plan 等持久化本地对象 | `false` | `false` | 只有强制 `request_id` 并完成去重时为 `true` | 按网关访问情况 |
-| upsert、commit、rate 等非破坏写入 | `false` | `false` | 只有强制 `request_id` 并完成去重时为 `true` | 按网关访问情况 |
-| delete、clear、interrupt、install、restart | `false` | `true` | 仅在协议明确保证重复调用无额外副作用时为 `true` | `true` |
+| Tool 类型                                  | `readOnlyHint` | `destructiveHint` |                                `idempotentHint` |                `openWorldHint` |
+| ------------------------------------------ | -------------: | ----------------: | ----------------------------------------------: | -----------------------------: |
+| list、get、describe 等纯读取               |         `true` |           `false` |                            省略（只读时无意义） | 访问 ComfyUI/Manager 时 `true` |
+| diagnose、plan 等持久化本地对象            |        `false` |           `false` |     只有强制 `request_id` 并完成去重时为 `true` |                 按网关访问情况 |
+| upsert、commit、rate 等非破坏写入          |        `false` |           `false` |     只有强制 `request_id` 并完成去重时为 `true` |                 按网关访问情况 |
+| delete、clear、interrupt、install、restart |        `false` |            `true` | 仅在协议明确保证重复调用无额外副作用时为 `true` |                         `true` |
 
 标准 annotations 只是 Host 和模型可见的提示，不能替代 scope、Policy、Approval、摘要绑定或服务端校验。每个 Toolset 使用一致的项目图标族；图标来自项目自有静态资源或内嵌数据，不使用携带 Token 的 URL，也不因图标加载泄露私有 ComfyUI 地址。
 
@@ -943,15 +942,15 @@ Resource 设计规则：
 
 ### 7.1 建议 scopes
 
-| Scope | 能力 |
-|---|---|
-| `comfyui:execute` | 动态工作流、执行计划、自有 Job、Experiment 和基础资产上传 |
-| `comfyui:observe` | 队列、日志、模板、诊断、依赖报告和服务器能力 |
-| `comfyui:author` | 工作流草稿、图变更计划、Revision、preset 和 publish |
-| `comfyui:operate` | 显存释放、资产管理、队列删除和全局中断 |
-| `comfyui:configure` | 服务器、配置、Policy 和授权变更 |
-| `comfyui:provision` | 自定义节点、模型安装和运行时适配器 |
-| `comfyui:audit` | 跨请求审计读取、审批查询和审计重试 |
+| Scope               | 能力                                                      |
+| ------------------- | --------------------------------------------------------- |
+| `comfyui:execute`   | 动态工作流、执行计划、自有 Job、Experiment 和基础资产上传 |
+| `comfyui:observe`   | 队列、日志、模板、诊断、依赖报告和服务器能力              |
+| `comfyui:author`    | 工作流草稿、图变更计划、Revision、preset 和 publish       |
+| `comfyui:operate`   | 显存释放、资产管理、队列删除和全局中断                    |
+| `comfyui:configure` | 服务器、配置、Policy 和授权变更                           |
+| `comfyui:provision` | 自定义节点、模型安装和运行时适配器                        |
+| `comfyui:audit`     | 跨请求审计读取、审批查询和审计重试                        |
 
 不要将全部能力塞入 `comfyui:execute`。同一主体可以组合 scopes，但 Tool 列表、Resource 和订阅必须执行相同授权规则。
 
@@ -973,11 +972,11 @@ flowchart TD
     Core --> State[Revision Job Asset Policy Repositories]
 ```
 
-| Toolset 端点 | 默认状态 | 典型 scopes | 重点对象 |
-|---|---|---|---|
-| Execution MCP | 开启 | `execute` | Plan、Job、Experiment、Artifact |
-| Authoring MCP | 显式开启 | `observe`、`author` | Workflow、Graph、Revision、Preset |
-| Operations MCP | 显式开启 | `observe`、`operate` | Queue、Log、Diagnostic、Runtime |
+| Toolset 端点           | 默认状态 | 典型 scopes                       | 重点对象                             |
+| ---------------------- | -------- | --------------------------------- | ------------------------------------ |
+| Execution MCP          | 开启     | `execute`                         | Plan、Job、Experiment、Artifact      |
+| Authoring MCP          | 显式开启 | `observe`、`author`               | Workflow、Graph、Revision、Preset    |
+| Operations MCP         | 显式开启 | `observe`、`operate`              | Queue、Log、Diagnostic、Runtime      |
 | Admin/Provisioning MCP | 默认关闭 | `configure`、`provision`、`audit` | Server、Dependency、Policy、Approval |
 
 Agent 要完整管理时可同时注册多个隔离端点。当前 Streamable HTTP 只允许 Execution 与 Operations；Authoring 和 Admin/Provisioning 必须使用隔离的本地服务。远程端点必须分离高风险端口和 Token；`tools/list` 可按每次请求的授权 scope 过滤，但 Tool 调用和 Resource 读取仍需再次授权。
@@ -1064,7 +1063,6 @@ class RuntimeController(Protocol): ...
 5. **既有交互语义。** COMBO 摘要最多预览 8 项并返回 `total/options_resource`；deprecated 节点只报告 replacement，不自动改图；批量 `--from-server` 导入逐项隔离失败并返回完整结果集合。
 
 迁移完成前不得删除这些 CLI 常量、转换函数或测试。新实现与旧实现使用同一组 fixture 做差分验证，通过后再切换 CLI/MCP 调用方；写入路径同时改为 Revision 原子提交，不能继承旧 CLI 直接写两份 JSON 的方式。
-
 
 ### 8.5 核心领域对象关系
 
@@ -1267,6 +1265,7 @@ Published Revision + arguments + Asset URI
 - 排队 Job 用保存的 `upstream_prompt_id` 调用 `/queue` 定向删除；Capability Matrix 确认后才用 `upstream_job_id` 调用 `/api/jobs/{upstream_job_id}/cancel`。404 只表示该映射或端点结果，不得自动降级到 `/interrupt`，也不得判断整台服务器离线。其他版本的运行中 Job 没有可靠定向取消，`/interrupt`、清队列和 `/free` 必须走独立 Tool、影响预览、scope、Policy 和审计。
 
 ### 8.10 统计与估计边界
+
 路由和执行估计需要历史数据，但必须避免伪精确：
 
 - 统计维度至少包含 server、workflow revision、模型、尺寸、steps 和 batch。
@@ -1275,6 +1274,7 @@ Published Revision + arguments + Asset URI
 - OOM、取消和服务器离线样本不能混入成功耗时分布。
 - 原始 prompt 和敏感参数默认不进入跨主体聚合指标。
 - Agent 评分与系统测量分开存储，不能混成同一 quality 字段。
+
 ---
 
 ## 9. 一致性、安全和审计约束
@@ -1464,8 +1464,8 @@ Published Revision + arguments + Asset URI
 - Resource templates 可被 Host 发现，旧 Output 模板明确标记为 Artifact 兼容别名。
 
 ### 阶段 I：导入、语义图与依赖报告（P0）
-> 实施状态：2026-07-31 已完成。已交付 API/Editor 导入预览、不可变 Revision 提交、语义图分面 Resources、确定性参数角色、依赖报告与选择/导入 Prompt；图级修改与发布仍属于阶段 J。
 
+> 实施状态：2026-07-31 已完成。已交付 API/Editor 导入预览、不可变 Revision 提交、语义图分面 Resources、确定性参数角色、依赖报告与选择/导入 Prompt；图级修改与发布仍属于阶段 J。
 
 交付：
 
@@ -1495,13 +1495,13 @@ Published Revision + arguments + Asset URI
 - 旧转换 fixture 在新服务上结果等价；Reroute、connected widget 和 control marker 各有直接回归用例。
 
 ### 阶段 J：图级编辑、diff 与发布（P0）
-> 实施状态：2026-07-31 完成最小闭环；2026-08-06 补齐节点生命周期与 subgraph 提取/复用闭环。已交付十一种领域操作的 plan/commit（`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`、`insert_subgraph`、`extract_subgraph`、`apply_recipe`、边界化的 recipe 注册表）、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；高层分支 recipe（upscale_image/save_image/lora_model/controlnet_apply.v1）已交付（2026-08-09）。
 
+> 实施状态：2026-07-31 完成最小闭环；2026-08-06 补齐节点生命周期与 subgraph 提取/复用闭环。已交付十一种领域操作的 plan/commit（`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`、`insert_subgraph`、`extract_subgraph`、`apply_recipe`、边界化的 recipe 注册表）、结构化 Revision diff、原子 publish、幂等 rollback、动态 Tool schema 切换、Revision 订阅与稳定冲突错误；高层分支 recipe（upscale_image/save_image/lora_model/controlnet_apply.v1）已交付（2026-08-09）。2026-09-04 起 `change.plan`/`change.commit` 从 ADMIN 下放到 AUTHORING Toolset（`comfyui:author`，工具名保持不变），publish/rollback 仍留 ADMIN。
 
 交付：
 
-- `comfyui.admin.workflow.change.plan`
-- `comfyui.admin.workflow.change.commit`
+- `comfyui.admin.workflow.change.plan`（AUTHORING）
+- `comfyui.admin.workflow.change.commit`（AUTHORING）
 - Revision list、diff、publish 和 rollback
 - 领域操作：`set_input`、`connect`、`disconnect`、`expose_parameter`、`add_node`、`remove_node`、`replace_node`
 - 子图：`insert_subgraph` 支持显式 `nodes` 或按名引用已提取定义（`subgraph`），提取定义带边界端口契约（`boundary_inputs`/`boundary_outputs`），按名实例化断开外部引用并随 Revision 持久化
@@ -1520,8 +1520,8 @@ Published Revision + arguments + Asset URI
 - 提取的子图定义含边界契约，同一 plan 内或跨已发布 Revision 均可按名实例化；未提取名字与 `nodes`/`subgraph` 互斥违规在 plan 阶段被拒绝。
 
 ### 阶段 K：高级 Policy 与多服务器路由（P1）
-> 实施状态：2026-08-05 已完成当前切片。已交付多 Deployment 候选解析、确定性路由、Policy evaluate、`execution.plan/commit`、`route.explain`、摘要绑定幂等提交、调用方锁定 Server、槽位与 submission window 约束；高级历史耗时估计仍保持显式不可用，不伪造样本。
 
+> 实施状态：2026-08-05 已完成当前切片。已交付多 Deployment 候选解析、确定性路由、Policy evaluate、`execution.plan/commit`、`route.explain`、摘要绑定幂等提交、调用方锁定 Server、槽位与 submission window 约束；高级历史耗时估计仍保持显式不可用，不伪造样本。
 
 阶段 G4 已交付单服务器最小 `ExecutionPlanningService`，并保证切换后的新 Job 具有非空 `plan_id`。本阶段只扩展计划能力，不再次迁移 Job 基本形态；可空 `plan_id` 的两个来源——`legacy_migrated=true` 的历史兼容记录与未装配 planning 服务的局部迁移态——都保持可解释。
 
@@ -1547,6 +1547,7 @@ Published Revision + arguments + Asset URI
 - 单个 ComfyUI Core 实例默认一个执行槽；路由并发不超过候选服务器槽位总和，预排队使用独立 `submission_window`。
 
 ### 阶段 L：资产库、Artifact 与血缘（P1）
+
 > 实施状态：2026-07-31 已完成。已交付 owner-bound Asset/Artifact 资产库、原子 Job→Artifact 收集、规范化输入与输出血缘、受内容事实约束的 transfer/import plan/commit、固定 direct reuse 兼容注册表、PNG metadata 恢复、删除影响重检，以及 SQLite 保留/归档/清理闭环。
 
 交付：
@@ -1573,8 +1574,8 @@ Published Revision + arguments + Asset URI
 - history 仅返回 `video` 键时也能生成类型、MIME 和 Resource URI 正确的 Artifact。
 
 ### 阶段 M：Experiment、批量与参数扫描（P1）
-> 实施状态：2026-08-03 已完成。已交付持久化 Experiment 计划、批量 Variant、预算与执行槽控制、worker 恢复、评分、preset/Revision 固化及 MCP 投影。
 
+> 实施状态：2026-08-03 已完成。已交付持久化 Experiment 计划、批量 Variant、预算与执行槽控制、worker 恢复、评分、preset/Revision 固化及 MCP 投影。
 
 交付：
 
@@ -1600,8 +1601,8 @@ Published Revision + arguments + Asset URI
 - ComfyUI 重启导致 Variant Job `lost` 时停止该 Variant 自动推进；只有失败策略和显式 retry plan 允许创建新 Job。
 
 ### 阶段 N：结构化诊断与安全恢复（P1）
-> 实施状态：2026-08-03 已完成。已交付结构化 Job/Server 诊断、持久化修复计划、受 pin 约束的安全重试、稳定规则注册表及 MCP Prompt/Resources。
 
+> 实施状态：2026-08-03 已完成。已交付结构化 Job/Server 诊断、持久化修复计划、受 pin 约束的安全重试、稳定规则注册表及 MCP Prompt/Resources。
 
 交付：
 
@@ -1625,8 +1626,8 @@ Published Revision + arguments + Asset URI
 - Diagnostic 结果不包含 `comfyui-skill ...` 文本指令，而是可执行的 Tool 名、参数要求和风险分类。
 
 ### 阶段 O：服务器、配置与依赖供应链（P1/P2）
-> 实施状态：2026-08-03 已完成。已交付 owner-bound Server/Config/Workflow 状态、依赖计划与审批、版本化 Manager secure-fetch 契约、Provisioning worker 恢复和 Resource 订阅。
 
+> 实施状态：2026-08-03 已完成。已交付 owner-bound Server/Config/Workflow 状态、依赖计划与审批、版本化 Manager secure-fetch 契约、Provisioning worker 恢复和 Resource 订阅。
 
 先完成只读检查和 dry-run，再开放写入和安装。
 
@@ -1652,8 +1653,8 @@ Published Revision + arguments + Asset URI
 - SSRF、恶意重定向、浮动 Git 来源、超大模型和未知校验和都有拒绝策略。
 
 ### 阶段 P：高级运行时控制与宿主适配器（P2）
-> 实施状态：2026-08-06 完成当前切片（owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界）；2026-08-08 补齐重启执行闭环（持久化影响快照、单次审批、drain/fence 原子协调与 `runtime.restart.approve/commit/get`，SQLite run store 门控）与 Windows Service 适配器。适配器三平台齐备（systemd/Docker/Windows Service），执行复用审批闭环。文件后端 `restart.plan` 保持只读预览。
 
+> 实施状态：2026-08-06 完成当前切片（owner-safe `queue.remove`、影响预览后的 `queue.clear`、显式全局 `server.interrupt`、`runtime.restart.plan`、重启后 Job 对账边界）；2026-08-08 补齐重启执行闭环（持久化影响快照、单次审批、drain/fence 原子协调与 `runtime.restart.approve/commit/get`，SQLite run store 门控）与 Windows Service 适配器。适配器三平台齐备（systemd/Docker/Windows Service），执行复用审批闭环。文件后端 `restart.plan` 保持只读预览。
 
 交付：
 
@@ -1673,8 +1674,8 @@ Published Revision + arguments + Asset URI
 - 重启后 JobReconciler 能把上游状态消失的非终态 Job 标记为 `lost`；不会误报完成，也不会自动重复提交。
 
 ### 阶段 Q：MCP 原生交互与生产加固（P2）
-> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，OTLP HTTP 导出）；OpenTelemetry traces/metrics/logs 均已交付（logs：OTLP /v1/logs、CONTEXT_FIELDS 白名单、防导出循环）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks 与 Elicitation 仍未交付。
 
+> 实施状态：2026-08-06 已完成当前后端加固切片。已交付 Prompt/Resource 参数补全、Resources/Prompts/订阅、portable 工具名、RFC 7662 Token Introspection、owner-bound HTTP 边界、保留策略、同主机多 worker SQLite 共享限流、MCP Apps 只读 Job 查看器、审计导出与可选 OpenTelemetry traces/metrics（工具调用 span、计数与耗时直方图，OTLP HTTP 导出）；OpenTelemetry traces/metrics/logs 均已交付（logs：OTLP /v1/logs、CONTEXT_FIELDS 白名单、防导出循环）；Redis/NATS 多副本总线、跨主机租约、MCP Tasks 与 Elicitation 仍未交付。
 
 已交付：
 
@@ -1726,10 +1727,10 @@ Published Revision + arguments + Asset URI
 ### 场景 3：图级修改与安全发布
 
 1. Agent 在现有 Revision 上添加 LoRA 或 Upscaler 分支。
-2. `change.plan` 返回结构化 diff、依赖变化和风险。
+2. `change.plan`（AUTHORING）返回结构化 diff、依赖变化和风险。
 3. 非法端口连接在提交前被拒绝。
-4. `change.commit` 产生 Draft Revision。
-5. 验证通过后 publish，动态 Tool schema 自动更新。
+4. `change.commit`（AUTHORING）产生 Draft Revision。
+5. 验证通过后 publish（ADMIN），动态 Tool schema 自动更新。
 6. 运行中的旧 Job 不受新 Revision 影响。
 
 ### 场景 4：执行计划与跨服务器路由
@@ -1875,6 +1876,8 @@ comfyui.execution.plan
 comfyui.execution.commit
 ```
 
+> 注：2026-09-04 起 `change.plan`/`change.commit` 归属 AUTHORING Toolset（`comfyui:author`）；上表仅列工具名，授权面以正文 5.7 节为准。
+
 对应 Resources：
 
 ```text
@@ -1926,35 +1929,35 @@ not_started | in_progress | implemented | verified | deferred
 
 ### 14.2 绿色能力
 
-| 能力 | 可行性依据 | 实现约束 |
-|---|---|---|
-| Job、History、Queue、Log、Free | ComfyUI 已提供对应 HTTP API | 所有权、脱敏、分页和全局影响控制 |
-| Workflow 导入和 API 格式校验 | 旧 CLI 已有实现 | 逻辑下沉到 Application Service |
-| Revision、diff、publish、rollback | 项目自身可持久化 | 不可变 Revision、原子写入、并发控制 |
-| `set_input`、connect、disconnect | workflow graph 是结构化 JSON | 必须查询节点端口和类型 |
-| Experiment 与参数矩阵 | 可编排现有执行服务 | Variant 上限、预算、幂等和恢复 |
-| Asset、Artifact 和同服务器复用 | 已有上传、输出 Resource 和所有者模型 | 引用计数、保留和血缘持久化 |
-| Policy、plan/commit、Approval | 属于本项目应用层 | 摘要绑定、过期和一次性使用 |
-| 结构化 Diagnostic 基础分类 | Job、history、事件和日志已有数据 | 只输出有证据支持的分类 |
-| 固定 Toolset、scope 过滤 | MCP `tools/list` 可按每次请求的授权上下文过滤；独立端点可固定工具面 | 禁止连接内 Toolset 切换；调用和 Resource 权限必须再次校验 |
-| MCP Prompts、`subscriptions/listen` 与 Resource refetch | 协议和 SDK 已支持核心能力 | Subscription 不重放；客户端支持不一致，必须提供查询降级 |
+| 能力                                                    | 可行性依据                                                          | 实现约束                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------------------- |
+| Job、History、Queue、Log、Free                          | ComfyUI 已提供对应 HTTP API                                         | 所有权、脱敏、分页和全局影响控制                          |
+| Workflow 导入和 API 格式校验                            | 旧 CLI 已有实现                                                     | 逻辑下沉到 Application Service                            |
+| Revision、diff、publish、rollback                       | 项目自身可持久化                                                    | 不可变 Revision、原子写入、并发控制                       |
+| `set_input`、connect、disconnect                        | workflow graph 是结构化 JSON                                        | 必须查询节点端口和类型                                    |
+| Experiment 与参数矩阵                                   | 可编排现有执行服务                                                  | Variant 上限、预算、幂等和恢复                            |
+| Asset、Artifact 和同服务器复用                          | 已有上传、输出 Resource 和所有者模型                                | 引用计数、保留和血缘持久化                                |
+| Policy、plan/commit、Approval                           | 属于本项目应用层                                                    | 摘要绑定、过期和一次性使用                                |
+| 结构化 Diagnostic 基础分类                              | Job、history、事件和日志已有数据                                    | 只输出有证据支持的分类                                    |
+| 固定 Toolset、scope 过滤                                | MCP `tools/list` 可按每次请求的授权上下文过滤；独立端点可固定工具面 | 禁止连接内 Toolset 切换；调用和 Resource 权限必须再次校验 |
+| MCP Prompts、`subscriptions/listen` 与 Resource refetch | 协议和 SDK 已支持核心能力                                           | Subscription 不重放；客户端支持不一致，必须提供查询降级   |
 
 ### 14.3 黄色能力
 
-| 能力 | 主要难点 | 正确降级方式 |
-|---|---|---|
-| Editor → API 通用转换 | 自定义节点、前端 widget 和版本差异 | 返回 unsupported nodes，不静默丢字段 |
-| 节点角色语义识别 | `class_type` 没有统一业务角色标准 | 返回 `source` 与 `confidence`，允许 registry 覆盖 |
-| 高层 `insert_role` recipe | 不同模型家族拓扑不同 | 只开放版本化、测试过的 recipe |
-| 自动 schema 生成 | 默认值和控件语义可能不完整 | 生成 Draft schema，发布前验证或人工确认 |
-| 多服务器自动路由 | 模型、节点、资产和负载状态会变化 | Plan 短 TTL；commit 前重新校验但不静默改选 |
-| 历史耗时和显存估计 | 样本稀疏，工作流差异大 | 只返回统计分布、样本数和置信信息 |
-| 跨服务器 Asset transfer | 需要下载、上传、存储和网络策略 | 显式 transfer plan；不称为零复制 |
-| 依赖自动解析 | 缺失节点不一定能唯一映射仓库 | 不能解析就报告，不猜 repo |
-| 自定义节点和模型安装 | 供应链、重启和 Manager 版本差异 | 版本化来源允许列表、固定版本、审批、Provisioning Job |
-| ComfyUI 进程启停重启 | 部署方式跨平台且不属于标准 API | 可选 RuntimeController，无适配器时只报告需求 |
-| MRTR Elicitation 审批 | MCP Host 支持程度不同 | 持久化 Approval Resource 作为通用后备 |
-| MCP Tasks | `io.modelcontextprotocol/tasks` 是可选扩展；当前 Python SDK 2.0.0 有扩展挂载点但未提供新版 Tasks 完整服务实现 | 领域 Job 与 Orchestrator 为真相；Tasks 仅作可选投影 |
+| 能力                      | 主要难点                                                                                                      | 正确降级方式                                         |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| Editor → API 通用转换     | 自定义节点、前端 widget 和版本差异                                                                            | 返回 unsupported nodes，不静默丢字段                 |
+| 节点角色语义识别          | `class_type` 没有统一业务角色标准                                                                             | 返回 `source` 与 `confidence`，允许 registry 覆盖    |
+| 高层 `insert_role` recipe | 不同模型家族拓扑不同                                                                                          | 只开放版本化、测试过的 recipe                        |
+| 自动 schema 生成          | 默认值和控件语义可能不完整                                                                                    | 生成 Draft schema，发布前验证或人工确认              |
+| 多服务器自动路由          | 模型、节点、资产和负载状态会变化                                                                              | Plan 短 TTL；commit 前重新校验但不静默改选           |
+| 历史耗时和显存估计        | 样本稀疏，工作流差异大                                                                                        | 只返回统计分布、样本数和置信信息                     |
+| 跨服务器 Asset transfer   | 需要下载、上传、存储和网络策略                                                                                | 显式 transfer plan；不称为零复制                     |
+| 依赖自动解析              | 缺失节点不一定能唯一映射仓库                                                                                  | 不能解析就报告，不猜 repo                            |
+| 自定义节点和模型安装      | 供应链、重启和 Manager 版本差异                                                                               | 版本化来源允许列表、固定版本、审批、Provisioning Job |
+| ComfyUI 进程启停重启      | 部署方式跨平台且不属于标准 API                                                                                | 可选 RuntimeController，无适配器时只报告需求         |
+| MRTR Elicitation 审批     | MCP Host 支持程度不同                                                                                         | 持久化 Approval Resource 作为通用后备                |
+| MCP Tasks                 | `io.modelcontextprotocol/tasks` 是可选扩展；当前 Python SDK 2.0.0 有扩展挂载点但未提供新版 Tasks 完整服务实现 | 领域 Job 与 Orchestrator 为真相；Tasks 仅作可选投影  |
 
 ### 14.4 红色或必须延后的承诺
 
@@ -2254,11 +2257,11 @@ full
 
 建议语义：
 
-| 级别 | 返回内容 | 使用场景 |
-|---|---|---|
-| `summary` | ID、名称、状态、关键计数和风险 | 搜索、筛选、确认 |
-| `standard` | 完成下一决策所需字段 | 默认 |
-| `full` | 完整图、schema、事件或诊断证据 | 深入分析 |
+| 级别       | 返回内容                       | 使用场景         |
+| ---------- | ------------------------------ | ---------------- |
+| `summary`  | ID、名称、状态、关键计数和风险 | 搜索、筛选、确认 |
+| `standard` | 完成下一决策所需字段           | 默认             |
+| `full`     | 完整图、schema、事件或诊断证据 | 深入分析         |
 
 可进一步支持 `include` 白名单，例如：
 
@@ -2275,15 +2278,15 @@ full
 
 plan/commit 不能增加简单任务的 Agent 调用轮次，但所有 Job 必须保持同一领域形态：
 
-| 场景 | 推荐调用链 |
-|---|---|
-| 已知工作流直接生图 | `workflow.execute` 或动态 run（内部物化并自动 commit Plan）→ Artifact Resource |
-| 未知工作流生图 | workflow.list → describe → execute → Artifact |
-| 修改普通参数 | change.plan → commit；可选 publish |
-| 修改图结构 | describe → change.plan → commit → validate → publish |
-| 危险操作 | plan → Approval/MRTR Elicitation → commit |
-| 参数实验 | experiment.plan → commit → Experiment Resource |
-| 失败恢复 | job.diagnose → retry.plan → retry.commit |
+| 场景               | 推荐调用链                                                                       |
+| ------------------ | -------------------------------------------------------------------------------- |
+| 已知工作流直接生图 | `workflow.execute` 或动态 run（内部物化并自动 commit Plan）→ Artifact Resource   |
+| 未知工作流生图     | workflow.list → describe → execute → Artifact                                    |
+| 修改普通参数       | change.plan → commit（AUTHORING）；可选 publish（ADMIN）                         |
+| 修改图结构         | describe → change.plan → commit → validate → publish（plan/commit 在 AUTHORING） |
+| 危险操作           | plan → Approval/MRTR Elicitation → commit                                        |
+| 参数实验           | experiment.plan → commit → Experiment Resource                                   |
+| 失败恢复           | job.diagnose → retry.plan → retry.commit                                         |
 
 低风险、可逆、参数已完整校验的执行使用服务端自动 plan/commit 快速路径。复杂变更、跨服务器、批量、删除、安装和全局操作强制显式 plan/commit。
 
@@ -2320,13 +2323,13 @@ Agent 不应在对话中记住：
 
 测试维度：
 
-| 维度 | 取值 |
-|---|---|
-| 模型层级 | 小型本地、中型工具模型、前沿模型 |
-| Tool 模式 | 分端点 Toolset、small-catalog dynamic、universal execute、compact |
-| 任务类型 | 生成、发现、图编辑、批量、诊断、管理 |
-| 工作流规模 | 10、50、200+ |
-| 故障类型 | 参数、依赖、OOM、断线、权限、并发冲突 |
+| 维度       | 取值                                                              |
+| ---------- | ----------------------------------------------------------------- |
+| 模型层级   | 小型本地、中型工具模型、前沿模型                                  |
+| Tool 模式  | 分端点 Toolset、small-catalog dynamic、universal execute、compact |
+| 任务类型   | 生成、发现、图编辑、批量、诊断、管理                              |
+| 工作流规模 | 10、50、200+                                                      |
+| 故障类型   | 参数、依赖、OOM、断线、权限、并发冲突                             |
 
 指标：
 

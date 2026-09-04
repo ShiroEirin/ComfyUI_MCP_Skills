@@ -2558,7 +2558,7 @@ async def test_admin_server_mounts_node_catalog_tools_end_to_end(
 
 
 @pytest.mark.anyio
-async def test_admin_change_plan_failure_carries_suggested_queries(
+async def test_authoring_change_plan_failure_carries_suggested_queries(
     tmp_path: Path,
 ) -> None:
     """P0-3: change.plan validation failures surface WORKFLOW_CHANGE_INVALID

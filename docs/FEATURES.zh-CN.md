@@ -6,13 +6,12 @@
 
 > fresh 数据目录（`data/control-plane.sqlite3` 不存在）走轻量装配：不创建控制面数据库、编排 worker/outbox 不启动，动态执行经文件仓库可用（`store=None`）；已存在数据库（含 all-file 未 cutover）启动时完整初始化并升级（fail-closed）。详见 [LIGHTWEIGHT.zh-CN.md](LIGHTWEIGHT.zh-CN.md)。
 
-
-| 层级 | 新项目状态 | 示例 |
-|---|---|---|
-| 默认可用 | execution Toolset + 文件仓库 | 动态执行、上传、Job get/cancel、基础发现（`job.list` 需 run cutover） |
-| 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置 | 队列、日志、运行时（runtime.restart approve/commit/get 需 run cutover；plan 在文件后端仅只读预览）、服务器/配置管理、Dependency/Provisioning |
-| 显式授权且完成对应 cutover | Authoring 或 Execution + 对应 SQLite aggregate | 工作流理解、Revision、Artifact/Lineage、Plan、Experiment、Diagnostic、Routing |
-| 尚未交付 | 当前版本无正式实现 | 多副本总线、跨主机租约、Tasks、Elicitation |
+| 层级                             | 新项目状态                                     | 示例                                                                                                                                         |
+| -------------------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| 默认可用                         | execution Toolset + 文件仓库                   | 动态执行、上传、Job get/cancel、基础发现（`job.list` 需 run cutover）                                                                        |
+| 显式授权且无需 aggregate cutover | Operations 或独立 Admin，并满足各自安全配置    | 队列、日志、运行时（runtime.restart approve/commit/get 需 run cutover；plan 在文件后端仅只读预览）、服务器/配置管理、Dependency/Provisioning |
+| 显式授权且完成对应 cutover       | Authoring 或 Execution + 对应 SQLite aggregate | 工作流理解、Revision、Artifact/Lineage、Plan、Experiment、Diagnostic、Routing                                                                |
+| 尚未交付                         | 当前版本无正式实现                             | 多副本总线、跨主机租约、Tasks、Elicitation                                                                                                   |
 
 当前发行版提供只读 `comfyui-mcp-migration-dry-run` 演练和显式 `comfyui-mcp-migrate` 生产切换命令（需精确确认短语与备份证据）。全新安装默认仍保留文件仓库，第三层能力在对应 aggregate 切换前不会启用；不要手工伪造切换证据。
 
@@ -37,17 +36,17 @@ flowchart LR
     RetryPlan --> Job
 ```
 
-| 对象 | 含义 |
-|---|---|
-| Workflow | 稳定的业务工作流身份 |
-| Revision | 不可变工作流图、参数 schema 和输出契约 |
-| Deployment | Revision 在某台 ComfyUI Server 上的已发布绑定 |
-| Plan | 参数、资产、Policy、Deployment 和 Server 的不可变执行决定 |
-| Job | 一次可恢复的 ComfyUI 执行 |
-| Asset | 可作为工作流输入的受所有者约束媒体 |
-| Artifact | Job 产生的输出及其内容事实 |
-| Experiment / Variant | 有预算边界的批量参数实验及单个组合 |
-| Diagnostic / RetryPlan | 基于持久化证据的确定性诊断和受约束重试 |
+| 对象                   | 含义                                                      |
+| ---------------------- | --------------------------------------------------------- |
+| Workflow               | 稳定的业务工作流身份                                      |
+| Revision               | 不可变工作流图、参数 schema 和输出契约                    |
+| Deployment             | Revision 在某台 ComfyUI Server 上的已发布绑定             |
+| Plan                   | 参数、资产、Policy、Deployment 和 Server 的不可变执行决定 |
+| Job                    | 一次可恢复的 ComfyUI 执行                                 |
+| Asset                  | 可作为工作流输入的受所有者约束媒体                        |
+| Artifact               | Job 产生的输出及其内容事实                                |
+| Experiment / Variant   | 有预算边界的批量参数实验及单个组合                        |
+| Diagnostic / RetryPlan | 基于持久化证据的确定性诊断和受约束重试                    |
 
 ## 2. MCP 表面
 
@@ -91,12 +90,11 @@ comfyui.capability.describe
 - `comfyui.engine.history`：引擎 `/history` 只读直连（8 MiB 有界 + 扁平投影；`job.list` 保持 owner-bound 持久执行记录契约）。
 - `comfyui.local.plugins`：本地 custom_nodes 插件清单（server 条目 `local_root` 配置；双布局 nested/flat 兼容 aki 与标准、201 目录项预算、reparse/junction 拒绝、README 首行有界）；云端/未配置会话降级返回 `available:false` + 固定 reason 枚举码。OPERATIONS/AUTHORING/ADMIN 可见，EXECUTION 不可见。
 
-修复引导：`admin.workflow.change.plan` 校验失败消息带 node/field 定位与 `comfyui.node.describe` hint。
+修复引导：`workflow.change.plan`（AUTHORING 面，2026-09-04 起从 ADMIN 下放）校验失败消息带 node/field 定位与 `comfyui.node.describe` hint。
 
 ## 4. 动态工作流工具
 
 每个已启用工作流参与动态目录。单个 MCP 端点默认投影 8 个动态工作流工具；部署者可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 在 1–128 范围内提高预算，服务仍按稳定排序选择。该配置只改变已授权动态工作流的可见数量，不扩大 Toolset/Scope 权限；其他工作流仍可通过目录和 Resource 管理。输入 schema 来自工作流 `schema.json`。Agent 只能提交声明过的参数，服务在注入节点输入前执行类型、必填项和额外字段校验。
-
 
 通用执行控制位于 `_execution`：
 
@@ -202,12 +200,17 @@ comfyui.revision.list
 comfyui.revision.diff
 ```
 
-Admin 变更能力：
+AUTHORING 变更能力（`comfyui:author`，2026-09-04 起从 ADMIN 下放，工具名保持不变）：
+
+```text
+comfyui.admin.workflow.change.plan
+comfyui.admin.workflow.change.commit
+```
+
+Admin 部署能力（`comfyui:configure`，仅保留部署指针操作）：
 
 ```text
 comfyui.admin.workflow.import
-comfyui.admin.workflow.change.plan
-comfyui.admin.workflow.change.commit
 comfyui.admin.workflow.publish
 comfyui.admin.workflow.rollback
 ```
@@ -233,14 +236,14 @@ file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.d
 - rollback 创建新 Revision，不删除历史。
 - 已运行 Job 始终保留原 Revision 和 Deployment 绑定。
 
-当前已交付的图操作（经 `comfyui.admin.workflow.change.plan` 提交后随 Revision commit 生效）：
+当前已交付的图操作（经 `comfyui.admin.workflow.change.plan` 在 AUTHORING 面提交后随 Revision commit 生效）：
 
 - 节点生命周期：`add_node`、`remove_node`、`replace_node`（带连接与参数目标校验）。
 - 连接与输入：`connect`、`disconnect`、`set_input`、`expose_parameter`。
 - 内联子图：`insert_subgraph`（1–100 节点、前缀重命名、内部引用重写；可传显式 `nodes`，或 `subgraph` 按名引用已提取定义）。
 - 子图提取与 recipe 应用：`extract_subgraph` 把选定节点连同边界端口契约（`boundary_inputs`/`boundary_outputs`）存入 Revision 元数据并计入内容摘要；`apply_recipe` 按注册表分发（已注册 `set_scalar_input.v1`、`upscale_image.v1`、`save_image.v1`、`lora_model.v1`、`controlnet_apply.v1`）。
 
-子图提取→复用闭环：提取定义随 Revision 持久化，同一 plan 内或已发布 Revision 均可按名实例化；按名实例化会断开定义中指向宿主图外部的连接输入（外部引用在宿主图中无效），由后续 `connect` 显式接线。`nodes` 与 `subgraph` 互斥，未提取名字在 plan 阶段被拒绝。
+子图提取 → 复用闭环：提取定义随 Revision 持久化，同一 plan 内或已发布 Revision 均可按名实例化；按名实例化会断开定义中指向宿主图外部的连接输入（外部引用在宿主图中无效），由后续 `connect` 显式接线。`nodes` 与 `subgraph` 互斥，未提取名字在 plan 阶段被拒绝。
 
 仍属后续范围：`extract_subgraph` 只登记不剪除图节点（图内容不变，子图作为可复用单元登记）。已交付的高层 recipe：`upscale_image.v1`（在 IMAGE 输出锚点后插入 UpscaleModelLoader + ImageUpscaleWithModel 并重连消费者，暴露 `model_name`）、`save_image.v1`（插入 SaveImage，暴露 `filename_prefix`）、`lora_model.v1`（在 MODEL/CLIP 加载器后插入 LoraLoader 并重连 model/clip 消费者，暴露 `lora_name`/`strength_model`/`strength_clip`）、`controlnet_apply.v1`（在 conditioning 链插入 ControlNetLoader + ControlNetApplyAdvanced，positive/negative 消费者分别重连到双路 CONDITIONING 输出 idx 0/1；`negative_conditioning_node_id` 缺省时复用 positive 源，单源场景消费者统一接输出 0；暴露 `control_net_name`/`strength`，`start_percent`/`end_percent` 固定 0/1）——全部经 object_info 校验 class/输入/输出类型，未知 recipe 或参数集在 plan 阶段拒绝。
 
@@ -409,12 +412,12 @@ comfyui://experiments/{experiment_id}
 
 ## 14. Toolset 与 Scope
 
-| Toolset | Scope | 典型能力 |
-|---|---|---|
-| execution | `comfyui:execute` | Workflow run、Job、Asset、Experiment、Routing |
-| authoring | `comfyui:observe`, `comfyui:author` | Workflow 语义、Revision、依赖、节点目录 |
-| operations | `comfyui:observe`, `comfyui:operate` | Server、Node、Model、Queue、Log、Runtime |
-| admin | `comfyui:observe`, `comfyui:configure`, `comfyui:provision`, `comfyui:audit` | 配置、供应、审批、审计、节点/模型只读目录（改工作流查节点） |
+| Toolset    | Scope                                                                        | 典型能力                                                    |
+| ---------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| execution  | `comfyui:execute`                                                            | Workflow run、Job、Asset、Experiment、Routing               |
+| authoring  | `comfyui:observe`, `comfyui:author`                                          | Workflow 语义、Revision、依赖、节点目录                     |
+| operations | `comfyui:observe`, `comfyui:operate`                                         | Server、Node、Model、Queue、Log、Runtime                    |
+| admin      | `comfyui:observe`, `comfyui:configure`, `comfyui:provision`, `comfyui:audit` | 配置、供应、审批、审计、节点/模型只读目录（改工作流查节点） |
 
 工具是否出现在 `tools/list` 由 Toolset 与 granted scopes 共同决定。隐藏工具不能通过直接构造名称绕过授权。
 
@@ -455,10 +458,10 @@ capability.search
 ```text
 workflow.describe
 → dependencies.check
-→ admin.workflow.change.plan
+→ change.plan（AUTHORING 面）
 → 审查 diff
-→ change.commit
-→ publish
+→ change.commit（AUTHORING 面）
+→ publish（ADMIN 面）
 ```
 
 ### 运行批量实验
