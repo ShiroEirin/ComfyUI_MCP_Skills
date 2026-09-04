@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import anyio
@@ -70,7 +71,14 @@ def main() -> None:
     """Run the local stdio MCP server without writing non-protocol stdout."""
     configure_logging(os.environ.get("COMFYUI_MCP_LOG_LEVEL", "INFO"))
     base_dir = Path(os.environ.get("COMFYUI_MCP_DIR", os.getcwd())).resolve()
-    anyio.run(_run_stdio, base_dir)
+    try:
+        anyio.run(_run_stdio, base_dir)
+    except (ValueError, PermissionError) as exc:
+        # stderr 是 stdio 传输下唯一安全的诊断通道；协议流量只走 stdin/stdout，
+        # 这里绝不能往 stdout 写任何非协议内容。宿主通常会丢弃 stderr，
+        # 但保留一份人类可读摘要仍能让有 server log 面板的宿主直接看到原因。
+        print(f"comfyui-mcp startup failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":

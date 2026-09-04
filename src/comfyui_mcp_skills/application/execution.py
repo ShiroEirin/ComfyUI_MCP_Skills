@@ -197,7 +197,7 @@ class ExecutionService:
                         raise self._submission_unknown(
                             server_id,
                             idempotency_key,
-                            str(claim.get("lease_token", "")),
+                            str(claim.get("lease_token") or ""),
                             owner_id,
                             None,
                             exc,
@@ -224,13 +224,13 @@ class ExecutionService:
                                     upstream_prompt_id=recovered_prompt,
                                     idempotency_key=idempotency_key,
                                     request_digest=request_digest,
-                                    lease_token=str(claim.get("lease_token", "")),
+                                    lease_token=str(claim.get("lease_token") or ""),
                                 )
                             except Exception as exc:
                                 raise self._submission_unknown(
                                     server_id,
                                     idempotency_key,
-                                    str(claim.get("lease_token", "")),
+                                    str(claim.get("lease_token") or ""),
                                     owner_id,
                                     recovered_identity,
                                     exc,
@@ -263,13 +263,13 @@ class ExecutionService:
                         try:
                             self._runs.save(
                                 recovered,
-                                lease_token=str(claim.get("lease_token", "")),
+                                lease_token=str(claim.get("lease_token") or ""),
                             )
                         except Exception as exc:
                             raise self._submission_unknown(
                                 server_id,
                                 idempotency_key,
-                                str(claim.get("lease_token", "")),
+                                str(claim.get("lease_token") or ""),
                                 owner_id,
                                 None,
                                 exc,
@@ -323,6 +323,10 @@ class ExecutionService:
                         exc,
                     ) from exc
                 if isinstance(exc, ServerOffline):
+                    # ServerOffline here is ambiguous (connection refused vs
+                    # timeout vs 5xx all collapse into it); the key must stay
+                    # in submission_unknown so client-id reconciliation or the
+                    # reconciler can later resolve or expire it safely.
                     self._runs.mark_submission_unknown(
                         server_id, idempotency_key, lease_token, owner_id
                     )
@@ -416,7 +420,12 @@ class ExecutionService:
                 self._planning.mark_submission_unknown(identity, str(error))
             except Exception:
                 pass
-        return ExecutionInProgress("submission outcome is unknown; retry status reconciliation")
+        return ExecutionInProgress(
+            f"submission outcome is unknown for idempotency key "
+            f"{idempotency_key!r} (job_id={getattr(identity, 'job_id', '') or 'pending'}) "
+            "on server {server_id!r}; poll job status or retry the same key with the "
+            "same arguments to reconcile".format(server_id=server_id)
+        )
 
     @classmethod
     def _find_prompt_by_client_id(cls, gateway: ComfyUIGateway, client_id: str) -> str:

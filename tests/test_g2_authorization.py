@@ -83,5 +83,5 @@ def test_stdio_rejects_unknown_and_unrelated_scopes(
         authorization_for_stdio(os.environ)
 
     monkeypatch.setenv("COMFYUI_MCP_SCOPES", "comfyui:unknown")
-    with pytest.raises(ValueError, match="unknown scope"):
+    with pytest.raises(ValueError, match="unknown scope\\(s\\)"):
         authorization_for_stdio(os.environ)

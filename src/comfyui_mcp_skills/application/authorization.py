@@ -199,10 +199,13 @@ def parse_scopes(value: str) -> frozenset[Scope]:
     raw = [item.strip() for item in value.split(",") if item.strip()]
     if not raw:
         raise ValueError("scopes must contain at least one value")
-    try:
-        parsed = tuple(Scope(item) for item in raw)
-    except ValueError as exc:
-        raise ValueError("unknown scope") from exc
+    unknown = [item for item in raw if item not in all_scope_values()]
+    if unknown:
+        raise ValueError(
+            f"unknown scope(s) {unknown!r} in COMFYUI_MCP_SCOPES; "
+            f"valid values are {sorted(all_scope_values())}"
+        )
+    parsed = tuple(Scope(item) for item in raw)
     if len(parsed) != len(set(parsed)):
         raise ValueError("scopes must not contain duplicates")
     return frozenset(parsed)
@@ -222,13 +225,23 @@ def authorization_for_stdio(environment: Mapping[str, str]) -> AuthorizationCont
     try:
         toolset = Toolset(toolset_value)
     except ValueError as exc:
-        raise ValueError("unknown MCP toolset") from exc
+        raise ValueError(
+            f"unknown MCP toolset {toolset_value!r} in COMFYUI_MCP_TOOLSET; "
+            f"valid values are {sorted(item.value for item in Toolset)}"
+        ) from exc
     scopes = parse_scopes(scopes_value)
     if not scopes <= admitted_scopes(toolset):
-        raise PermissionError("configured scope does not admit the selected Toolset")
+        raise PermissionError(
+            f"COMFYUI_MCP_SCOPES {sorted(s.value for s in scopes)} does not admit the "
+            f"selected COMFYUI_MCP_TOOLSET={toolset.value!r}; it requires a subset of "
+            f"{sorted(s.value for s in admitted_scopes(toolset))}"
+        )
     if (
         toolset is not Toolset.EXECUTION
         and environment.get("COMFYUI_MCP_ENABLE_HIGH_RISK", "") != "1"
     ):
-        raise PermissionError("high-risk stdio Toolset requires explicit enablement")
+        raise PermissionError(
+            f"COMFYUI_MCP_TOOLSET={toolset.value!r} is high-risk; "
+            "set COMFYUI_MCP_ENABLE_HIGH_RISK=1 in the MCP server env to enable it"
+        )
     return AuthorizationContext(principal, scopes, toolset)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,8 @@ from comfyui_mcp_skills.infrastructure.persistence.sqlite_provisioning import (
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
 from comfyui_mcp_skills.infrastructure.persistence.workflows import FileWorkflowRepository
+
+logger = logging.getLogger(__name__)
 
 StoreBackend = Literal["file", "sqlite"]
 
@@ -73,9 +76,35 @@ def create_repository_bundle(base_dir: Path) -> RepositoryBundle:
         return _create_repository_bundle_locked(project_root)
 
 
+def _looks_like_comfyui_install(project_root: Path) -> bool:
+    """Detect common third-party ComfyUI bundle layouts (aki etc.).
+
+    COMFYUI_MCP_DIR 必须指向 MCP 数据根，而不是 ComfyUI 安装目录。把安装目录当
+    数据根会静默初始化一个空 file store，历史 job/workflow 全部"消失"。
+    aki 双布局兼容 local.plugins 已知的两种目录结构：
+      - 嵌套: <root>/ComfyUI/custom_nodes 与 <root>/ComfyUI/main.py
+      - 标准: <root>/custom_nodes 与 <root>/main.py
+    """
+    for comfy_dir in (project_root / "ComfyUI", project_root):
+        if (comfy_dir / "main.py").is_file() and (comfy_dir / "custom_nodes").is_dir():
+            return True
+    return False
+
+
 def _create_repository_bundle_locked(project_root: Path) -> RepositoryBundle:
     database_path = project_root / "data" / "control-plane.sqlite3"
     if not database_path.exists():
+        if _looks_like_comfyui_install(project_root):
+            raise StoreRoutingError(
+                f"COMFYUI_MCP_DIR points at a ComfyUI installation ({project_root}); "
+                "it must point at the MCP data root instead. Fix COMFYUI_MCP_DIR."
+            )
+        logger.warning(
+            "no control-plane database at %s; starting with an empty file-backed store "
+            "(base_dir=%s). If this is unexpected, check COMFYUI_MCP_DIR.",
+            database_path,
+            project_root,
+        )
         return RepositoryBundle(
             workflows=FileWorkflowRepository(project_root),
             runs=FileRunRepository(project_root),

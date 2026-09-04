@@ -238,6 +238,16 @@ class SQLiteOrchestrationRepository:
                 connection.execute(
                     "UPDATE jobs SET status = ? WHERE job_id = ?", (job_status, job_id)
                 )
+                if job_status in _TERMINAL_JOB_STATUSES:
+                    connection.execute(
+                        """
+                        UPDATE idempotency_records
+                        SET state = 'expired', job_id = NULL
+                        WHERE job_id = ? AND owner_id = ?
+                          AND state = 'submission_unknown'
+                        """,
+                        (job_id, owner_id),
+                    )
             status = "completed" if completed else "pending"
             next_attempt = _time(now + timedelta(seconds=max(delay_seconds, 0)))
             connection.execute(
