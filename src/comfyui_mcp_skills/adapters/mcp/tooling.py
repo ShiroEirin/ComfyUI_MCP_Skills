@@ -1109,7 +1109,60 @@ def fixed_tools() -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
-            Tool(
+        Tool(
+            name="comfyui.admin.workflow.change.plan",
+            description=(
+                "Plan validated graph operations against a published Revision; "
+                "validation failures return suggested follow-up queries."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": {"type": "string", "minLength": 1},
+                    "workflow_id": {"type": "string", "minLength": 1},
+                    "operations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "items": {"type": "object"},
+                    },
+                },
+                "required": ["server_id", "workflow_id", "operations"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.admin.workflow.change.commit",
+            description="Commit a bound, unexpired change plan as an unpublished Revision.",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "plan_id": {"type": "string", "minLength": 1},
+                    "plan_digest": {
+                        "type": "string",
+                        "minLength": 64,
+                        "maxLength": 64,
+                    },
+                },
+                "required": ["plan_id", "plan_digest"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=True,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
             name="comfyui.workflow.visualize",
             description=(
                 "Render one published workflow as a bounded Mermaid flowchart "

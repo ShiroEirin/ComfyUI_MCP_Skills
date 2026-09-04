@@ -173,6 +173,8 @@ G3_AUTHORING_TOOLS = frozenset(
         "comfyui.workflow.describe",
         "comfyui.workflow.dependencies.check",
         "comfyui.workflow.visualize",
+        "comfyui.admin.workflow.change.plan",
+        "comfyui.admin.workflow.change.commit",
     }
 )
 RESTART_EXECUTION_TOOL_NAMES = frozenset(
@@ -1604,6 +1606,44 @@ def create_server(
                 to_revision_id = required_string(arguments, "to_revision_id")
                 result = await anyio.to_thread.run_sync(
                     lambda: workflow_changes.diff(from_revision_id, to_revision_id)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.admin.workflow.change.plan":
+                validate_fixed_arguments(
+                    arguments, {"server_id", "workflow_id", "operations"}
+                )
+                if workflow_changes is None:
+                    raise ValueError(
+                        "Workflow change planning requires the SQLite Workflow store"
+                    )
+                server_id = required_string(arguments, "server_id")
+                workflow_id = required_string(arguments, "workflow_id")
+                operations = arguments.get("operations")
+                if not isinstance(operations, list) or not all(
+                    isinstance(operation, dict) for operation in operations
+                ):
+                    raise TypeError("operations must be an array of objects")
+                gateway = gateway_factory(servers.connection(server_id))
+                object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.plan(
+                        workflow_id,
+                        server_id,
+                        operations,
+                        object_info=object_info,
+                    )
+                )
+                return tool_result(result)
+            if params.name == "comfyui.admin.workflow.change.commit":
+                validate_fixed_arguments(arguments, {"plan_id", "plan_digest"})
+                if workflow_changes is None:
+                    raise ValueError(
+                        "Workflow change commit requires the SQLite Workflow store"
+                    )
+                plan_id = required_string(arguments, "plan_id")
+                plan_digest = required_string(arguments, "plan_digest")
+                result = await anyio.to_thread.run_sync(
+                    lambda: workflow_changes.commit(plan_id, plan_digest)
                 )
                 return tool_result(result)
             if params.name == "comfyui.workflow.visualize":

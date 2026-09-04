@@ -11,6 +11,12 @@ import pytest
 from mcp.client import Client
 
 from comfyui_mcp_skills.adapters.mcp.admin import create_admin_server
+from comfyui_mcp_skills.adapters.mcp.server import create_server
+from comfyui_mcp_skills.application.authorization import (
+    AuthorizationContext,
+    Scope,
+    Toolset,
+)
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -561,15 +567,23 @@ async def test_admin_change_plan_commit_and_publish_tools(tmp_path: Path) -> Non
         asset_store="file",
         store=store,
     )
-    server = create_admin_server(
+    authoring = create_server(
+        tmp_path,
+        repositories=repositories,
+        gateway_factory=lambda _config: _Gateway(),
+        authorization=AuthorizationContext(
+            "author-j", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
+        ),
+    )
+    admin = create_admin_server(
         tmp_path,
         enabled=True,
         repositories=repositories,
         gateway_factory=lambda _config: _Gateway(),
     )
 
-    async with Client(server) as client:
-        names = {tool.name for tool in (await client.list_tools()).tools}
+    async with Client(authoring) as client:
+        authoring_names = {tool.name for tool in (await client.list_tools()).tools}
         planned = await client.call_tool(
             "comfyui.admin.workflow.change.plan",
             {
@@ -592,14 +606,6 @@ async def test_admin_change_plan_commit_and_publish_tools(tmp_path: Path) -> Non
                 "plan_digest": planned.structured_content["plan_digest"],
             },
         )
-        published = await client.call_tool(
-            "comfyui.admin.workflow.publish",
-            {"deployment_id": committed.structured_content["deployment_id"]},
-        )
-        missing_deployment = await client.call_tool(
-            "comfyui.admin.workflow.publish",
-            {"deployment_id": "deployment_missing"},
-        )
         missing_workflow = await client.call_tool(
             "comfyui.admin.workflow.change.plan",
             {
@@ -616,12 +622,29 @@ async def test_admin_change_plan_commit_and_publish_tools(tmp_path: Path) -> Non
             },
         )
 
+    async with Client(admin) as client:
+        admin_names = {tool.name for tool in (await client.list_tools()).tools}
+        published = await client.call_tool(
+            "comfyui.admin.workflow.publish",
+            {"deployment_id": committed.structured_content["deployment_id"]},
+        )
+        missing_deployment = await client.call_tool(
+            "comfyui.admin.workflow.publish",
+            {"deployment_id": "deployment_missing"},
+        )
+
+    # AUTHORING owns the edit chain; ADMIN keeps only deployment publishing.
     assert {
         "comfyui.admin.workflow.change.plan",
         "comfyui.admin.workflow.change.commit",
+    } <= authoring_names
+    assert "comfyui.admin.workflow.publish" not in authoring_names
+    assert {
         "comfyui.admin.workflow.publish",
         "comfyui.admin.workflow.rollback",
-    } <= names
+    } <= admin_names
+    assert "comfyui.admin.workflow.change.plan" not in admin_names
+    assert "comfyui.admin.workflow.change.commit" not in admin_names
     assert published.structured_content["published"] is True
     assert json.loads(missing_deployment.content[0].text)["code"] == ("WORKFLOW_CHANGE_NOT_FOUND")
     assert json.loads(missing_workflow.content[0].text)["code"] == ("WORKFLOW_CHANGE_NOT_FOUND")

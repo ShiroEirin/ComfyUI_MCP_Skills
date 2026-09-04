@@ -1482,7 +1482,10 @@ async def test_admin_server_survives_workflow_cutover(tmp_path: Path) -> None:
     assert "comfyui.admin.workflow.delete" not in names
     assert "comfyui.admin.audit.export" in names
     assert "comfyui.admin.audit.get" in names
-    assert "comfyui.admin.workflow.change.plan" in names
+    # change.plan/commit moved to the AUTHORING toolset; the admin surface
+    # must no longer expose them.
+    assert "comfyui.admin.workflow.change.plan" not in names
+    assert "comfyui.admin.workflow.change.commit" not in names
     assert "comfyui.admin.workflow.import" in names
     assert exported.structured_content["events"] == []
     assert exported.structured_content["count"] == 0
@@ -2559,7 +2562,7 @@ async def test_admin_change_plan_failure_carries_suggested_queries(
     tmp_path: Path,
 ) -> None:
     """P0-3: change.plan validation failures surface WORKFLOW_CHANGE_INVALID
-    with executable suggested_queries through the admin endpoint."""
+    with executable suggested_queries through the authoring endpoint."""
     _project(tmp_path)
     store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
     store.initialize()
@@ -2584,10 +2587,12 @@ async def test_admin_change_plan_failure_carries_suggested_queries(
                 },
             }
 
-    server = create_admin_server(
+    server = create_server(
         tmp_path,
-        enabled=True,
         gateway_factory=lambda _config: _Gateway(),
+        authorization=AuthorizationContext(
+            "author-suggest", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
+        ),
     )
     async with Client(server) as client:
         result = await client.call_tool(
@@ -2607,7 +2612,7 @@ async def test_admin_change_plan_failure_carries_suggested_queries(
         )
 
     assert result.is_error is True
-    error = result.structured_content
+    error = json.loads(result.content[0].text)
     assert error["code"] == "WORKFLOW_CHANGE_INVALID"
     assert error["retryable"] is False
     assert error["details"]["issues"][0]["code"] == "unknown_node_type"
