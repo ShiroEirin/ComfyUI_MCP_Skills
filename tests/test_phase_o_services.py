@@ -240,11 +240,11 @@ def test_safe_gateway_turns_timeout_into_unknown_and_disables_redirects(
         allowed_server_origins={"http://127.0.0.1:8188"},
     )
 
-    def timeout(*args: Any, **kwargs: Any) -> Any:
+    def timeout(_session: Any, *args: Any, **kwargs: Any) -> Any:
         assert kwargs["allow_redirects"] is False
         raise requests.Timeout("bounded timeout")
 
-    monkeypatch.setattr(requests, "get", timeout)
+    monkeypatch.setattr(requests.Session, "get", timeout)
     assert gateway.observe_install(
         {"url": "http://127.0.0.1:8188"},
         "queue-a",
@@ -274,12 +274,14 @@ def test_safe_gateway_requires_policy_before_install_side_effect(
         allowed_server_origins={"http://127.0.0.1:8188"},
     )
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "get",
-        lambda url, **_kwargs: _manager_response({}, url),
+        lambda _session, url, **_kwargs: _manager_response({}, url),
     )
     posted: list[str] = []
-    monkeypatch.setattr(requests, "post", lambda url, **_kwargs: posted.append(url))
+    monkeypatch.setattr(
+        requests.Session, "post", lambda _session, url, **_kwargs: posted.append(url)
+    )
 
     with pytest.raises(ValueError, match="capability is not supported"):
         gateway.enqueue_install(
@@ -305,12 +307,12 @@ def test_safe_gateway_uses_versioned_endpoint_and_queue_bound_receipt(
         }
     }
     monkeypatch.setattr(
-        requests,
+        requests.Session,
         "get",
-        lambda url, **_kwargs: _manager_response(capability, url),
+        lambda _session, url, **_kwargs: _manager_response(capability, url),
     )
 
-    def post(url: str, **_kwargs: Any) -> requests.Response:
+    def post(_session: Any, url: str, **_kwargs: Any) -> requests.Response:
         item = _catalog_item()
         assert url.endswith("/manager/queue/secure-fetch-v1/install")
         return _manager_response(
@@ -330,7 +332,7 @@ def test_safe_gateway_uses_versioned_endpoint_and_queue_bound_receipt(
             url,
         )
 
-    monkeypatch.setattr(requests, "post", post)
+    monkeypatch.setattr(requests.Session, "post", post)
     assert gateway.enqueue_install(
         {"url": "http://127.0.0.1:8188"}, _catalog_item(), queue_id="queue-a"
     ) == {"queue_id": "queue-a", "state": "queued", "retryable": False}

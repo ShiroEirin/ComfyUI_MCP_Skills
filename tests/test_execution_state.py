@@ -202,7 +202,7 @@ def test_job_wait_caps_each_query_to_remaining_deadline() -> None:
         patch.object(jobs_module.time, "monotonic", clock.monotonic),
         patch.object(jobs_module.time, "sleep", clock.sleep),
         patch(
-            "comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.get",
+            "comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.Session.get",
             side_effect=request_get,
         ),
     ):

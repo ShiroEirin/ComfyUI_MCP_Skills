@@ -66,6 +66,9 @@ class SafeManagerGateway:
         )
         self._hosts = frozenset(host.lower().rstrip(".") for host in allowed_source_hosts if host)
         self._server_origins = _server_origins(allowed_server_origins)
+        # Transport-level connection reuse only; the gateway still keeps no
+        # server or queue routing state.
+        self._session = requests.Session()
 
     def inspect(self, server: dict[str, Any]) -> dict[str, Any]:
         result = self.preflight_install(server)
@@ -111,7 +114,7 @@ class SafeManagerGateway:
         if len(encoded) > 64 * 1024:
             raise ValueError("Manager install request is too large")
         try:
-            response = requests.post(
+            response = self._session.post(
                 base + path,
                 data=encoded,
                 headers={"Accept": "application/json", "Content-Type": "application/json"},
@@ -135,7 +138,7 @@ class SafeManagerGateway:
         }
 
     def _require_secure_fetch_policy(self, base: str, origin: tuple[str, str, int]) -> None:
-        response = requests.get(
+        response = self._session.get(
             base + "/manager/capabilities",
             headers={"Accept": "application/json"},
             timeout=self._timeout,
@@ -173,7 +176,7 @@ class SafeManagerGateway:
 
     def _status(self, base: str, origin: tuple[str, str, int], queue_id: str) -> dict[str, Any]:
         try:
-            response = requests.get(
+            response = self._session.get(
                 base + "/manager/queue/secure-fetch-v1/status",
                 headers={"Accept": "application/json"},
                 timeout=self._timeout,

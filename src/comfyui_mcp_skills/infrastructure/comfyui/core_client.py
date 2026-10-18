@@ -167,6 +167,11 @@ class CoreClient:
         self.auth = auth
         self.comfy_api_key = comfy_api_key
         self.timeout = timeout
+        # A shared session keeps one connection pool alive across requests.
+        # The module-level ``requests.get``/``requests.post`` helpers create and
+        # discard a session per call, so every request to a remote ComfyUI had to
+        # redo the TCP/TLS handshake (polling queue/history made that visible).
+        self._session = requests.Session()
 
     def _headers(self) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -180,7 +185,7 @@ class CoreClient:
             raise ValueError("ComfyUI redirects are not permitted")
         headers = self._headers()
         headers.update(kwargs.pop("headers", {}))
-        response = requests.get(
+        response = self._session.get(
             f"{self.server_url}{path}",
             headers=headers,
             timeout=timeout,
@@ -209,7 +214,7 @@ class CoreClient:
 
     def _post(self, path: str, json_data: Any = None, **kwargs: Any) -> requests.Response:
         timeout = kwargs.pop("timeout", self.timeout)
-        return requests.post(
+        return self._session.post(
             f"{self.server_url}{path}",
             headers=self._headers(),
             json=json_data,
@@ -352,7 +357,7 @@ class CoreClient:
                 "Content-Length": str(len(stream)),
             }
         )
-        response = requests.post(
+        response = self._session.post(
             f"{self.server_url}{endpoint}",
             data=stream,
             headers=headers,
