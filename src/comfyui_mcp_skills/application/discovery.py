@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 import re
 import stat
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,6 +19,10 @@ from comfyui_mcp_skills.domain.errors import WorkflowArgumentsError, WorkflowNot
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 
 _PLUGIN_SCAN_BUDGET = 201
+# ``/object_info`` is a multi-megabyte payload on a real install and the gateway
+# keeps no cache of its own, so a short TTL keeps repeated node/blueprint
+# discovery off the network without serving a stale inventory for long.
+_OBJECT_INFO_TTL_SECONDS = 60.0
 _PLUGIN_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,120}$")
 _README_MAX_BYTES = 4 * 1024
 _README_MAX_CHARS = 200
@@ -241,6 +247,26 @@ class DiscoveryService:
     def __init__(self, servers: ServerRegistry, gateway_factory: GatewayFactory) -> None:
         self._servers = servers
         self._gateway_factory = gateway_factory
+        self._object_info_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._object_info_lock = threading.Lock()
+
+    def _object_info(self, server_id: str) -> dict[str, Any]:
+        """Return the server's node inventory, reusing a short-lived cached copy.
+
+        ``/object_info`` is several megabytes on a real install and the gateway
+        has no cache, so every node listing used to re-download and re-parse the
+        whole inventory. The returned mapping is treated as read-only by callers.
+        """
+        now = time.monotonic()
+        with self._object_info_lock:
+            cached = self._object_info_cache.get(server_id)
+            if cached is not None and now - cached[0] < _OBJECT_INFO_TTL_SECONDS:
+                return cached[1]
+        gateway = self._gateway_factory(self._servers.connection(server_id))
+        raw = gateway.get_object_info()
+        with self._object_info_lock:
+            self._object_info_cache[server_id] = (time.monotonic(), raw)
+        return raw
 
     def servers(self) -> dict[str, Any]:
         return {
@@ -273,8 +299,7 @@ class DiscoveryService:
         limit: int = 50,
         cursor: str = "",
     ) -> dict[str, Any]:
-        gateway = self._gateway_factory(self._servers.connection(server_id))
-        raw = gateway.get_object_info()
+        raw = self._object_info(server_id)
         items = [
             {
                 "class": node_class,
@@ -317,8 +342,7 @@ class DiscoveryService:
         terms = [term.casefold() for term in re.split(r"[\s,]+", query.strip()) if term]
         if not terms:
             raise ValueError("query must contain at least one keyword")
-        gateway = self._gateway_factory(self._servers.connection(server_id))
-        raw = gateway.get_object_info()
+        raw = self._object_info(server_id)
         scored: list[tuple[int, str, dict[str, Any]]] = []
         for node_class, metadata in raw.items():
             if not isinstance(node_class, str) or not isinstance(metadata, dict):
