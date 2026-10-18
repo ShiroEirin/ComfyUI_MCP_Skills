@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+MAX_OUTPUT_BYTES = 25 * 1024 * 1024
+"""Upper bound for a single downloaded ComfyUI output payload."""
+
 
 def validate_media_locator(name: object, subfolder: object = "") -> tuple[str, str]:
     """Return a normalized safe filename and relative subfolder."""

@@ -69,7 +69,7 @@ from comfyui_mcp_skills.domain.errors import (
     WorkflowNotFound,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
-from comfyui_mcp_skills.domain.media import validate_media_locator
+from comfyui_mcp_skills.domain.media import MAX_OUTPUT_BYTES, validate_media_locator
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_asset_library import (
@@ -80,7 +80,7 @@ GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 EnabledWorkflows = Callable[[], list[Workflow]]
 ExperimentVariantReader = Callable[[str, str, str], dict[str, Any]]
 ExperimentPresetReader = Callable[[str, str], dict[str, Any] | None]
-_MAX_OUTPUT_BYTES = 25 * 1024 * 1024
+_MAX_OUTPUT_BYTES = MAX_OUTPUT_BYTES
 _MAX_JSON_RESOURCE_BYTES = 1024 * 1024
 
 

@@ -38,6 +38,7 @@ from mcp_types import INVALID_PARAMS
 from comfyui_mcp_skills import __version__
 from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_URI
 from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
+from comfyui_mcp_skills.adapters.mcp.output_image import export_output_image
 from comfyui_mcp_skills.adapters.mcp.prompts import create_prompt_handlers
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
@@ -2001,6 +2002,25 @@ def create_server(
                 node_class = required_string(arguments, "node_class")
                 result = await anyio.to_thread.run_sync(
                     lambda: discovery.node(server_id, node_class)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.output.image":
+                validate_fixed_arguments(
+                    arguments, {"server_id", "filename", "subfolder", "storage_type"}
+                )
+                server_id = required_string(arguments, "server_id")
+                filename = required_string(arguments, "filename")
+                subfolder = optional_string(arguments, "subfolder", "")
+                storage_type = optional_string(arguments, "storage_type", "output")
+                gateway = gateway_factory(owner_server_connection(owner_id, server_id))
+                result = await anyio.to_thread.run_sync(
+                    lambda: export_output_image(
+                        gateway=gateway,
+                        server_id=server_id,
+                        filename=filename,
+                        subfolder=subfolder,
+                        storage_type=storage_type,
+                    )
                 )
                 return tool_result(result)
             if params.name == "comfyui.model.list":

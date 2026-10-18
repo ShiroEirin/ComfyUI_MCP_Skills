@@ -385,6 +385,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("schema", "input", "output"),
     ),
     CapabilitySpec(
+        "comfyui.output.image",
+        "Export a ComfyUI output image",
+        "Fetch one ComfyUI output image and optionally return a host-renderable image tag.",
+        frozenset({Toolset.AUTHORING}),
+        frozenset({Scope.AUTHOR}),
+        RiskLevel.LOW,
+        ("output", "image", "download", "export"),
+    ),
+    CapabilitySpec(
         "comfyui.model.list",
         "List ComfyUI models",
         "Search model folders and server-side model names.",

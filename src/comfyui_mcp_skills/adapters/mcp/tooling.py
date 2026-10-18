@@ -1038,6 +1038,36 @@ def fixed_tools() -> list[Tool]:
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
         Tool(
+            name="comfyui.output.image",
+            description=(
+                "Fetch one ComfyUI output image. With COMFYUI_MCP_IMAGE_TAG_DIR "
+                "configured the image is also stored on disk and a host-renderable "
+                "@@image:upload/...@@ tag is returned."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": discovery_properties["server_id"],
+                    "filename": {"type": "string", "minLength": 1},
+                    "subfolder": {"type": "string", "default": ""},
+                    "storage_type": {
+                        "type": "string",
+                        "enum": ["output"],
+                        "default": "output",
+                    },
+                },
+                "required": ["server_id", "filename"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
             name="comfyui.model.list",
             description="List model folders or search models within one folder.",
             input_schema={

@@ -121,6 +121,9 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.runtime.restart.commit": frozenset({Scope.OPERATE}),
     "comfyui.runtime.restart.get": frozenset({Scope.OPERATE}),
     "comfyui.node.describe": frozenset({Scope.OBSERVE}),
+    # AUTHOR keeps this export on the AUTHORING surface only, so the fixed
+    # Tool budgets of the operations and execution surfaces stay untouched.
+    "comfyui.output.image": frozenset({Scope.AUTHOR}),
     "comfyui.model.list": frozenset({Scope.OBSERVE}),
     "comfyui.revision.list": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
     "comfyui.revision.diff": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
