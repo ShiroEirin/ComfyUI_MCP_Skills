@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import mimetypes
@@ -14,6 +15,7 @@ from mcp.types import (
     CallToolResult,
     ContentBlock,
     Icon,
+    ImageContent,
     ResourceLink,
     TextContent,
     Tool,
@@ -637,6 +639,26 @@ def tool_result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
         structured_content=None if error else data,
         is_error=error,
     )
+
+
+def tool_result_with_image(
+    data: dict[str, Any], *, payload: bytes, mime_type: str
+) -> CallToolResult:
+    """Attach one native MCP image block to a standard tool result.
+
+    Hosts that understand image content (Snow App included) render it, persist
+    it to their own upload directory, and hand it to the model as multimodal
+    input -- no host-specific tag convention required.
+    """
+    result = tool_result(data)
+    result.content.append(
+        ImageContent(
+            type="image",
+            data=base64.b64encode(payload).decode("ascii"),
+            mime_type=mime_type,
+        )
+    )
+    return result
 
 
 def current_owner() -> str:

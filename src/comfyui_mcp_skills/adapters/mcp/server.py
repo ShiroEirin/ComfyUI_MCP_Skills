@@ -68,6 +68,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     required_object,
     required_string,
     tool_result,
+    tool_result_with_image,
     validate_fixed_arguments,
     variant_page_dict,
     with_ui_metadata,
@@ -2013,7 +2014,7 @@ def create_server(
                 subfolder = optional_string(arguments, "subfolder", "")
                 storage_type = optional_string(arguments, "storage_type", "output")
                 gateway = gateway_factory(owner_server_connection(owner_id, server_id))
-                result = await anyio.to_thread.run_sync(
+                exported = await anyio.to_thread.run_sync(
                     lambda: export_output_image(
                         gateway=gateway,
                         server_id=server_id,
@@ -2022,7 +2023,13 @@ def create_server(
                         storage_type=storage_type,
                     )
                 )
-                return tool_result(result)
+                if exported.payload is None:
+                    return tool_result(exported.document)
+                return tool_result_with_image(
+                    exported.document,
+                    payload=exported.payload,
+                    mime_type=str(exported.document["mime_type"]),
+                )
             if params.name == "comfyui.model.list":
                 validate_fixed_arguments(
                     arguments, {"server_id", "kind", "query", "limit", "cursor"}

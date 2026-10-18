@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 
 import pytest
@@ -58,13 +60,13 @@ def _written_path(root: Path, saved_path: str) -> Path:
     return root / Path(saved_path).relative_to("upload")
 
 
-def test_default_mode_reports_metadata_without_writing(tmp_path: Path, monkeypatch) -> None:
+def test_default_mode_returns_payload_without_writing(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv(IMAGE_TAG_DIR_ENV, raising=False)
     gateway = _FakeGateway()
 
-    result = export_output_image(gateway=gateway, server_id="local", filename="out.png")
+    exported = export_output_image(gateway=gateway, server_id="local", filename="out.png")
 
-    assert result == {
+    assert exported.document == {
         "server_id": "local",
         "filename": "out.png",
         "subfolder": "",
@@ -73,6 +75,7 @@ def test_default_mode_reports_metadata_without_writing(tmp_path: Path, monkeypat
         "size_bytes": len(_PAYLOAD),
         "image_tag": None,
     }
+    assert exported.payload == _PAYLOAD
     assert gateway.downloads == [("out.png", "", "output")]
     assert gateway.transfers == []
     assert list(tmp_path.iterdir()) == []
@@ -82,12 +85,13 @@ def test_tag_mode_writes_file_and_returns_renderable_tag(tmp_path: Path, monkeyp
     monkeypatch.setenv(IMAGE_TAG_DIR_ENV, str(tmp_path))
     gateway = _FakeGateway()
 
-    result = export_output_image(gateway=gateway, server_id="local", filename="out.png")
+    exported = export_output_image(gateway=gateway, server_id="local", filename="out.png")
 
-    saved_path = result["saved_path"]
+    saved_path = exported.document["saved_path"]
     assert saved_path.startswith("upload/")
-    assert result["image_tag"] == f"@@image:{saved_path}@@"
-    assert result["size_bytes"] == len(_PAYLOAD)
+    assert exported.document["image_tag"] == f"@@image:{saved_path}@@"
+    assert exported.document["size_bytes"] == len(_PAYLOAD)
+    assert exported.payload is None
     assert _written_path(tmp_path, saved_path).read_bytes() == _PAYLOAD
     assert gateway.downloads == []
     assert gateway.transfers == [("out.png", _written_path(tmp_path, saved_path), "", "output")]
@@ -98,24 +102,25 @@ def test_explicit_tag_root_overrides_environment(tmp_path: Path, monkeypatch) ->
     arg_root = tmp_path / "from-arg"
     monkeypatch.setenv(IMAGE_TAG_DIR_ENV, str(env_root))
 
-    result = export_output_image(
+    exported = export_output_image(
         gateway=_FakeGateway(),
         server_id="local",
         filename="out.png",
         tag_root=str(arg_root),
     )
 
-    assert _written_path(arg_root, result["saved_path"]).exists()
+    assert _written_path(arg_root, exported.document["saved_path"]).exists()
     assert not env_root.exists()
 
 
-def test_blank_tag_root_keeps_metadata_only_mode(tmp_path: Path, monkeypatch) -> None:
+def test_blank_tag_root_keeps_default_mode(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv(IMAGE_TAG_DIR_ENV, "   ")
     gateway = _FakeGateway()
 
-    result = export_output_image(gateway=gateway, server_id="local", filename="out.png")
+    exported = export_output_image(gateway=gateway, server_id="local", filename="out.png")
 
-    assert result["image_tag"] is None
+    assert exported.document["image_tag"] is None
+    assert exported.payload == _PAYLOAD
     assert gateway.transfers == []
     assert list(tmp_path.iterdir()) == []
 
@@ -125,24 +130,24 @@ def test_filename_without_extension_still_yields_a_saved_path(
 ) -> None:
     monkeypatch.setenv(IMAGE_TAG_DIR_ENV, str(tmp_path))
 
-    result = export_output_image(gateway=_FakeGateway(), server_id="local", filename="out")
+    exported = export_output_image(gateway=_FakeGateway(), server_id="local", filename="out")
 
-    assert result["saved_path"].startswith("upload/")
-    assert "." in Path(result["saved_path"]).name
+    assert exported.document["saved_path"].startswith("upload/")
+    assert "." in Path(exported.document["saved_path"]).name
 
 
 def test_subfolder_is_validated_and_forwarded(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.delenv(IMAGE_TAG_DIR_ENV, raising=False)
     gateway = _FakeGateway()
 
-    result = export_output_image(
+    exported = export_output_image(
         gateway=gateway,
         server_id="local",
         filename="out.png",
         subfolder="sub/dir",
     )
 
-    assert result["subfolder"] == "sub/dir"
+    assert exported.document["subfolder"] == "sub/dir"
     assert gateway.downloads == [("out.png", "sub/dir", "output")]
 
 
@@ -172,6 +177,23 @@ def test_oversized_output_is_not_silently_truncated(tmp_path: Path, monkeypatch)
             server_id="local",
             filename="out.png",
         )
+
+
+def test_tool_result_with_image_emits_native_image_block() -> None:
+    from comfyui_mcp_skills.adapters.mcp.tooling import tool_result_with_image
+
+    document = {"server_id": "local", "filename": "out.png", "mime_type": "image/png"}
+    result = tool_result_with_image(document, payload=_PAYLOAD, mime_type="image/png")
+
+    assert result.is_error is False
+    assert len(result.content) == 2
+    text_block, image_block = result.content
+    assert text_block.type == "text"
+    assert json.loads(text_block.text) == document
+    assert image_block.type == "image"
+    assert image_block.mime_type == "image/png"
+    assert base64.b64decode(image_block.data) == _PAYLOAD
+    assert result.structured_content == document
 
 
 def test_tool_is_registered_and_scoped_to_authoring() -> None:

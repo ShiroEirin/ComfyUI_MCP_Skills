@@ -2,11 +2,11 @@
 
 Two modes share the same validation and download path:
 
-* default (no tag directory configured): the image is fetched only so the
-  caller can confirm it exists and learn its size; nothing is written to disk
-  and ``image_tag`` stays ``None``.
+* default (no tag directory configured): the image bytes are handed back to the
+  caller so the adapter can emit a native MCP image block -- the host renders,
+  persists and de-duplicates it on its own. This server writes nothing.
 * tag mode (``COMFYUI_MCP_IMAGE_TAG_DIR`` set, or ``tag_root`` passed): the
-  image is stored under ``<root>/<YYYY-MM-DD>/`` and the result carries a
+  image is stored under ``<root>/<YYYY-MM-DD>/`` and the document carries a
   ``@@image:upload/<date>/<name>@@`` tag for hosts that render image tags.
 """
 
@@ -16,6 +16,7 @@ import mimetypes
 import os
 import secrets
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,19 @@ from comfyui_mcp_skills.domain.media import MAX_OUTPUT_BYTES, validate_media_loc
 IMAGE_TAG_DIR_ENV = "COMFYUI_MCP_IMAGE_TAG_DIR"
 _UPLOAD_PREFIX = "upload"
 _SUPPORTED_STORAGE_TYPES = frozenset({"output"})
+
+
+@dataclass(frozen=True)
+class OutputImageExport:
+    """One exported output image plus the metadata document describing it.
+
+    ``payload`` carries the image bytes in the default mode so the caller can
+    emit a native image block; in tag mode the bytes were already written to
+    disk and ``payload`` stays ``None``.
+    """
+
+    document: dict[str, Any]
+    payload: bytes | None
 
 
 def _mime_type_for(filename: str) -> str:
@@ -54,7 +68,7 @@ def export_output_image(
     subfolder: str = "",
     storage_type: str = "output",
     tag_root: str | None = None,
-) -> dict[str, Any]:
+) -> OutputImageExport:
     """Download one ComfyUI output image and describe it for the caller."""
     if storage_type not in _SUPPORTED_STORAGE_TYPES:
         raise MCPError(code=INVALID_PARAMS, message="Unsupported output storage type")
@@ -79,7 +93,10 @@ def export_output_image(
             storage_type,
             max_bytes=MAX_OUTPUT_BYTES,
         )
-        return {**document, "size_bytes": len(payload), "image_tag": None}
+        return OutputImageExport(
+            document={**document, "size_bytes": len(payload), "image_tag": None},
+            payload=payload,
+        )
 
     date_dir = datetime.now().strftime("%Y-%m-%d")
     unique = secrets.token_hex(4)
@@ -93,9 +110,12 @@ def export_output_image(
         max_bytes=MAX_OUTPUT_BYTES,
     )
     relative = f"{_UPLOAD_PREFIX}/{date_dir}/{name}"
-    return {
-        **document,
-        "size_bytes": int(transferred["size_bytes"]),
-        "saved_path": relative,
-        "image_tag": f"@@image:{relative}@@",
-    }
+    return OutputImageExport(
+        document={
+            **document,
+            "size_bytes": int(transferred["size_bytes"]),
+            "saved_path": relative,
+            "image_tag": f"@@image:{relative}@@",
+        },
+        payload=None,
+    )
