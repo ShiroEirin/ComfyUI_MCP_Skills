@@ -431,6 +431,8 @@ class DiscoveryService:
                 break
             if not path.is_file() or path.suffix.lower() not in _MODEL_SUFFIXES:
                 continue
+            if _is_reparse_or_link(path):
+                continue
             relative = path.relative_to(models_dir).as_posix()
             if relative in wanted:
                 found[relative] = path

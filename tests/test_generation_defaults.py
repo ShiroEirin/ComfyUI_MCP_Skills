@@ -109,6 +109,15 @@ def test_corrupt_file_is_reported(tmp_path: Path, monkeypatch) -> None:
         load_defaults()
 
 
+def test_apply_defaults_ignores_a_corrupt_file(tmp_path: Path, monkeypatch) -> None:
+    target = _use_path(monkeypatch, tmp_path / "defaults.json")
+    target.write_text("{not json", encoding="utf-8")
+
+    assert apply_defaults({"prompt": "x"}, {"prompt": {}, "steps": {}}) == {
+        "prompt": "x"
+    }
+
+
 def test_defaults_tool_is_registered_for_execution_only() -> None:
     from comfyui_mcp_skills.adapters.mcp.tooling import fixed_tools
     from comfyui_mcp_skills.application.authorization import (

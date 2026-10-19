@@ -708,12 +708,34 @@ async def test_change_commit_inline_operations_plans_and_commits_in_one_call(
                 "operations": operations,
             },
         )
+        mixed = await client.call_tool(
+            "comfyui.admin.workflow.change.commit",
+            {
+                "plan_id": "plan_x",
+                "plan_digest": "a" * 64,
+                "server_id": "local",
+                "workflow_id": "portrait",
+                "operations": operations,
+            },
+        )
+        dry_run_without_operations = await client.call_tool(
+            "comfyui.admin.workflow.change.commit",
+            {
+                "plan_id": "plan_x",
+                "plan_digest": "a" * 64,
+                "dry_run": True,
+            },
+        )
 
     assert preview.structured_content["plan_id"]
     assert preview.structured_content["plan_digest"]
     # dry_run only plans; the committed call produces the unpublished Revision.
     assert "deployment_id" not in preview.structured_content
     assert committed.structured_content["deployment_id"]
+    assert json.loads(mixed.content[0].text)["code"] == "INVALID_ARGUMENTS"
+    assert json.loads(dry_run_without_operations.content[0].text)["code"] == (
+        "INVALID_ARGUMENTS"
+    )
 
 
 def test_extract_subgraph_records_boundary_contracts(tmp_path: Path) -> None:

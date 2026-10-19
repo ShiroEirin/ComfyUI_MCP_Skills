@@ -124,7 +124,12 @@ def apply_defaults(
     """
     if not parameters:
         return arguments
-    defaults = load_defaults()
+    try:
+        defaults = load_defaults()
+    except MCPError:
+        # A corrupt defaults file must never block a run; ``comfyui.defaults``
+        # reports the problem explicitly when the operator asks for it.
+        return arguments
     if not defaults:
         return arguments
     merged = dict(arguments)

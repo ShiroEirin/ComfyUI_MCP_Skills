@@ -1668,6 +1668,10 @@ def create_server(
                     )
                 operations = arguments.get("operations")
                 if operations is not None:
+                    if "plan_id" in arguments or "plan_digest" in arguments:
+                        raise ValueError(
+                            "operations cannot be combined with plan_id/plan_digest"
+                        )
                     dry_run = arguments.get("dry_run", False)
                     if not isinstance(dry_run, bool):
                         raise TypeError("dry_run must be a boolean")
@@ -1695,6 +1699,10 @@ def create_server(
                         )
                     )
                     return tool_result(committed)
+                if "dry_run" in arguments:
+                    raise ValueError("dry_run requires operations")
+                if "server_id" in arguments or "workflow_id" in arguments:
+                    raise ValueError("server_id/workflow_id require operations")
                 plan_id = required_string(arguments, "plan_id")
                 plan_digest = required_string(arguments, "plan_digest")
                 result = await anyio.to_thread.run_sync(
