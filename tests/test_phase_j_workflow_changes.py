@@ -653,6 +653,69 @@ async def test_authoring_change_plan_commit_and_admin_publish_tools(tmp_path: Pa
     assert active.graph["1"]["inputs"]["text"] == "through-mcp"
 
 
+@pytest.mark.anyio
+async def test_change_commit_inline_operations_plans_and_commits_in_one_call(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "default_server": "local",
+                "servers": [
+                    {"id": "local", "url": "http://127.0.0.1:8188", "enabled": True}
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    _changes, workflows = _services(tmp_path)
+    repositories = RepositoryBundle(
+        workflows=workflows,
+        runs=FileRunRepository(tmp_path),
+        assets=FileAssetRepository(tmp_path),
+        workflow_store="sqlite",
+        run_store="file",
+        asset_store="file",
+        store=SQLiteControlPlaneStore(tmp_path / "control-plane.sqlite3"),
+    )
+    authoring = create_server(
+        tmp_path,
+        repositories=repositories,
+        gateway_factory=lambda _config: _Gateway(),
+        authorization=AuthorizationContext(
+            "author-j", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
+        ),
+    )
+    operations = [
+        {"op": "set_input", "node_id": "1", "field": "text", "value": "inline-mode"}
+    ]
+
+    async with Client(authoring) as client:
+        preview = await client.call_tool(
+            "comfyui.admin.workflow.change.commit",
+            {
+                "server_id": "local",
+                "workflow_id": "portrait",
+                "operations": operations,
+                "dry_run": True,
+            },
+        )
+        committed = await client.call_tool(
+            "comfyui.admin.workflow.change.commit",
+            {
+                "server_id": "local",
+                "workflow_id": "portrait",
+                "operations": operations,
+            },
+        )
+
+    assert preview.structured_content["plan_id"]
+    assert preview.structured_content["plan_digest"]
+    # dry_run only plans; the committed call produces the unpublished Revision.
+    assert "deployment_id" not in preview.structured_content
+    assert committed.structured_content["deployment_id"]
+
+
 def test_extract_subgraph_records_boundary_contracts(tmp_path: Path) -> None:
     changes, workflows = _services(tmp_path)
 

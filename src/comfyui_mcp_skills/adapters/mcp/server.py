@@ -1651,11 +1651,50 @@ def create_server(
                 )
                 return tool_result(result)
             if params.name == "comfyui.admin.workflow.change.commit":
-                validate_fixed_arguments(arguments, {"plan_id", "plan_digest"})
+                validate_fixed_arguments(
+                    arguments,
+                    {
+                        "plan_id",
+                        "plan_digest",
+                        "server_id",
+                        "workflow_id",
+                        "operations",
+                        "dry_run",
+                    },
+                )
                 if workflow_changes is None:
                     raise ValueError(
                         "Workflow change commit requires the SQLite Workflow store"
                     )
+                operations = arguments.get("operations")
+                if operations is not None:
+                    dry_run = arguments.get("dry_run", False)
+                    if not isinstance(dry_run, bool):
+                        raise TypeError("dry_run must be a boolean")
+                    server_id = required_string(arguments, "server_id")
+                    workflow_id = required_string(arguments, "workflow_id")
+                    if not isinstance(operations, list) or not all(
+                        isinstance(operation, dict) for operation in operations
+                    ):
+                        raise TypeError("operations must be an array of objects")
+                    gateway = gateway_factory(servers.connection(server_id))
+                    object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
+                    planned = await anyio.to_thread.run_sync(
+                        lambda: workflow_changes.plan(
+                            workflow_id,
+                            server_id,
+                            operations,
+                            object_info=object_info,
+                        )
+                    )
+                    if dry_run:
+                        return tool_result(planned)
+                    committed = await anyio.to_thread.run_sync(
+                        lambda: workflow_changes.commit(
+                            str(planned["plan_id"]), str(planned["plan_digest"])
+                        )
+                    )
+                    return tool_result(committed)
                 plan_id = required_string(arguments, "plan_id")
                 plan_digest = required_string(arguments, "plan_digest")
                 result = await anyio.to_thread.run_sync(

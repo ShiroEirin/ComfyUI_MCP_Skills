@@ -1250,7 +1250,12 @@ def fixed_tools() -> list[Tool]:
         ),
         Tool(
             name="comfyui.admin.workflow.change.commit",
-            description="Commit a bound, unexpired change plan as an unpublished Revision.",
+            description=(
+                "Commit a bound, unexpired change plan as an unpublished Revision. "
+                "Pass plan_id + plan_digest to commit an existing plan, or "
+                "server_id + workflow_id + operations to plan and commit in one call "
+                "(dry_run=true returns the plan without committing)."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
@@ -1260,8 +1265,17 @@ def fixed_tools() -> list[Tool]:
                         "minLength": 64,
                         "maxLength": 64,
                     },
+                    "server_id": {"type": "string", "minLength": 1},
+                    "workflow_id": {"type": "string", "minLength": 1},
+                    "operations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "items": {"type": "object"},
+                    },
+                    "dry_run": {"type": "boolean", "default": False},
                 },
-                "required": ["plan_id", "plan_digest"],
+                "required": [],
                 "additionalProperties": False,
             },
             output_schema={"type": "object"},

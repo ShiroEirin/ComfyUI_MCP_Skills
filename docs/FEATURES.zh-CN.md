@@ -257,6 +257,7 @@ file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.d
 - 导入先验证、再创建未发布 Revision。
 - 变更先 plan，返回结构化 diff、依赖和输出契约影响。
 - commit 绑定 base Revision 与 plan digest。
+- **一次调用（内联模式）**：`change.commit` 也接受 `server_id` + `workflow_id` + `operations`，内部先 plan 再 commit，省去先调 `change.plan` 取 `plan_id`/`plan_digest` 的往返；`dry_run=true` 只返回计划不提交。原有 `plan_id` + `plan_digest` 两段式保持不变。
 - publish 原子切换 Deployment。
 - rollback 创建新 Revision，不删除历史。
 - 已运行 Job 始终保留原 Revision 和 Deployment 绑定。
