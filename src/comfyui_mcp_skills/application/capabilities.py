@@ -394,6 +394,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("output", "image", "download", "export"),
     ),
     CapabilitySpec(
+        "comfyui.defaults",
+        "Manage generation defaults",
+        "Read, update, or clear the parameter defaults applied to workflow runs.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.LOW,
+        ("defaults", "parameters", "generation"),
+    ),
+    CapabilitySpec(
         "comfyui.model.list",
         "List ComfyUI models",
         "Search model folders and server-side model names.",

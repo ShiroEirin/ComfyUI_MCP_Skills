@@ -133,6 +133,18 @@ comfyui.capability.describe
 - 目标节点与输入字段必须存在，否则请求被拒绝，不静默忽略。
 - 最多 64 条；覆盖内容纳入请求身份，同一 `idempotency_key` 携带不同覆盖会冲突。
 
+### `comfyui.defaults`（生成默认值）
+
+调用工作流时**未传**的参数，会用这里存储的默认值补齐 —— 设定一次后，生图只需传 `prompt`。
+
+- `action="get"`（默认）：返回当前默认值与文件位置。
+- `action="set"` + `values`：写入默认值（标量，最多 64 项），原子落盘。
+- `action="clear"`：清空默认值。
+
+存储位置：`$COMFYUI_MCP_DEFAULTS_PATH`，未设置时为 `$COMFYUI_MCP_DIR/defaults.json`（`COMFYUI_MCP_DIR` 缺省为工作目录），可直接手工编辑。
+
+约束：只对**工作流声明过的参数**生效，显式传入的参数优先，因此默认值不会扩大工作流的参数契约。
+
 ## 5. Job 生命周期与恢复
 
 典型状态：

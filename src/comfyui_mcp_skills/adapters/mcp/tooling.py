@@ -1111,6 +1111,43 @@ def fixed_tools() -> list[Tool]:
             ),
         ),
         Tool(
+            name="comfyui.defaults",
+            description=(
+                "Read, update, or clear generation defaults. Defaults fill the "
+                "workflow parameters a caller omits, so a run only needs the values "
+                "that actually change."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["get", "set", "clear"],
+                        "default": "get",
+                    },
+                    "values": {
+                        "type": "object",
+                        "description": (
+                            "Parameter name to scalar default; required for action=set"
+                        ),
+                        "maxProperties": 64,
+                        "additionalProperties": {
+                            "type": ["boolean", "integer", "number", "string"]
+                        },
+                    },
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=False,
+            ),
+        ),
+        Tool(
             name="comfyui.model.list",
             description="List model folders or search models within one folder.",
             input_schema={

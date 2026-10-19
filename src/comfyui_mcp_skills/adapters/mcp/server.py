@@ -36,6 +36,13 @@ from mcp.types import (
 from mcp_types import INVALID_PARAMS
 
 from comfyui_mcp_skills import __version__
+from comfyui_mcp_skills.adapters.mcp.defaults import (
+    apply_defaults,
+    clear_defaults,
+    describe_defaults,
+    read_action,
+    save_defaults,
+)
 from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_URI
 from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
 from comfyui_mcp_skills.adapters.mcp.output_image import export_output_image
@@ -1144,6 +1151,7 @@ def create_server(
                                 "without line breaks"
                             )
                     targets = tuple(dict.fromkeys(targets_raw))
+                arguments = apply_defaults(arguments, workflow.parameters)
                 await ctx.session.report_progress(1, None, "Submitting ComfyUI workflow")
                 job = await anyio.to_thread.run_sync(
                     lambda: execution.submit(
@@ -1993,6 +2001,17 @@ def create_server(
                     )
                 )
                 return tool_result(result)
+            if params.name == "comfyui.defaults":
+                validate_fixed_arguments(arguments, {"action", "values"})
+                action = read_action(optional_string(arguments, "action", "get"))
+                if action == "get":
+                    return tool_result(describe_defaults())
+                if action == "clear":
+                    return tool_result(clear_defaults())
+                raw_values = arguments.get("values")
+                if not isinstance(raw_values, dict):
+                    raise TypeError("values must be an object for action=set")
+                return tool_result(save_defaults(raw_values))
             if params.name == "comfyui.node.list":
                 validate_fixed_arguments(arguments, {"server_id", "query", "limit", "cursor"})
                 server_id = required_string(arguments, "server_id")
