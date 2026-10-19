@@ -20,6 +20,7 @@ def test_authoring_tools_publish_strict_read_only_schemas() -> None:
         "properties": {
             "workflow_id": {"type": "string", "minLength": 1},
             "server_id": {"type": "string", "minLength": 1},
+            "suggest_parameters": {"type": "boolean", "default": False},
         },
         "required": ["workflow_id", "server_id"],
         "additionalProperties": False,

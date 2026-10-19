@@ -262,7 +262,9 @@ file-backed 的 `comfyui.admin.workflow.set_enabled` / `comfyui.admin.workflow.d
 - rollback 创建新 Revision，不删除历史。
 - 已运行 Job 始终保留原 Revision 和 Deployment 绑定。
 
-当前已交付的图操作（经 `comfyui.admin.workflow.change.plan` 在 AUTHORING 面提交后随 Revision commit 生效）：
+当前已交付的图操作（经 `comfyui.admin.workflow.change.plan`，或用 `change.commit` 的**内联模式**一次调用；均随 Revision commit 生效）：
+
+参数暴露辅助：`comfyui.workflow.describe(suggest_parameters=true)` 扫描已发布 Revision 的图，按 ComfyUI 常见加载器/采样器约定（checkpoint、LoRA 及其权重、sampler、latent 尺寸等）列出**值得暴露成参数**的输入，跳过已连线输入与已暴露字段，最多返回 50 条；调用方据此生成 `expose_parameter` 操作。
 
 - 节点生命周期：`add_node`、`remove_node`、`replace_node`（带连接与参数目标校验）。
 - 连接与输入：`connect`、`disconnect`、`set_input`、`expose_parameter`。

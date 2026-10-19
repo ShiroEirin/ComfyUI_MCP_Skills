@@ -1197,12 +1197,17 @@ def fixed_tools() -> list[Tool]:
         ),
         Tool(
             name="comfyui.workflow.describe",
-            description="Describe one server's published workflow revision and deployment.",
+            description=(
+                "Describe one server's published workflow revision and deployment. "
+                "With suggest_parameters the response also lists inputs worth "
+                "exposing as workflow parameters."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     "workflow_id": {"type": "string", "minLength": 1},
                     "server_id": {"type": "string", "minLength": 1},
+                    "suggest_parameters": {"type": "boolean", "default": False},
                 },
                 "required": ["workflow_id", "server_id"],
                 "additionalProperties": False,

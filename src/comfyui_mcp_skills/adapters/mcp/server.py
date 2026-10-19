@@ -151,6 +151,7 @@ from comfyui_mcp_skills.domain.errors import (
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.orchestration import PROVISIONING_WORK_TYPE
+from comfyui_mcp_skills.domain.parameter_suggestions import suggest_parameters
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
 from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
@@ -1741,9 +1742,18 @@ def create_server(
                 "comfyui.workflow.describe",
                 "comfyui.workflow.dependencies.check",
             }:
-                validate_fixed_arguments(arguments, {"workflow_id", "server_id"})
+                validate_fixed_arguments(
+                    arguments, {"workflow_id", "server_id", "suggest_parameters"}
+                )
                 workflow_id = required_string(arguments, "workflow_id")
                 server_id = required_string(arguments, "server_id")
+                suggest = arguments.get("suggest_parameters", False)
+                if not isinstance(suggest, bool):
+                    raise TypeError("suggest_parameters must be a boolean")
+                if suggest and params.name != "comfyui.workflow.describe":
+                    raise ValueError(
+                        "suggest_parameters only applies to comfyui.workflow.describe"
+                    )
                 gateway = gateway_factory(servers.connection(server_id))
                 if workflow_inspection is None:
                     raise ValueError("Workflow inspection requires the SQLite Workflow store")
@@ -1755,6 +1765,30 @@ def create_server(
                 result = await anyio.to_thread.run_sync(
                     lambda: operation(workflow_id, server_id, gateway)
                 )
+                if suggest:
+                    if not isinstance(workflow_repository, SQLiteWorkflowRepository):
+                        raise ValueError(
+                            "Parameter suggestions require the SQLite Workflow store"
+                        )
+                    try:
+                        deployment = workflow_repository.describe(workflow_id, server_id)
+                        revision = workflow_repository.get_revision(
+                            _required_revision_id(deployment, workflow_id, server_id)
+                        )
+                    except LookupError as exc:
+                        raise WorkflowNotFound(
+                            f"Workflow not found: {server_id}/{workflow_id}"
+                        ) from exc
+                    graph = revision.get("graph")
+                    if not isinstance(graph, dict):
+                        raise ValueError("Workflow revision has no graph")
+                    stored = revision.get("parameters")
+                    result = {
+                        **result,
+                        "parameter_suggestions": suggest_parameters(
+                            graph, stored if isinstance(stored, dict) else {}
+                        ),
+                    }
                 return tool_result(result)
             if params.name == "comfyui.job.get":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id"})
