@@ -1149,12 +1149,18 @@ def fixed_tools() -> list[Tool]:
         ),
         Tool(
             name="comfyui.model.list",
-            description="List model folders or search models within one folder.",
+            description=(
+                "List model folders or search models within one folder. With "
+                "include_metadata the response also carries on-disk facts (size, "
+                "mtime, safetensors training metadata) for the returned page, "
+                "which requires the server entry to configure local_root."
+            ),
             input_schema={
                 "type": "object",
                 "properties": {
                     **discovery_properties,
                     "kind": {"type": "string", "default": ""},
+                    "include_metadata": {"type": "boolean", "default": False},
                 },
                 "required": ["server_id"],
                 "additionalProperties": False,

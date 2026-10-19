@@ -667,15 +667,26 @@ def create_admin_server(
                 )
                 return _result(result)
             if params.name == "comfyui.model.list":
-                _validate_keys(arguments, {"server_id", "kind", "query", "limit", "cursor"})
+                _validate_keys(
+                    arguments,
+                    {"server_id", "kind", "query", "limit", "cursor", "include_metadata"},
+                )
                 server_id = _required_string(arguments, "server_id")
                 kind = _optional_string(arguments, "kind", "")
                 query = _optional_string(arguments, "query", "")
                 cursor = _optional_string(arguments, "cursor", "")
                 limit = _bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                include_metadata = arguments.get("include_metadata", False)
+                if not isinstance(include_metadata, bool):
+                    raise TypeError("include_metadata must be a boolean")
                 result = await anyio.to_thread.run_sync(
                     lambda: discovery.models(
-                        server_id, kind=kind, query=query, limit=limit, cursor=cursor
+                        server_id,
+                        kind=kind,
+                        query=query,
+                        limit=limit,
+                        cursor=cursor,
+                        include_metadata=include_metadata,
                     )
                 )
                 return _result(result)

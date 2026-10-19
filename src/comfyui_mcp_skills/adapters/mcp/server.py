@@ -2096,13 +2096,24 @@ def create_server(
                 )
             if params.name == "comfyui.model.list":
                 validate_fixed_arguments(
-                    arguments, {"server_id", "kind", "query", "limit", "cursor"}
+                    arguments,
+                    {
+                        "server_id",
+                        "kind",
+                        "query",
+                        "limit",
+                        "cursor",
+                        "include_metadata",
+                    },
                 )
                 server_id = required_string(arguments, "server_id")
                 kind = optional_string(arguments, "kind", "")
                 query = optional_string(arguments, "query", "")
                 cursor = optional_string(arguments, "cursor", "")
                 limit = arguments.get("limit", 50)
+                include_metadata = arguments.get("include_metadata", False)
+                if not isinstance(include_metadata, bool):
+                    raise TypeError("include_metadata must be a boolean")
                 result = await anyio.to_thread.run_sync(
                     lambda: discovery.models(
                         server_id,
@@ -2110,6 +2121,7 @@ def create_server(
                         query=query,
                         limit=limit,
                         cursor=cursor,
+                        include_metadata=include_metadata,
                     )
                 )
                 return tool_result(result)

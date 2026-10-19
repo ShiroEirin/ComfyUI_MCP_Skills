@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import stat
@@ -19,6 +20,11 @@ from comfyui_mcp_skills.domain.errors import WorkflowArgumentsError, WorkflowNot
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 
 _PLUGIN_SCAN_BUDGET = 201
+_MODEL_SCAN_BUDGET = 20001
+_MODEL_SUFFIXES = frozenset(
+    {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
+)
+_MAX_SAFETENSORS_HEADER = 4 * 1024 * 1024
 # ``/object_info`` is a multi-megabyte payload on a real install and the gateway
 # keeps no cache of its own, so a short TTL keeps repeated node/blueprint
 # discovery off the network without serving a stale inventory for long.
@@ -379,6 +385,7 @@ class DiscoveryService:
         query: str = "",
         limit: int = 50,
         cursor: str = "",
+        include_metadata: bool = False,
     ) -> dict[str, Any]:
         gateway = self._gateway_factory(self._servers.connection(server_id))
         if not kind:
@@ -389,7 +396,67 @@ class DiscoveryService:
         values = sorted(str(value) for value in gateway.get_models(kind))
         page = self._page(values, query=query, limit=limit, cursor=cursor)
         page["kind"] = kind
+        if include_metadata:
+            page["metadata"] = self._model_metadata(server_id, kind, page["items"])
         return page
+
+    def _model_metadata(
+        self, server_id: str, kind: str, names: list[Any]
+    ) -> dict[str, Any]:
+        """Read on-disk facts for one page of model files (needs ``local_root``)."""
+        connection = self._servers.connection(server_id)
+        local_root = connection.get("local_root")
+        if not isinstance(local_root, str) or not local_root.strip():
+            return {"available": False, "reason": "no_local_root"}
+        root = Path(local_root)
+        if not root.exists():
+            return {"available": False, "reason": "root_not_found"}
+        if not root.is_dir():
+            return {"available": False, "reason": "root_not_directory"}
+        if not _path_is_safe_directory(root):
+            return {"available": False, "reason": "root_unsafe"}
+        wanted = [str(name) for name in names]
+        models_dir = root / "models" / kind
+        if not models_dir.is_dir():
+            return {"available": True, "files": [], "missing": wanted}
+        if not _path_is_safe_directory(models_dir):
+            return {"available": False, "reason": "models_dir_unsafe"}
+        found: dict[str, Path] = {}
+        scanned = 0
+        for path in models_dir.rglob("*"):
+            scanned += 1
+            if scanned > _MODEL_SCAN_BUDGET:
+                break
+            if len(found) >= len(wanted):
+                break
+            if not path.is_file() or path.suffix.lower() not in _MODEL_SUFFIXES:
+                continue
+            relative = path.relative_to(models_dir).as_posix()
+            if relative in wanted:
+                found[relative] = path
+        files: list[dict[str, Any]] = []
+        missing: list[str] = []
+        for name in wanted:
+            path = found.get(name)
+            if path is None:
+                missing.append(name)
+                continue
+            try:
+                info = path.stat()
+            except OSError:
+                missing.append(name)
+                continue
+            files.append(
+                {
+                    "name": name,
+                    "size_bytes": info.st_size,
+                    "mtime": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(info.st_mtime)
+                    ),
+                    "metadata": _safetensors_metadata(path),
+                }
+            )
+        return {"available": True, "files": files, "missing": missing}
 
     def plugins(self, server_id: str) -> dict[str, Any]:
         """List custom_nodes plugins from a locally configured ComfyUI root.
@@ -534,3 +601,34 @@ class DiscoveryService:
             "next_cursor": str(next_offset) if next_offset < len(items) else "",
             "total": len(items),
         }
+
+
+def _safetensors_metadata(path: Path) -> dict[str, str]:
+    """Read the bounded ``__metadata__`` block of a safetensors file.
+
+    Training metadata such as ``ss_tag_frequency`` (trigger words) lives there,
+    so a caller can pick a LoRA without opening a multi-gigabyte file.
+    """
+    if path.suffix.lower() != ".safetensors":
+        return {}
+    try:
+        with path.open("rb") as handle:
+            length_raw = handle.read(8)
+            if len(length_raw) != 8:
+                return {}
+            length = int.from_bytes(length_raw, "little")
+            if length <= 0 or length > _MAX_SAFETENSORS_HEADER:
+                return {}
+            header = json.loads(handle.read(length).decode("utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(header, dict):
+        return {}
+    raw = header.get("__metadata__")
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        str(key)[:128]: str(value)[:512]
+        for key, value in raw.items()
+        if isinstance(value, str)
+    }

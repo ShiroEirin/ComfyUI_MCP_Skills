@@ -82,7 +82,7 @@ comfyui.capability.describe
 
 节点感知与建议工具（均已交付，OBSERVE 只读面，OPERATIONS/AUTHORING/ADMIN 可见，EXECUTION 面不可见）：
 
-- `comfyui.node.list` / `comfyui.node.describe` / `comfyui.model.list`：节点/模型目录（AUTHORING 与 ADMIN 面可见，供改工作流时查节点）。
+- `comfyui.node.list` / `comfyui.node.describe` / `comfyui.model.list`：节点/模型目录（AUTHORING 与 ADMIN 面可见，供改工作流时查节点）。`model.list` 加 `include_metadata=true` 时额外返回该页模型文件的磁盘事实（`size_bytes`、`mtime`、safetensors `__metadata__`——后者含 `ss_tag_frequency` 训练标签/触发词），需要 server 条目配置 `local_root`；未配置时降级为 `{"available": false, "reason": "no_local_root"}`，不做猜测。
 - `comfyui.node.blueprint`：目标驱动紧凑投影（≤10 节点 × ≤8 字段 × ≤8 枚举）。
 - `comfyui.model.guidance`：社区共识模型家族起点（sampler/scheduler/steps/CFG/resolution）。
 - `comfyui.job.history.suggest`：本地运行历史证据（resolved_inputs + job 状态统计，SQLite 门控）。
