@@ -51,8 +51,8 @@ def normalize_parameters(schema: Any) -> dict[str, dict[str, Any]]:
     for name, metadata in raw_parameters.items():
         if not isinstance(name, str) or not name or not isinstance(metadata, dict):
             raise ValueError("Workflow parameter metadata must be an object")
-        if name == "_execution":
-            raise ValueError('Workflow parameter name "_execution" is reserved')
+        if name in {"_execution", "_overrides"}:
+            raise ValueError(f'Workflow parameter name "{name}" is reserved')
         parameters[name] = dict(metadata)
 
     for key, metadata in raw_ui_parameters.items():

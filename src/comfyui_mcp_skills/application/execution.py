@@ -91,6 +91,7 @@ class ExecutionService:
         server_connection: dict[str, Any] | None = None,
         priority: float | None = None,
         targets: tuple[str, ...] = (),
+        overrides: dict[str, Any] | None = None,
     ) -> Job:
         if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
             raise ValueError("idempotency_key must be a string up to 256 characters")
@@ -127,7 +128,7 @@ class ExecutionService:
             server_id, workflow.parameters, workflow.graph, arguments, owner_id
         )
         digest_arguments = arguments
-        if priority is not None or targets:
+        if priority is not None or targets or overrides:
             # Normalize before hashing: priority is float, targets are set-like
             # (order is meaningless to ComfyUI), so semantically identical
             # requests always produce the same digest regardless of caller.
@@ -146,6 +147,10 @@ class ExecutionService:
                     ),
                 },
             }
+            if overrides:
+                digest_arguments["_overrides"] = {
+                    key: overrides[key] for key in sorted(overrides)
+                }
         request_digest = self._runs.request_digest(workflow_id, digest_arguments)
         client_id = client_id or uuid.uuid4().hex
         connection = (
@@ -153,6 +158,8 @@ class ExecutionService:
         )
         gateway = self._gateway_factory(connection)
         graph = self._inject(workflow.graph, workflow.parameters, resolved)
+        if overrides:
+            _apply_overrides(graph, overrides)
         if targets and any(target not in graph for target in targets):
             raise ValueError(
                 "partial_execution_targets references a node missing from the "
@@ -642,3 +649,43 @@ class ExecutionService:
                 raise WorkflowArgumentsError(f'Workflow parameter "{name}" targets a missing input')
             inputs[field] = value
         return result
+
+
+def _apply_overrides(graph: dict[str, Any], overrides: dict[str, Any]) -> None:
+    """Apply one-run-only node input overrides to an injected graph copy.
+
+    Targets use the ``<node_id>.<input_field>`` form and accept scalars only, so
+    a one-off run can swap a checkpoint or a LoRA weight without publishing a new
+    Revision. Rewiring a graph stays the job of the Revisions change surface.
+    """
+    if not isinstance(overrides, dict):
+        raise TypeError("overrides must be an object")
+    if len(overrides) > 64:
+        raise ValueError("overrides must not exceed 64 entries")
+    for target, value in overrides.items():
+        if (
+            not isinstance(target, str)
+            or len(target) > 256
+            or "\r" in target
+            or "\n" in target
+        ):
+            raise TypeError("override targets must be strings without line breaks")
+        node_id, separator, field = target.partition(".")
+        node = graph.get(node_id) if separator and field else None
+        if not isinstance(node, dict):
+            raise WorkflowArgumentsError(
+                f'Override target "{target}" must name "<node_id>.<input_field>" '
+                "of an existing node"
+            )
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict) or field not in inputs:
+            raise WorkflowArgumentsError(
+                f'Override target "{target}" references a missing input'
+            )
+        if isinstance(value, (list, dict)) or not isinstance(
+            value, (bool, int, float, str)
+        ):
+            raise WorkflowArgumentsError(
+                f'Override target "{target}" accepts scalar values only'
+            )
+        inputs[field] = value

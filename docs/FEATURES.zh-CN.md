@@ -97,7 +97,7 @@ comfyui.capability.describe
 
 每个已启用工作流参与动态目录。单个 MCP 端点默认投影 8 个动态工作流工具；部署者可通过 `COMFYUI_MCP_MAX_DYNAMIC_TOOLS` 在 1–128 范围内提高预算，服务仍按稳定排序选择。该配置只改变已授权动态工作流的可见数量，不扩大 Toolset/Scope 权限；其他工作流仍可通过目录和 Resource 管理。输入 schema 来自工作流 `schema.json`。Agent 只能提交声明过的参数，服务在注入节点输入前执行类型、必填项和额外字段校验。
 
-通用执行控制位于 `_execution`：
+通用执行控制位于 `_execution`；另有**一次性节点输入覆盖** `_overrides`：
 
 ```json
 {
@@ -107,6 +107,10 @@ comfyui.capability.describe
     "idempotency_key": "character-001",
     "wait": true,
     "wait_timeout_seconds": 120
+  },
+  "_overrides": {
+    "4.ckpt_name": "other-checkpoint.safetensors",
+    "10.strength_model": 0.7
   }
 }
 ```
@@ -120,6 +124,14 @@ comfyui.capability.describe
 - 同一键携带不同参数会返回冲突，而不是复用错误结果。
 - `priority`（-1000..1000）设置队列优先级，负数跳队；与 `idempotency_key` 一并纳入请求身份，同一键不同 priority 会冲突。
 - `partial_execution_targets`（节点 ID 数组，最多 100 个）只执行这些节点所需的子图；目标节点必须在注入后图内存在，否则请求被拒绝且不占用幂等键（可修正后重试）。
+
+### `_overrides`（一次性覆盖，不落 Revision）
+
+按 `"<node_id>.<input_field>"` 键覆盖本次提交的节点输入，**在 Workflow 参数注入之后应用**，且**永不写回已发布 Revision**。用于「换个 checkpoint / 调一下 LoRA 权重再出一张」这类高频低风险改动，无需走 `workflow.change.plan` → `commit` 发布新 Revision。
+
+- 只接受**标量**（boolean / integer / number / string）；改图连线仍走 Revisions 变更面（`add_node` / `connect` 等）。
+- 目标节点与输入字段必须存在，否则请求被拒绝，不静默忽略。
+- 最多 64 条；覆盖内容纳入请求身份，同一 `idempotency_key` 携带不同覆盖会冲突。
 
 ## 5. Job 生命周期与恢复
 

@@ -45,6 +45,7 @@ from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     EXECUTION_PROPERTY,
     JOB_SCHEMA,
+    OVERRIDES_PROPERTY,
     UI_EXTENSION_ID,
     bounded_integer,
     client_supports_apps,
@@ -901,6 +902,7 @@ def create_server(
             workflow = canonical_workflow_map[name]
             schema = build_input_schema(workflow.parameters)
             schema["properties"]["_execution"] = EXECUTION_PROPERTY
+            schema["properties"]["_overrides"] = OVERRIDES_PROPERTY
             canonical_tools.append(
                 decorate_tool(
                     Tool(
@@ -1078,6 +1080,9 @@ def create_server(
             if requested_name in workflow_map:
                 workflow = workflow_map[requested_name]
                 execution_options = arguments.pop("_execution", {})
+                overrides_options = arguments.pop("_overrides", {})
+                if not isinstance(overrides_options, dict):
+                    raise TypeError("_overrides must be an object")
                 if not isinstance(execution_options, dict):
                     raise TypeError("_execution must be an object")
                 idempotency_key = execution_options.get("idempotency_key", "")
@@ -1150,6 +1155,7 @@ def create_server(
                         server_connection=owner_server_connection(owner_id, workflow.server_id),
                         priority=priority,
                         targets=targets,
+                        overrides=overrides_options,
                     )
                 )
                 await ctx.session.report_progress(2, None, "Workflow submitted")

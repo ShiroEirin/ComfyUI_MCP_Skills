@@ -178,6 +178,27 @@ EXECUTION_PROPERTY: dict[str, Any] = {
     "additionalProperties": False,
 }
 
+OVERRIDES_PROPERTY: dict[str, Any] = {
+    "type": "object",
+    "description": (
+        "One-run-only overrides for this submission, keyed by "
+        "'<node_id>.<input_field>' (for example {'4.ckpt_name': 'other.safetensors'}). "
+        "Applied after the workflow parameters and never written back to the "
+        "published Revision."
+    ),
+    "maxProperties": 64,
+    "propertyNames": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 256,
+        "pattern": r"^(?!.*[\r\n]).+$",
+    },
+    "additionalProperties": {
+        "type": ["boolean", "integer", "number", "string"],
+        "description": "Scalar input value; graph wiring is not allowed here",
+    },
+}
+
 
 def _slug(value: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-").lower()
