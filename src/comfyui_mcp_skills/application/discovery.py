@@ -44,6 +44,11 @@ _PLUGIN_TYPE_TAGS: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
+def _normalized_model_name(name: str) -> str:
+    """Compare model identifiers across platform separator spellings."""
+    return name.replace("\\", "/")
+
+
 def _is_reparse_or_link(path: Path) -> bool:
     """Reject Windows reparse points (junctions) and symlinks."""
     try:
@@ -416,6 +421,10 @@ class DiscoveryService:
         if not _path_is_safe_directory(root):
             return {"available": False, "reason": "root_unsafe"}
         wanted = [str(name) for name in names]
+        # ComfyUI reports Windows sub-folder entries with a backslash while
+        # ``Path.as_posix()`` yields forward slashes, so match on one
+        # normalized form and report the caller's original spelling back.
+        wanted_names = {_normalized_model_name(name): name for name in wanted}
         models_dir = root / "models" / kind
         if not models_dir.is_dir():
             return {"available": True, "files": [], "missing": wanted}
@@ -434,8 +443,9 @@ class DiscoveryService:
             if _is_reparse_or_link(path):
                 continue
             relative = path.relative_to(models_dir).as_posix()
-            if relative in wanted:
-                found[relative] = path
+            original = wanted_names.get(relative)
+            if original is not None:
+                found[original] = path
         files: list[dict[str, Any]] = []
         missing: list[str] = []
         for name in wanted:

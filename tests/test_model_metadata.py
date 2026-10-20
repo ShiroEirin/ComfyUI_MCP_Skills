@@ -96,3 +96,34 @@ def test_models_without_metadata_flag_keeps_the_plain_page() -> None:
     page = service.models("local", kind="loras")
 
     assert "metadata" not in page
+
+
+class _WindowsGateway:
+    """Windows ComfyUI spells sub-folder entries with a backslash."""
+
+    def get_models(self, _kind: str) -> list[str]:
+        return ["alpha.safetensors", "sub\\beta.safetensors", "missing.safetensors"]
+
+    def get_model_folders(self) -> list[str]:
+        return ["loras"]
+
+
+def test_models_metadata_matches_windows_backslash_names(tmp_path: Path) -> None:
+    _write_safetensors(tmp_path / "models" / "loras" / "alpha.safetensors", {"a": "1"})
+    _write_safetensors(
+        tmp_path / "models" / "loras" / "sub" / "beta.safetensors", {"b": "2"}
+    )
+    service = DiscoveryService(
+        _Servers({"local_root": str(tmp_path)}), lambda _config: _WindowsGateway()
+    )
+
+    page = service.models("local", kind="loras", include_metadata=True)
+
+    metadata = page["metadata"]
+    assert metadata["available"] is True
+    assert [item["name"] for item in metadata["files"]] == [
+        "alpha.safetensors",
+        "sub\\beta.safetensors",
+    ]
+    assert metadata["files"][1]["metadata"] == {"b": "2"}
+    assert metadata["missing"] == ["missing.safetensors"]
