@@ -24,6 +24,9 @@ _MODEL_SCAN_BUDGET = 20001
 _MODEL_SUFFIXES = frozenset(
     {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
 )
+# Input types that render as widgets in the ComfyUI editor rather than as
+# connectable ports; ``node_ports`` drops them so agents see only link targets.
+_WIDGET_TYPES = frozenset({"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"})
 _MAX_SAFETENSORS_HEADER = 4 * 1024 * 1024
 # ``/object_info`` is a multi-megabyte payload on a real install and the gateway
 # keeps no cache of its own, so a short TTL keeps repeated node/blueprint
@@ -329,6 +332,50 @@ class DiscoveryService:
         if node is None:
             raise WorkflowNotFound(f"ComfyUI node not found: {node_class}")
         return {"server_id": server_id, "node_class": node_class, "node": node}
+
+    def node_ports(self, server_id: str, node_class: str) -> dict[str, Any]:
+        """Project one node's linkable ports for graph editing.
+
+        Widget inputs (INT/FLOAT/STRING/BOOLEAN and combo lists) are omitted on
+        purpose: an agent connecting nodes only needs typed ports, and the full
+        widget surface stays available through ``comfyui.node.describe``.
+        """
+        payload = self.node(server_id, node_class)
+        node = payload["node"]
+        inputs = node.get("input") if isinstance(node.get("input"), dict) else {}
+        ports: list[dict[str, Any]] = []
+        for section, required in (("required", True), ("optional", False)):
+            group = inputs.get(section)
+            if not isinstance(group, dict):
+                continue
+            for name, spec in group.items():
+                if not isinstance(name, str):
+                    continue
+                if not isinstance(spec, list) or not spec:
+                    continue
+                head = spec[0]
+                if not isinstance(head, str):
+                    # Combo widget: the first element is the option list.
+                    continue
+                if head in _WIDGET_TYPES:
+                    continue
+                ports.append({"name": name, "type": head, "required": required})
+        ports.sort(key=lambda port: port["name"])
+        raw_outputs = node.get("output")
+        raw_names = node.get("output_name")
+        outputs: list[dict[str, Any]] = []
+        if isinstance(raw_outputs, list):
+            for index, output_type in enumerate(raw_outputs):
+                name = ""
+                if isinstance(raw_names, list) and index < len(raw_names):
+                    name = str(raw_names[index])
+                outputs.append({"index": index, "name": name, "type": str(output_type)})
+        return {
+            "server_id": server_id,
+            "node_class": node_class,
+            "inputs": ports,
+            "outputs": outputs,
+        }
 
     def blueprint(
         self,

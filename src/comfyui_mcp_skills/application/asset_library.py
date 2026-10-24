@@ -56,7 +56,12 @@ _NETWORK_POLICY = {
 }
 _TEMPORARY_POLICY = "private-ephemeral-restage-v1"
 _PNG_PARAMETER_ALLOWLIST: dict[str, tuple[str, ...]] = {
+    # Latent size (standard plus the Flux-2 family used by MOSS workflows).
     "EmptyLatentImage": ("width", "height", "batch_size"),
+    "EmptyFlux2LatentImage": ("width", "height", "batch_size"),
+    # Samplers. Qwen and MOSS use the custom advanced chain, where noise,
+    # scheduler and sampler selection live in separate nodes, so each node
+    # contributes its own fields.
     "KSampler": ("seed", "steps", "cfg", "sampler_name", "scheduler", "denoise"),
     "KSamplerAdvanced": (
         "noise_seed",
@@ -69,6 +74,34 @@ _PNG_PARAMETER_ALLOWLIST: dict[str, tuple[str, ...]] = {
         "add_noise",
         "return_with_leftover_noise",
     ),
+    "MossSpectrumKSampler": (
+        "seed",
+        "steps",
+        "cfg",
+        "sampler_name",
+        "scheduler",
+        "denoise",
+    ),
+    "RandomNoise": ("noise_seed",),
+    "KSamplerSelect": ("sampler_name",),
+    "BasicScheduler": ("scheduler", "steps", "denoise"),
+    # Prompt encoders.
+    "CLIPTextEncode": ("text",),
+    "TextEncodeQwenImage21": ("prompt", "negative_prompt"),
+    "MOSSLayoutBoard": ("width", "height", "prompt"),
+    # Model loaders.
+    "CheckpointLoaderSimple": ("ckpt_name",),
+    "UNETLoader": ("unet_name",),
+    "CLIPLoader": ("clip_name", "type"),
+    "VAELoader": ("vae_name",),
+    "AnimaBoosterLoader": ("model_name",),
+    "MOSSImageUNETLoader": ("unet_name",),
+    "MOSSImageCLIPLoader": ("clip_name",),
+    "LoraLoader": ("lora_name", "strength_model", "strength_clip"),
+    "LoraLoaderModelOnly": ("lora_name", "strength_model"),
+    "RapidMOSSAdapter": ("adapter", "steps", "lora_strength"),
+    # Image input (img2img / edit).
+    "LoadImage": ("image",),
 }
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 

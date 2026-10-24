@@ -2208,7 +2208,7 @@ async def test_workflow_visualize_renders_bounded_mermaid(tmp_path: Path) -> Non
         tmp_path,
         gateway_factory=lambda _config: FakeGateway(),
         authorization=AuthorizationContext(
-            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+            "authoring-test", frozenset({Scope.AUTHOR}), Toolset.AUTHORING
         ),
     )
     async with Client(server) as client:
@@ -2292,7 +2292,7 @@ async def test_workflow_visualize_missing_workflow_is_not_found(tmp_path: Path) 
         tmp_path,
         gateway_factory=lambda _config: FakeGateway(),
         authorization=AuthorizationContext(
-            "observe-test", frozenset({Scope.OBSERVE}), Toolset.OPERATIONS
+            "authoring-test", frozenset({Scope.AUTHOR}), Toolset.AUTHORING
         ),
     )
     async with Client(server) as client:

@@ -109,7 +109,9 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.node.list": frozenset({Scope.OBSERVE}),
     "comfyui.node.blueprint": frozenset({Scope.OBSERVE}),
     "comfyui.local.plugins": frozenset({Scope.OBSERVE}),
-    "comfyui.workflow.visualize": frozenset({Scope.OBSERVE}),
+    # Visualization is an authoring view; OBSERVE would leak it into the
+    # operations surface and overflow that fixed Tool budget.
+    "comfyui.workflow.visualize": frozenset({Scope.AUTHOR}),
     "comfyui.model.guidance": frozenset({Scope.OBSERVE}),
     "comfyui.job.history.suggest": frozenset({Scope.OBSERVE}),
     "comfyui.engine.history": frozenset({Scope.OBSERVE}),
@@ -121,6 +123,7 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.runtime.restart.commit": frozenset({Scope.OPERATE}),
     "comfyui.runtime.restart.get": frozenset({Scope.OPERATE}),
     "comfyui.node.describe": frozenset({Scope.OBSERVE}),
+    "comfyui.node.ports": frozenset({Scope.OBSERVE}),
     # AUTHOR keeps this export on the AUTHORING surface only, so the fixed
     # Tool budgets of the operations and execution surfaces stay untouched.
     "comfyui.output.image": frozenset({Scope.AUTHOR}),
@@ -128,11 +131,15 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     # fixed Tool budget still has headroom.
     "comfyui.defaults": frozenset({Scope.EXECUTE}),
     "comfyui.model.list": frozenset({Scope.OBSERVE}),
-    "comfyui.revision.list": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
-    "comfyui.revision.diff": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
-    "comfyui.workflow.describe": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+    # G3 authoring-only surface: AUTHOR keeps these off the operations and
+    # execution surfaces so their fixed Tool budgets stay bounded (same
+    # pattern as comfyui.output.image above).
+    "comfyui.revision.list": frozenset({Scope.AUTHOR}),
+    "comfyui.revision.diff": frozenset({Scope.AUTHOR}),
+    "comfyui.workflow.describe": frozenset({Scope.AUTHOR}),
     "comfyui.workflow.list": frozenset({Scope.OBSERVE}),
-    "comfyui.workflow.dependencies.check": frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+    "comfyui.workflow.recipe.list": frozenset({Scope.AUTHOR}),
+    "comfyui.workflow.dependencies.check": frozenset({Scope.AUTHOR}),
 }
 _RESOURCE_SCOPES: dict[str, frozenset[Scope]] = {
     "workflow": frozenset({Scope.EXECUTE, Scope.OBSERVE, Scope.AUTHOR}),

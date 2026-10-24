@@ -1081,6 +1081,25 @@ def fixed_tools() -> list[Tool]:
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
         ),
         Tool(
+            name="comfyui.node.ports",
+            description=(
+                "Project one node class's linkable input/output ports. Widget "
+                "inputs (INT/FLOAT/STRING/BOOLEAN and combo lists) are omitted, so "
+                "an agent can plan connect operations without the full definition."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": discovery_properties["server_id"],
+                    "node_class": {"type": "string", "minLength": 1},
+                },
+                "required": ["server_id", "node_class"],
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=True),
+        ),
+        Tool(
             name="comfyui.output.image",
             description=(
                 "Fetch one ComfyUI output image. With COMFYUI_MCP_IMAGE_TAG_DIR "
@@ -1499,6 +1518,21 @@ def phase_k_tools() -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
+        Tool(
+            name="comfyui.workflow.recipe.list",
+            description=(
+                "List the registered high-level workflow recipes that apply_recipe "
+                "accepts, with their required/optional arguments, defaults and "
+                "exact-argument flag."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {},
+                "additionalProperties": False,
+            },
+            output_schema={"type": "object"},
+            annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
+        ),
 
     ]
     return [decorate_tool(tool) for tool in tools]
@@ -1758,18 +1792,30 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                         "default": 50,
                     },
                     "cursor": observation_cursor,
+                    "source": {
+                        "type": "string",
+                        "enum": ["mcp", "server"],
+                        "default": "mcp",
+                        "description": (
+                            "mcp lists published workflows from this server's "
+                            "own store; server lists the workflow files that live "
+                            "in ComfyUI's userdata (requires server_id)."
+                        ),
+                    },
                 },
                 "additionalProperties": False,
             },
             output_schema={
                 "type": "object",
                 "properties": {
+                    "source": {"type": "string"},
                     "items": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
                                 "workflow_uri": {"type": "string"},
+                                "path": {"type": "string"},
                                 "workflow_id": {"type": "string"},
                                 "server_id": {"type": "string"},
                                 "description": {"type": "string"},

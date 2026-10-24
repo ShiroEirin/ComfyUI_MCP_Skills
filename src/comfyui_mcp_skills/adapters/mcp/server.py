@@ -138,6 +138,7 @@ from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowValidationService,
 )
 from comfyui_mcp_skills.application.workflow_inspection import WorkflowInspectionService
+from comfyui_mcp_skills.application.workflow_recipes import recipe_catalog
 from comfyui_mcp_skills.domain.control_plane import (
     parse_legacy_resource_uri,
     validate_control_plane_id,
@@ -157,6 +158,7 @@ from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
 )
+from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
 from comfyui_mcp_skills.infrastructure.persistence.orchestration import (
     SQLiteOrchestrationRepository,
@@ -1821,16 +1823,75 @@ def create_server(
                     )
                 )
                 return tool_result(result)
+            if params.name == "comfyui.workflow.recipe.list":
+                validate_fixed_arguments(arguments, set())
+                recipes = recipe_catalog()
+                return tool_result({"recipes": recipes, "total": len(recipes)})
             if params.name == "comfyui.workflow.list":
                 validate_fixed_arguments(
                     arguments,
-                    {"server_id", "query", "include_disabled", "limit", "cursor"},
+                    {
+                        "server_id",
+                        "query",
+                        "include_disabled",
+                        "limit",
+                        "cursor",
+                        "source",
+                    },
                 )
                 server_id = optional_string(arguments, "server_id", "", max_length=128)
                 query = optional_string(arguments, "query", "", max_length=256)
                 include_disabled = optional_boolean(arguments, "include_disabled", False)
                 cursor = optional_string(arguments, "cursor", "", max_length=512)
                 limit = bounded_integer(arguments, "limit", 50, minimum=1, maximum=200)
+                source = optional_string(arguments, "source", "mcp", max_length=16)
+                if source not in {"mcp", "server"}:
+                    raise ValueError("source must be 'mcp' or 'server'")
+                if source == "server":
+                    if not server_id:
+                        raise ValueError("server_id is required when source is 'server'")
+                    connection = servers.connection(server_id)
+                    userdata = ComfyUIClient(
+                        server_url=str(connection.get("url", "")),
+                        auth=str(connection.get("auth", "")),
+                        comfy_api_key=str(connection.get("comfy_api_key", "")),
+                        timeout=float(connection.get("timeout", 30.0)),
+                    )
+                    paths = await anyio.to_thread.run_sync(
+                        userdata.list_userdata_workflows
+                    )
+                    needle = query.casefold()
+                    entries = [
+                        {
+                            "workflow_uri": f"comfyui://userdata/{server_id}/{path}",
+                            "path": path,
+                            "workflow_id": path.rsplit("/", 1)[-1][: -len(".json")],
+                            "server_id": server_id,
+                            "description": "",
+                            "enabled": True,
+                        }
+                        for path in paths
+                        if not needle or needle in path.casefold()
+                    ]
+                    entries.sort(key=lambda entry: entry["path"])
+                    total = len(entries)
+                    raw_cursor = cursor.strip()
+                    if raw_cursor and not raw_cursor.isdigit():
+                        raise ValueError(
+                            "cursor must be reused with the same source; "
+                            "use an offset returned by source='server'"
+                        )
+                    start = int(raw_cursor) if raw_cursor else 0
+                    page = entries[start : start + limit]
+                    next_cursor = str(start + limit) if start + limit < total else ""
+                    return tool_result(
+                        {
+                            "source": "server",
+                            "items": page,
+                            "total": total,
+                            "next_cursor": next_cursor,
+                        }
+                    )
                 result = await anyio.to_thread.run_sync(
                     lambda: catalog.list_workflows(
                         server_id=server_id,
@@ -1840,6 +1901,7 @@ def create_server(
                         cursor=cursor,
                     )
                 )
+                result["source"] = "mcp"
                 return tool_result(result)
             if params.name == "comfyui.job.cancel":
                 validate_fixed_arguments(arguments, {"server_id", "prompt_id"})
@@ -2109,6 +2171,14 @@ def create_server(
                 node_class = required_string(arguments, "node_class")
                 result = await anyio.to_thread.run_sync(
                     lambda: discovery.node(server_id, node_class)
+                )
+                return tool_result(result)
+            if params.name == "comfyui.node.ports":
+                validate_fixed_arguments(arguments, {"server_id", "node_class"})
+                server_id = required_string(arguments, "server_id")
+                node_class = required_string(arguments, "node_class")
+                result = await anyio.to_thread.run_sync(
+                    lambda: discovery.node_ports(server_id, node_class)
                 )
                 return tool_result(result)
             if params.name == "comfyui.output.image":

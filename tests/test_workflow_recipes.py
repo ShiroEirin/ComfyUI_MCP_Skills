@@ -905,3 +905,82 @@ def _after(
 
 def _graph_copy(value: dict[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+def test_semantic_recipes_locate_nodes_without_ids() -> None:
+    """Semantic recipes find the single matching node and honour aliases."""
+    graph = {
+        "1": {
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "old.safetensors"},
+        },
+        "2": {"class_type": "RandomNoise", "inputs": {"noise_seed": 1}},
+        "3": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 512, "height": 512, "batch_size": 1},
+        },
+    }
+    schema: dict[str, Any] = {}
+
+    apply_recipe(
+        graph,
+        schema,
+        "change_checkpoint.v1",
+        {"ckpt_name": "new.safetensors"},
+        OBJECT_INFO,
+        index=0,
+    )
+    apply_recipe(graph, schema, "set_seed.v1", {"seed": 42}, OBJECT_INFO, index=0)
+    apply_recipe(
+        graph,
+        schema,
+        "set_resolution.v1",
+        {"width": 1024, "height": 768},
+        OBJECT_INFO,
+        index=0,
+    )
+
+    assert graph["1"]["inputs"]["ckpt_name"] == "new.safetensors"
+    # set_seed.v1 maps onto noise_seed for RandomNoise.
+    assert graph["2"]["inputs"]["noise_seed"] == 42
+    assert "seed" not in graph["2"]["inputs"]
+    assert graph["3"]["inputs"]["width"] == 1024
+    assert graph["3"]["inputs"]["height"] == 768
+
+
+def test_semantic_recipe_requires_exactly_one_target() -> None:
+    """Ambiguous or absent targets fail loudly instead of guessing."""
+    from comfyui_mcp_skills.application.workflow_recipes import RecipeError
+
+    ambiguous = {
+        "1": {"class_type": "VAELoader", "inputs": {"vae_name": "a.safetensors"}},
+        "2": {"class_type": "VAELoader", "inputs": {"vae_name": "b.safetensors"}},
+    }
+    with pytest.raises(RecipeError, match="exactly one"):
+        apply_recipe(
+            ambiguous, {}, "swap_vae.v1", {"vae_name": "c.safetensors"}, OBJECT_INFO, index=0
+        )
+
+    absent = {"1": {"class_type": "CLIPTextEncode", "inputs": {"text": "x"}}}
+    with pytest.raises(RecipeError, match="exactly one"):
+        apply_recipe(
+            absent, {}, "swap_vae.v1", {"vae_name": "c.safetensors"}, OBJECT_INFO, index=0
+        )
+
+
+def test_semantic_recipe_rejects_linked_target_field() -> None:
+    """A linked field must be disconnected first instead of silently cut."""
+    from comfyui_mcp_skills.application.workflow_recipes import RecipeError
+
+    graph = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ["9", 0]}},
+    }
+    with pytest.raises(RecipeError, match="linked"):
+        apply_recipe(
+            graph,
+            {},
+            "change_checkpoint.v1",
+            {"ckpt_name": "x.safetensors"},
+            OBJECT_INFO,
+            index=0,
+        )

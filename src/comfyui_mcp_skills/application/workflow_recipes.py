@@ -39,6 +39,63 @@ RECIPE_CONTRACTS: dict[str, dict[str, Any]] = {
         "optional": frozenset({"strength", "negative_conditioning_node_id"}),
         "exact": False,
     },
+    # Semantic recipes below locate the single node of a class family, so an
+    # agent can express intent ("swap the checkpoint") without knowing node ids.
+    "change_checkpoint.v1": {
+        "required": frozenset({"ckpt_name"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "swap_vae.v1": {
+        "required": frozenset({"vae_name"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "change_clip.v1": {
+        "required": frozenset({"clip_name"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "change_unet.v1": {
+        "required": frozenset({"unet_name"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "change_sampler.v1": {
+        "required": frozenset({"sampler_name"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "change_scheduler.v1": {
+        "required": frozenset({"scheduler"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "set_steps.v1": {
+        "required": frozenset({"steps"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "set_cfg.v1": {
+        "required": frozenset({"cfg"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "set_seed.v1": {
+        "required": frozenset({"seed"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "set_resolution.v1": {
+        "required": frozenset({"width", "height"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
+    "set_batch_size.v1": {
+        "required": frozenset({"batch_size"}),
+        "optional": frozenset(),
+        "exact": False,
+    },
 }
 
 RECIPE_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -46,6 +103,122 @@ RECIPE_DEFAULTS: dict[str, dict[str, Any]] = {
     "lora_model.v1": {"strength_model": 1.0, "strength_clip": 1.0},
     "controlnet_apply.v1": {"strength": 1.0},
 }
+
+# One-line intent per recipe so an agent can pick a recipe without reading
+# source. Keep these short: they surface in tool output.
+RECIPE_DESCRIPTIONS: dict[str, str] = {
+    "set_scalar_input.v1": "Set one scalar input on an existing node (exact argument set).",
+    "upscale_image.v1": "Append an upscale chain after an image-producing node.",
+    "save_image.v1": "Append a SaveImage node after an image-producing node.",
+    "lora_model.v1": "Insert or update a LoRA loader on the model path.",
+    "controlnet_apply.v1": "Apply a ControlNet to a conditioning path.",
+    "change_checkpoint.v1": "Replace the checkpoint file on the single CheckpointLoaderSimple.",
+    "swap_vae.v1": "Replace the VAE file on the single VAELoader.",
+    "change_clip.v1": "Replace the CLIP file on the single CLIPLoader.",
+    "change_unet.v1": "Replace the UNET file on the single UNET/MOSS UNET loader.",
+    "change_sampler.v1": "Set sampler_name on the single sampler node.",
+    "change_scheduler.v1": "Set scheduler on the single sampler/scheduler node.",
+    "set_steps.v1": "Set steps on the single sampler/scheduler node.",
+    "set_cfg.v1": "Set cfg on the single sampler node.",
+    "set_seed.v1": "Set the seed (maps to seed or noise_seed automatically).",
+    "set_resolution.v1": "Set width and height on the single latent node.",
+    "set_batch_size.v1": "Set batch_size on the single latent node.",
+}
+
+# Semantic targets: each recipe finds the single node of one class family and
+# writes its fields. ``fields`` maps an argument name to candidate node input
+# names (first present wins), so one recipe spans node variants.
+_SEMANTIC_RECIPES: dict[str, dict[str, Any]] = {
+    "change_checkpoint.v1": {
+        "classes": ("CheckpointLoaderSimple",),
+        "fields": {"ckpt_name": ("ckpt_name",)},
+    },
+    "swap_vae.v1": {
+        "classes": ("VAELoader",),
+        "fields": {"vae_name": ("vae_name",)},
+    },
+    "change_clip.v1": {
+        "classes": ("CLIPLoader",),
+        "fields": {"clip_name": ("clip_name",)},
+    },
+    "change_unet.v1": {
+        "classes": ("UNETLoader", "MOSSImageUNETLoader"),
+        "fields": {"unet_name": ("unet_name",)},
+    },
+    "change_sampler.v1": {
+        "classes": (
+            "KSampler",
+            "KSamplerAdvanced",
+            "FLS_SamplerV4",
+            "MossSpectrumKSampler",
+        ),
+        "fields": {"sampler_name": ("sampler_name",)},
+    },
+    "change_scheduler.v1": {
+        "classes": (
+            "KSampler",
+            "KSamplerAdvanced",
+            "FLS_SamplerV4",
+            "MossSpectrumKSampler",
+            "BasicScheduler",
+        ),
+        "fields": {"scheduler": ("scheduler",)},
+    },
+    "set_steps.v1": {
+        "classes": (
+            "KSampler",
+            "KSamplerAdvanced",
+            "FLS_SamplerV4",
+            "MossSpectrumKSampler",
+            "BasicScheduler",
+        ),
+        "fields": {"steps": ("steps",)},
+    },
+    "set_cfg.v1": {
+        "classes": (
+            "KSampler",
+            "KSamplerAdvanced",
+            "FLS_SamplerV4",
+            "MossSpectrumKSampler",
+        ),
+        "fields": {"cfg": ("cfg",)},
+    },
+    "set_seed.v1": {
+        "classes": (
+            "KSampler",
+            "FLS_SamplerV4",
+            "MossSpectrumKSampler",
+            "RandomNoise",
+        ),
+        "fields": {"seed": ("seed", "noise_seed")},
+    },
+    "set_resolution.v1": {
+        "classes": ("EmptyLatentImage", "EmptyFlux2LatentImage"),
+        "fields": {"width": ("width",), "height": ("height",)},
+    },
+    "set_batch_size.v1": {
+        "classes": ("EmptyLatentImage", "EmptyFlux2LatentImage"),
+        "fields": {"batch_size": ("batch_size",)},
+    },
+}
+
+
+def recipe_catalog() -> list[dict[str, Any]]:
+    """Describe every registered recipe so an agent can discover them."""
+    catalog: list[dict[str, Any]] = []
+    for recipe_id, contract in RECIPE_CONTRACTS.items():
+        catalog.append(
+            {
+                "recipe_id": recipe_id,
+                "description": RECIPE_DESCRIPTIONS.get(recipe_id, ""),
+                "required": sorted(contract["required"]),
+                "optional": sorted(contract["optional"]),
+                "defaults": dict(RECIPE_DEFAULTS.get(recipe_id, {})),
+                "exact": bool(contract.get("exact", False)),
+            }
+        )
+    catalog.sort(key=lambda item: item["recipe_id"])
+    return catalog
 
 _IMAGE = "IMAGE"
 _MODEL = "MODEL"
@@ -72,6 +245,9 @@ def apply_recipe(
     normalized = _normalized_arguments(recipe_id, contract, arguments, index=index)
     if recipe_id == "set_scalar_input.v1":
         _apply_scalar(graph, parameter_schema, normalized, index=index)
+        return
+    if recipe_id in _SEMANTIC_RECIPES:
+        _apply_semantic(graph, recipe_id, normalized, index=index)
         return
     if object_info is None:
         raise RecipeError(
@@ -141,6 +317,41 @@ def _normalized_arguments(
             value = normalized[key]
             if not isinstance(value, str) or len(value) > 1024:
                 raise RecipeError(f"operations[{index}].arguments.{key} must be a bounded string")
+    for key in (
+        "ckpt_name",
+        "vae_name",
+        "clip_name",
+        "unet_name",
+        "sampler_name",
+        "scheduler",
+    ):
+        if key in normalized:
+            value = normalized[key]
+            if not isinstance(value, str) or not value or len(value) > 1024:
+                raise RecipeError(
+                    f"operations[{index}].arguments.{key} must be a bounded string"
+                )
+    for key in ("steps", "seed", "width", "height", "batch_size"):
+        if key in normalized:
+            value = normalized[key]
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or not -(2**63) <= value < 2**63
+            ):
+                raise RecipeError(
+                    f"operations[{index}].arguments.{key} must be a bounded integer"
+                )
+    if "cfg" in normalized:
+        cfg = normalized["cfg"]
+        if (
+            isinstance(cfg, bool)
+            or not isinstance(cfg, (int, float))
+            or not math.isfinite(float(cfg))
+        ):
+            raise RecipeError(
+                f"operations[{index}].arguments.cfg must be a finite number"
+            )
     if "control_net_name" in normalized:
         value = normalized["control_net_name"]
         if not isinstance(value, str) or not value or len(value) > 1024:
@@ -182,6 +393,40 @@ def _apply_scalar(
     # object_info validation runs after the recipe and decides its legality.
     # Existing public parameters for this target stay intact (legacy behavior).
     inputs[field] = value
+
+
+def _apply_semantic(
+    graph: dict[str, Any],
+    recipe_id: str,
+    arguments: dict[str, Any],
+    *,
+    index: int,
+) -> None:
+    """Locate the single node of the recipe's class family and set its fields."""
+    target = _SEMANTIC_RECIPES[recipe_id]
+    classes = target["classes"]
+    matches = [
+        node_id
+        for node_id, node in graph.items()
+        if isinstance(node, dict) and node.get("class_type") in classes
+    ]
+    if len(matches) != 1:
+        raise RecipeError(
+            f"operations[{index}] recipe {recipe_id} needs exactly one "
+            f"{' or '.join(classes)} node, found {len(matches)}"
+        )
+    node_id = matches[0]
+    inputs = _node_inputs(graph, node_id, index)
+    for argument, candidates in target["fields"].items():
+        value = arguments[argument]
+        if _is_connection(value):
+            raise RecipeError(f"operations[{index}].arguments.{argument} must be scalar")
+        field = next((name for name in candidates if name in inputs), candidates[0])
+        if _is_connection(inputs.get(field)):
+            raise RecipeError(
+                f"operations[{index}] {node_id}.{field} is linked; disconnect it first"
+            )
+        inputs[field] = value
 
 
 def _apply_upscale(

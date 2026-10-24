@@ -385,6 +385,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         ("schema", "input", "output"),
     ),
     CapabilitySpec(
+        "comfyui.node.ports",
+        "List a node's linkable ports",
+        "Project only the typed input/output ports an agent needs for connections.",
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING}),
+        frozenset({Scope.OBSERVE}),
+        RiskLevel.LOW,
+        ("port", "connect", "graph", "schema"),
+    ),
+    CapabilitySpec(
         "comfyui.output.image",
         "Export a ComfyUI output image",
         "Fetch one ComfyUI output image and optionally return a host-renderable image tag.",
@@ -446,6 +455,15 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         frozenset({Scope.OBSERVE}),
         RiskLevel.LOW,
         ("discover", "workflow", "catalog"),
+    ),
+    CapabilitySpec(
+        "comfyui.workflow.recipe.list",
+        "List workflow recipes",
+        "List registered high-level graph recipes with their argument contracts.",
+        frozenset({Toolset.AUTHORING}),
+        frozenset({Scope.AUTHOR}),
+        RiskLevel.LOW,
+        ("recipe", "workflow", "edit", "discover"),
     ),
     CapabilitySpec(
         "comfyui.workflow.dependencies.check",

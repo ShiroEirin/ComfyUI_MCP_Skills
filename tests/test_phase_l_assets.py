@@ -982,3 +982,106 @@ def test_artifact_lineage_traverses_input_revision_plan_job_artifact(
     assert lineage["chain"]["plan"]["inputs"][0]["asset_id"] == source.asset_id
     assert lineage["chain"]["job"]["job_id"] == identity.job_id
     assert lineage["chain"]["job"]["artifact_collection_status"] == "complete"
+
+
+def test_recover_parameters_covers_qwen_moss_and_anima_graphs() -> None:
+    """The allowlist must cover the node classes Snow App actually runs.
+
+    Node shapes are copied from real ComfyUI output metadata for the
+    qwen-edit, moss-8step, moss-spectrum and anima families.
+    """
+    from comfyui_mcp_skills.application.asset_library import _recover_parameters
+
+    graph = {
+        # qwen edit (img2img) chain
+        "1": {
+            "class_type": "UNETLoader",
+            "inputs": {"unet_name": "qwen_image_2.1_bf16.safetensors"},
+        },
+        "5": {"class_type": "LoadImage", "inputs": {"image": "bridge_8159b6.jpg"}},
+        "6": {
+            "class_type": "TextEncodeQwenImage21",
+            "inputs": {"prompt": "x" * 300, "negative_prompt": "", "resolution": 1024},
+        },
+        "8": {
+            "class_type": "RandomNoise",
+            "inputs": {"noise_seed": 3677058328, "noise": ["11", 0]},
+        },
+        "9": {"class_type": "KSamplerSelect", "inputs": {"sampler_name": "euler"}},
+        "10": {
+            "class_type": "BasicScheduler",
+            "inputs": {"scheduler": "simple", "steps": 25, "denoise": 1.0, "model": ["1", 0]},
+        },
+        # moss 8-step chain
+        "20": {
+            "class_type": "EmptyFlux2LatentImage",
+            "inputs": {"width": 1344, "height": 768, "batch_size": 1},
+        },
+        "21": {
+            "class_type": "RapidMOSSAdapter",
+            "inputs": {"adapter": "lodestones-8step", "steps": 8, "lora_strength": 1.0},
+        },
+        # anima chain
+        "30": {
+            "class_type": "AnimaBoosterLoader",
+            "inputs": {"model_name": "anima-base-v1.0.safetensors"},
+        },
+        "31": {
+            "class_type": "LoraLoaderModelOnly",
+            "inputs": {"lora_name": "anima-boost.safetensors", "strength_model": 1.0},
+        },
+        # moss-spectrum sampler
+        "40": {
+            "class_type": "MossSpectrumKSampler",
+            "inputs": {
+                "seed": 3713990723,
+                "steps": 50,
+                "cfg": 3.0,
+                "sampler_name": "euler",
+                "scheduler": "sgm_uniform",
+                "denoise": 1.0,
+                "shift": 5.0,
+            },
+        },
+    }
+
+    recovered = {item["class_type"]: item["parameters"] for item in _recover_parameters(graph)}
+
+    assert recovered["UNETLoader"] == {"unet_name": "qwen_image_2.1_bf16.safetensors"}
+    assert recovered["LoadImage"] == {"image": "bridge_8159b6.jpg"}
+    assert recovered["RandomNoise"] == {"noise_seed": 3677058328}
+    assert recovered["KSamplerSelect"] == {"sampler_name": "euler"}
+    assert recovered["BasicScheduler"] == {
+        "scheduler": "simple",
+        "steps": 25,
+        "denoise": 1.0,
+    }
+    assert recovered["EmptyFlux2LatentImage"] == {
+        "width": 1344,
+        "height": 768,
+        "batch_size": 1,
+    }
+    assert recovered["RapidMOSSAdapter"] == {
+        "adapter": "lodestones-8step",
+        "steps": 8,
+        "lora_strength": 1.0,
+    }
+    assert recovered["AnimaBoosterLoader"] == {"model_name": "anima-base-v1.0.safetensors"}
+    assert recovered["LoraLoaderModelOnly"] == {
+        "lora_name": "anima-boost.safetensors",
+        "strength_model": 1.0,
+    }
+    assert recovered["MossSpectrumKSampler"] == {
+        "seed": 3713990723,
+        "steps": 50,
+        "cfg": 3.0,
+        "sampler_name": "euler",
+        "scheduler": "sgm_uniform",
+        "denoise": 1.0,
+    }
+    # Linked inputs and non-allowlisted fields never surface.
+    assert "noise" not in recovered["RandomNoise"]
+    assert "model" not in recovered["BasicScheduler"]
+    assert "shift" not in recovered["MossSpectrumKSampler"]
+    # Prompts above the 256-character sanitizer limit are dropped.
+    assert recovered["TextEncodeQwenImage21"] == {"negative_prompt": ""}
