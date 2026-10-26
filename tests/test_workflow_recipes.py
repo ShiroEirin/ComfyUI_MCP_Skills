@@ -984,3 +984,268 @@ def test_semantic_recipe_rejects_linked_target_field() -> None:
             OBJECT_INFO,
             index=0,
         )
+
+
+# ---------------------------------------------------------------------------
+# semantic target disambiguation (node_id / node_ids)
+# ---------------------------------------------------------------------------
+
+
+def _duplicate_loaders() -> dict[str, Any]:
+    return {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "a.safetensors"}},
+        "2": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "b.safetensors"}},
+    }
+
+
+def test_semantic_ambiguity_reports_structured_candidates() -> None:
+    """Several matches never guess: the error carries every candidate and the fix."""
+    from comfyui_mcp_skills.application.workflow_recipes import RecipeError
+
+    graph = _duplicate_loaders()
+
+    with pytest.raises(RecipeError) as raised:
+        apply_recipe(
+            graph,
+            {},
+            "change_checkpoint.v1",
+            {"ckpt_name": "c.safetensors"},
+            OBJECT_INFO,
+            index=3,
+        )
+
+    message = str(raised.value)
+    assert "exactly one" in message
+    assert "node_id" in message
+    details = json.loads(message[message.index("{") :])
+    assert details["field"] == "operations[3].arguments.node_id"
+    assert details["recipe_id"] == "change_checkpoint.v1"
+    assert details["target_classes"] == ["CheckpointLoaderSimple"]
+    assert [item["node_id"] for item in details["candidates"]] == ["1", "2"]
+    assert details["candidates"][1] == {
+        "node_id": "2",
+        "class_type": "CheckpointLoaderSimple",
+        "inputs": {"ckpt_name": "b.safetensors"},
+    }
+    # Nothing was written while reporting.
+    assert graph["1"]["inputs"]["ckpt_name"] == "a.safetensors"
+    assert graph["2"]["inputs"]["ckpt_name"] == "b.safetensors"
+
+
+def test_semantic_recipe_node_id_pins_one_of_several_targets() -> None:
+    graph = _duplicate_loaders()
+
+    apply_recipe(
+        graph,
+        {},
+        "change_checkpoint.v1",
+        {"ckpt_name": "c.safetensors", "node_id": "2"},
+        OBJECT_INFO,
+        index=0,
+    )
+
+    assert graph["2"]["inputs"]["ckpt_name"] == "c.safetensors"
+    assert graph["1"]["inputs"]["ckpt_name"] == "a.safetensors"
+
+
+def test_semantic_recipe_node_ids_maps_each_argument() -> None:
+    graph = {
+        "3": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 512, "height": 512, "batch_size": 1},
+        },
+        "4": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 1024, "height": 1024, "batch_size": 1},
+        },
+    }
+
+    apply_recipe(
+        graph,
+        {},
+        "set_resolution.v1",
+        {"width": 640, "height": 960, "node_ids": {"width": "3", "height": "4"}},
+        OBJECT_INFO,
+        index=0,
+    )
+
+    assert graph["3"]["inputs"]["width"] == 640
+    assert graph["3"]["inputs"]["height"] == 512
+    assert graph["4"]["inputs"]["width"] == 1024
+    assert graph["4"]["inputs"]["height"] == 960
+
+
+def test_semantic_recipe_node_ids_falls_back_to_the_unique_match() -> None:
+    graph = {
+        "3": {
+            "class_type": "EmptyLatentImage",
+            "inputs": {"width": 512, "height": 512, "batch_size": 1},
+        }
+    }
+
+    apply_recipe(
+        graph,
+        {},
+        "set_resolution.v1",
+        {"width": 640, "height": 960, "node_ids": {"width": "3"}},
+        OBJECT_INFO,
+        index=0,
+    )
+
+    assert graph["3"]["inputs"]["width"] == 640
+    assert graph["3"]["inputs"]["height"] == 960
+
+
+def test_semantic_recipe_rejects_pinned_node_outside_class_family() -> None:
+    from comfyui_mcp_skills.application.workflow_recipes import RecipeError
+
+    graph = {
+        "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "a.safetensors"}},
+        "2": {"class_type": "KSampler", "inputs": {"cfg": 7}},
+    }
+
+    with pytest.raises(RecipeError) as raised:
+        apply_recipe(
+            graph,
+            {},
+            "change_checkpoint.v1",
+            {"ckpt_name": "c.safetensors", "node_id": "2"},
+            OBJECT_INFO,
+            index=0,
+        )
+
+    message = str(raised.value)
+    assert "operations[0].arguments.node_id 2 is not a CheckpointLoaderSimple node" in message
+    assert json.loads(message[message.index("{") :])["candidates"] == [
+        {
+            "node_id": "1",
+            "class_type": "CheckpointLoaderSimple",
+            "inputs": {"ckpt_name": "a.safetensors"},
+        }
+    ]
+
+
+def test_semantic_recipe_rejects_node_id_with_node_ids() -> None:
+    from comfyui_mcp_skills.application.workflow_recipes import RecipeError
+
+    with pytest.raises(RecipeError, match="mutually exclusive"):
+        apply_recipe(
+            _duplicate_loaders(),
+            {},
+            "change_checkpoint.v1",
+            {"ckpt_name": "c.safetensors", "node_id": "1", "node_ids": {"ckpt_name": "2"}},
+            OBJECT_INFO,
+            index=0,
+        )
+
+
+def test_semantic_recipe_rejects_unknown_node_ids_argument() -> None:
+    from comfyui_mcp_skills.application.workflow_recipes import RecipeError
+
+    with pytest.raises(RecipeError, match="unknown field"):
+        apply_recipe(
+            _duplicate_loaders(),
+            {},
+            "change_checkpoint.v1",
+            {"ckpt_name": "c.safetensors", "node_ids": {"ckpt": "1"}},
+            OBJECT_INFO,
+            index=0,
+        )
+
+
+def test_recipe_catalog_advertises_semantic_target_arguments() -> None:
+    from comfyui_mcp_skills.application.workflow_recipes import recipe_catalog
+
+    catalog = {entry["recipe_id"]: entry for entry in recipe_catalog()}
+
+    assert catalog["change_checkpoint.v1"]["optional"] == ["node_id", "node_ids"]
+    assert catalog["set_scalar_input.v1"]["optional"] == []
+    # Non-semantic recipes keep their exact argument surface.
+    with pytest.raises(ValueError, match="arguments is invalid"):
+        apply_recipe(
+            _graph_copy(BASE_GRAPH),
+            {},
+            "upscale_image.v1",
+            {"after_node_id": "2", "model": "4x-UltraSharp.pth", "node_id": "2"},
+            OBJECT_INFO,
+            index=0,
+        )
+
+
+class _RecipeGateway:
+    def get_object_info(self) -> dict[str, Any]:
+        return OBJECT_INFO
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_ambiguous_recipe_reports_candidates_through_mcp(tmp_path: Path) -> None:
+    """The MCP error keeps the candidate list in details.reason."""
+    from mcp import Client
+
+    from comfyui_mcp_skills.adapters.mcp.server import create_server
+    from comfyui_mcp_skills.application.authorization import (
+        AuthorizationContext,
+        Scope,
+        Toolset,
+    )
+    from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
+    from comfyui_mcp_skills.infrastructure.persistence.repository_factory import RepositoryBundle
+    from comfyui_mcp_skills.infrastructure.persistence.runs import FileRunRepository
+
+    _changes, workflows = _services_for(
+        tmp_path,
+        {
+            **BASE_GRAPH,
+            "10": {
+                "class_type": "CheckpointLoaderSimple",
+                "inputs": {"ckpt_name": "sdxl.safetensors"},
+            },
+        },
+        OBJECT_INFO,
+    )
+    base = tmp_path / "proj"
+    store = SQLiteControlPlaneStore((base / "data" / "control-plane.sqlite3").resolve())
+    repositories = RepositoryBundle(
+        workflows=workflows,
+        runs=FileRunRepository(base),
+        assets=FileAssetRepository(base),
+        workflow_store="sqlite",
+        run_store="file",
+        asset_store="file",
+        store=store,
+    )
+    server = create_server(
+        base,
+        repositories=repositories,
+        gateway_factory=lambda _config: _RecipeGateway(),
+        authorization=AuthorizationContext(
+            "recipe-agent", frozenset({Scope.OBSERVE, Scope.AUTHOR}), Toolset.AUTHORING
+        ),
+    )
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.admin.workflow.change.plan",
+            {
+                "workflow_id": "portrait",
+                "server_id": "local",
+                "operations": [
+                    {
+                        "op": "apply_recipe",
+                        "recipe_id": "change_checkpoint.v1",
+                        "arguments": {"ckpt_name": "sdxl.safetensors"},
+                    }
+                ],
+            },
+        )
+
+    payload = json.loads(result.content[0].text)
+    assert payload["code"] == "INVALID_ARGUMENTS"
+    assert "exactly one" in payload["details"]["reason"]
+    assert "candidates" in payload["details"]["reason"]
+    assert "node_id" in payload["details"]["reason"]

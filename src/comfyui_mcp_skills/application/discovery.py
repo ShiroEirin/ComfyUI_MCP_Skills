@@ -8,7 +8,7 @@ import re
 import stat
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +25,8 @@ _MODEL_SUFFIXES = frozenset(
     {".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx"}
 )
 # Input types that render as widgets in the ComfyUI editor rather than as
-# connectable ports; ``node_ports`` drops them so agents see only link targets.
-_WIDGET_TYPES = frozenset({"INT", "FLOAT", "STRING", "BOOLEAN", "COMBO"})
+# connectable ports; ``node_ports`` marks them (see ``_input_port``) instead of
+# dropping them, so an agent sees link targets and fillable widgets alike.
 _MAX_SAFETENSORS_HEADER = 4 * 1024 * 1024
 # ``/object_info`` is a multi-megabyte payload on a real install and the gateway
 # keeps no cache of its own, so a short TTL keeps repeated node/blueprint
@@ -85,6 +85,49 @@ def _path_is_safe_directory(path: Path) -> bool:
     if not resolved.is_dir():
         return False
     return True
+
+
+def _local_root(
+    connection: Mapping[str, Any],
+) -> tuple[Path | None, dict[str, Any]]:
+    """Resolve the configured ``local_root`` into a safe directory or a reason.
+
+    Both local-session readers (``local.plugins`` and ``model.list`` metadata)
+    share this gate so a missing, unreadable, or reparse-point root degrades with
+    the same fixed reason codes instead of two slightly different checks.
+    """
+    local_root = connection.get("local_root")
+    if not isinstance(local_root, str) or not local_root.strip():
+        return None, {"available": False, "reason": "no_local_root"}
+    root = Path(local_root)
+    if not root.exists():
+        return None, {"available": False, "reason": "root_not_found"}
+    if not root.is_dir():
+        return None, {"available": False, "reason": "root_not_directory"}
+    if not _path_is_safe_directory(root):
+        return None, {"available": False, "reason": "root_unsafe"}
+    return root, {}
+
+
+def _layout_candidates(root: Path, *parts: str) -> list[tuple[str, Path]]:
+    """ComfyUI-owned directories for both supported install layouts.
+
+    An aki-style bundle nests the engine one level down (``<root>/ComfyUI``)
+    while a standard install keeps ``models``/``custom_nodes`` directly under
+    the root. Every reader resolves its directory through this one helper, so
+    the two layouts never diverge between features.
+    """
+    relative = Path(*parts)
+    return [("nested", root / "ComfyUI" / relative), ("flat", root / relative)]
+
+
+def _usable_layout_directories(root: Path, *parts: str) -> list[tuple[str, Path]]:
+    """Layout candidates that exist as real, non-reparse directories."""
+    return [
+        (label, path)
+        for label, path in _layout_candidates(root, *parts)
+        if path.is_dir() and _path_is_safe_directory(path)
+    ]
 
 
 def _clean_readme_line(content: bytes) -> str:
@@ -208,6 +251,110 @@ def _blueprint_field(name: str, spec: list[Any], *, required: bool) -> dict[str,
     if options:
         field["options"] = options
     return field
+
+
+_PORT_MAX_OPTIONS = 64
+_MAX_PORT_VALUE_CHARS = 128
+# Custom nodes advertise runtime-populated dropdowns as a pseudo type instead
+# of a plain option list; the real candidates only exist after the server
+# evaluates the node, so the token is surfaced as a readable COMBO widget.
+_DYNAMIC_COMBO_PREFIX = "COMFY_DYNAMICCOMBO"
+_SCALAR_PORT_TYPES = frozenset({"INT", "FLOAT", "STRING", "BOOLEAN"})
+
+
+def _port_options(value: object) -> list[str]:
+    """Bounded COMBO candidates from a bare list or a ``{"value": ...}`` list."""
+    if not isinstance(value, (list, tuple)):
+        return []
+    options: list[str] = []
+    for option in value[:_PORT_MAX_OPTIONS]:
+        candidate: object = option
+        if isinstance(option, dict):
+            candidate = option.get("value", option.get("name", ""))
+        if isinstance(candidate, str) and candidate:
+            options.append(candidate[:_MAX_PORT_VALUE_CHARS])
+        elif isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+            options.append(str(candidate))
+    return options
+
+
+def _port_value(value: object) -> object:
+    """Project one advertised widget value, dropping values we cannot publish."""
+    if value is None or isinstance(value, (bool, int, str)):
+        return value if not isinstance(value, str) else value[:512]
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else None
+    if isinstance(value, (list, tuple)):
+        projected = [_port_value(item) for item in value[:32]]
+        return [item for item in projected if item is not None]
+    return None
+
+
+def _input_port(name: str, spec: list[Any], *, required: bool) -> dict[str, Any]:
+    """Project one object_info input spec into a usable port description.
+
+    object_info spells a field as ``[type, options]`` where ``type`` is either a
+    widget token (``INT``/``FLOAT``/``STRING``/``BOOLEAN``), a combo option list,
+    a dynamic-combo pseudo type, or a link type. Every port keeps the original
+    ``name``/``type``/``required`` keys and adds the widget facts an agent needs
+    to fill or connect it; unknown facts are omitted rather than invented.
+    """
+    raw_type = spec[0] if spec else None
+    options: dict[str, Any] = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+    port: dict[str, Any] = {"name": name, "type": "unknown", "required": required}
+    widget = False
+    connectable = True
+    force_input = bool(options.get("forceInput", False))
+    if isinstance(raw_type, list):
+        port["type"] = "COMBO"
+        widget = True
+        connectable = force_input
+        values = _port_options(raw_type)
+        if values:
+            port["options"] = values
+            port["enum"] = list(values)
+    elif isinstance(raw_type, str):
+        token = raw_type
+        if token in _SCALAR_PORT_TYPES:
+            port["type"] = token
+            widget = True
+            connectable = force_input
+        elif token == "COMBO" or token.startswith(_DYNAMIC_COMBO_PREFIX):
+            port["type"] = "COMBO"
+            port["raw_type"] = token
+            widget = True
+            connectable = force_input
+            if token.startswith(_DYNAMIC_COMBO_PREFIX):
+                port["dynamic"] = True
+            values = _port_options(options.get("options"))
+            if values:
+                port["options"] = values
+                port["enum"] = list(values)
+            elif token.startswith(_DYNAMIC_COMBO_PREFIX):
+                # Never leave a caller with a type name it cannot resolve.
+                port["options_missing"] = "dynamic_combo_options_unavailable"
+        else:
+            port["type"] = token
+    else:
+        port["type"] = _compact_type(raw_type)
+    port["widget"] = widget
+    port["connectable"] = connectable
+    default = _port_value(options.get("default"))
+    if default is not None:
+        port["default"] = default
+    current = default
+    if "value" in options:
+        advertised = _port_value(options["value"])
+        current = advertised if advertised is not None else default
+    if current is not None:
+        # object_info is a schema, not live canvas state: ``current_value`` is
+        # only the value this node definition itself advertises.
+        port["current_value"] = current
+    for key in ("min", "max", "step"):
+        numeric = options.get(key)
+        if isinstance(numeric, (int, float)) and not isinstance(numeric, bool):
+            port[key] = numeric
+    return port
 
 
 def _blueprint_item(node_class: str, metadata: dict[str, Any]) -> dict[str, Any]:
@@ -334,11 +481,17 @@ class DiscoveryService:
         return {"server_id": server_id, "node_class": node_class, "node": node}
 
     def node_ports(self, server_id: str, node_class: str) -> dict[str, Any]:
-        """Project one node's linkable ports for graph editing.
+        """Project one node's inputs and outputs for graph editing.
 
-        Widget inputs (INT/FLOAT/STRING/BOOLEAN and combo lists) are omitted on
-        purpose: an agent connecting nodes only needs typed ports, and the full
-        widget surface stays available through ``comfyui.node.describe``.
+        Every input keeps the original ``name``/``type``/``required`` keys and
+        adds the widget facts an agent needs: ``widget``/``connectable`` tell a
+        canvas widget apart from a link target, ``default``/``current_value``
+        carry the value the node definition advertises, ``options``/``enum``
+        carry combo candidates, and ``min``/``max``/``step`` bound numeric
+        widgets. A dynamic combo pseudo type (``COMFY_DYNAMICCOMBO_*``) is
+        reported as a readable ``COMBO`` with ``dynamic: true`` instead of an
+        unresolvable type name. Facts the definition does not advertise are
+        omitted rather than invented.
         """
         payload = self.node(server_id, node_class)
         node = payload["node"]
@@ -353,14 +506,8 @@ class DiscoveryService:
                     continue
                 if not isinstance(spec, list) or not spec:
                     continue
-                head = spec[0]
-                if not isinstance(head, str):
-                    # Combo widget: the first element is the option list.
-                    continue
-                if head in _WIDGET_TYPES:
-                    continue
-                ports.append({"name": name, "type": head, "required": required})
-        ports.sort(key=lambda port: port["name"])
+                ports.append(_input_port(name, spec, required=required))
+        ports.sort(key=lambda port: str(port["name"]))
         raw_outputs = node.get("output")
         raw_names = node.get("output_name")
         outputs: list[dict[str, Any]] = []
@@ -369,12 +516,20 @@ class DiscoveryService:
                 name = ""
                 if isinstance(raw_names, list) and index < len(raw_names):
                     name = str(raw_names[index])
-                outputs.append({"index": index, "name": name, "type": str(output_type)})
+                outputs.append(
+                    {
+                        "index": index,
+                        "name": name,
+                        "type": str(output_type),
+                        "connectable": True,
+                    }
+                )
         return {
             "server_id": server_id,
             "node_class": node_class,
             "inputs": ports,
             "outputs": outputs,
+            "widget_count": sum(1 for port in ports if port["widget"]),
         }
 
     def blueprint(
@@ -456,52 +611,58 @@ class DiscoveryService:
         self, server_id: str, kind: str, names: list[Any]
     ) -> dict[str, Any]:
         """Read on-disk facts for one page of model files (needs ``local_root``)."""
-        connection = self._servers.connection(server_id)
-        local_root = connection.get("local_root")
-        if not isinstance(local_root, str) or not local_root.strip():
-            return {"available": False, "reason": "no_local_root"}
-        root = Path(local_root)
-        if not root.exists():
-            return {"available": False, "reason": "root_not_found"}
-        if not root.is_dir():
-            return {"available": False, "reason": "root_not_directory"}
-        if not _path_is_safe_directory(root):
-            return {"available": False, "reason": "root_unsafe"}
+        root, unavailable = _local_root(self._servers.connection(server_id))
+        if root is None:
+            return unavailable
         wanted = [str(name) for name in names]
         # ComfyUI reports Windows sub-folder entries with a backslash while
         # ``Path.as_posix()`` yields forward slashes, so match on one
         # normalized form and report the caller's original spelling back.
         wanted_names = {_normalized_model_name(name): name for name in wanted}
-        models_dir = root / "models" / kind
-        if not models_dir.is_dir():
-            return {"available": True, "files": [], "missing": wanted}
-        if not _path_is_safe_directory(models_dir):
+        # The same nested/flat resolution ``local.plugins`` uses: an aki bundle
+        # keeps models under ``<root>/ComfyUI/models``, a standard install under
+        # ``<root>/models``. Nested wins when both exist.
+        existing = [
+            candidate
+            for _label, candidate in _layout_candidates(root, "models", kind)
+            if candidate.is_dir()
+        ]
+        if not existing:
+            return {
+                "available": True,
+                "layout": "none",
+                "files": [],
+                "missing": wanted,
+            }
+        usable = _usable_layout_directories(root, "models", kind)
+        if not usable:
             return {"available": False, "reason": "models_dir_unsafe"}
+        layout, models_dir = usable[0]
         found: dict[str, Path] = {}
         scanned = 0
-        for path in models_dir.rglob("*"):
+        for candidate in models_dir.rglob("*"):
             scanned += 1
             if scanned > _MODEL_SCAN_BUDGET:
                 break
             if len(found) >= len(wanted):
                 break
-            if not path.is_file() or path.suffix.lower() not in _MODEL_SUFFIXES:
+            if not candidate.is_file() or candidate.suffix.lower() not in _MODEL_SUFFIXES:
                 continue
-            if _is_reparse_or_link(path):
+            if _is_reparse_or_link(candidate):
                 continue
-            relative = path.relative_to(models_dir).as_posix()
+            relative = candidate.relative_to(models_dir).as_posix()
             original = wanted_names.get(relative)
             if original is not None:
-                found[original] = path
+                found[original] = candidate
         files: list[dict[str, Any]] = []
         missing: list[str] = []
         for name in wanted:
-            path = found.get(name)
-            if path is None:
+            matched = found.get(name)
+            if matched is None:
                 missing.append(name)
                 continue
             try:
-                info = path.stat()
+                info = matched.stat()
             except OSError:
                 missing.append(name)
                 continue
@@ -512,10 +673,15 @@ class DiscoveryService:
                     "mtime": time.strftime(
                         "%Y-%m-%dT%H:%M:%SZ", time.gmtime(info.st_mtime)
                     ),
-                    "metadata": _safetensors_metadata(path),
+                    "metadata": _safetensors_metadata(matched),
                 }
             )
-        return {"available": True, "files": files, "missing": missing}
+        return {
+            "available": True,
+            "layout": layout,
+            "files": files,
+            "missing": missing,
+        }
 
     def plugins(self, server_id: str) -> dict[str, Any]:
         """List custom_nodes plugins from a locally configured ComfyUI root.
@@ -527,24 +693,10 @@ class DiscoveryService:
         success. Cloud sessions (no local file access) get the same fallback.
         """
         connection = self._servers.connection(server_id)
-        local_root = connection.get("local_root")
-        if not isinstance(local_root, str) or not local_root.strip():
-            return {"available": False, "reason": "no_local_root"}
-        root = Path(local_root)
-        if not root.exists():
-            return {"available": False, "reason": "root_not_found"}
-        if not root.is_dir():
-            return {"available": False, "reason": "root_not_directory"}
-        if not _path_is_safe_directory(root):
-            return {"available": False, "reason": "root_unsafe"}
-        candidates = [
-            (label, path)
-            for label, path in (
-                ("nested", root / "ComfyUI" / "custom_nodes"),
-                ("flat", root / "custom_nodes"),
-            )
-            if _path_is_safe_directory(path) and path.is_dir()
-        ]
+        root, unavailable = _local_root(connection)
+        if root is None:
+            return unavailable
+        candidates = _usable_layout_directories(root, "custom_nodes")
         if not candidates:
             return {
                 "available": True,

@@ -89,7 +89,7 @@ comfyui.capability.describe
 - `comfyui.workflow.visualize`：已发布工作流 Mermaid 渲染（≤50 节点，SQLite 门控）；`revision.diff` 附带 mermaid 视图（added 节点高亮）。
 - `comfyui.engine.history`：引擎 `/history` 只读直连（8 MiB 有界 + 扁平投影；`job.list` 保持 owner-bound 持久执行记录契约）。
 - `comfyui.local.plugins`：本地 custom_nodes 插件清单（server 条目 `local_root` 配置；双布局 nested/flat 兼容 aki 与标准、201 目录项预算、reparse/junction 拒绝、README 首行有界）；云端/未配置会话降级返回 `available:false` + 固定 reason 枚举码。OPERATIONS/AUTHORING/ADMIN 可见，EXECUTION 不可见。
-- `comfyui.output.image`：导出单个 ComfyUI output 图片（**AUTHORING 面专属**，需 `comfyui:author`，不占用 OPERATIONS/EXECUTION 面的固定工具预算）。默认返回**标准 MCP 图片块**（`{"type":"image","data","mimeType"}`），宿主可自行渲染、落盘与去重（Snow App 会按内容 hash 落到自己的 upload 目录），本服务不写文件、`image_tag` 为 null；配置 `COMFYUI_MCP_IMAGE_TAG_DIR` 后改走**轻量路径标签模式**——落盘到 `<root>/<YYYY-MM-DD>/` 并返回 `saved_path` 与 `@@image:upload/<date>/<name>@@`（适合大图/批量，省掉 base64 全链路搬运，代价是模型看不到图）。路径经 `validate_media_locator` 校验，超过 25 MiB 直接报错不截断。
+- `comfyui.output.image`：导出单个 ComfyUI output 图片（**AUTHORING 面专属**，需 `comfyui:author`，不占用 OPERATIONS/EXECUTION 面的固定工具预算）。默认返回**标准 MCP 图片块**（`{"type":"image","data","mimeType"}`），宿主可自行渲染、落盘与去重（Snow App 会按内容 hash 落到自己的 upload 目录），本服务不写文件、`image_tag` 为 null；配置 `COMFYUI_MCP_IMAGE_TAG_DIR` 后改走**轻量路径标签模式**——落盘到 `<root>/<YYYY-MM-DD>/` 并返回 `saved_path` 与 `@@image:upload/<date>/<name>@@`（适合大图/批量，省掉 base64 全链路搬运，代价是模型看不到图）。路径经 `validate_media_locator` 校验，超过 25 MiB 直接报错不截断。MIME 类型由图片内容的 magic bytes 嗅探得出（扩展名与内容不符时返回真实类型，嗅探失败的非图片内容直接拒绝），落盘目标再做一次根目录包含性校验（防目录穿越）。
 
 修复引导：`workflow.change.plan`（AUTHORING 面，2026-09-04 起从 ADMIN 下放）校验失败消息带 node/field 定位与 `comfyui.node.describe` hint。
 
@@ -388,7 +388,7 @@ comfyui.engine.history
 
 语义严格分开：
 
-- `job.cancel`：所有者安全的单 Job 取消。
+- `job.cancel`：所有者安全的单 Job 取消。排队中的 Job 走队列删除；**运行中**的 Job 走 ComfyUI 的 prompt 级 `interrupt(prompt_id)`（只停这一个 prompt），仅当本端 gateway 不支持寻址单个 prompt 时才降级为 `UnsafeCancel`（绝不退化成全局中断）。
 - `queue.remove`：预览并移除明确 prompt 集合。
 - `queue.clear`：全局队列操作，先返回影响。
 - `server.interrupt`：显式全局中断，不伪装成单 Job 取消。

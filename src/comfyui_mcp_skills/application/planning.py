@@ -16,7 +16,7 @@ from comfyui_mcp_skills.application.planning_lineage import (
 )
 from comfyui_mcp_skills.application.ports import WorkflowRepository
 from comfyui_mcp_skills.domain.control_plane import derived_control_plane_id
-from comfyui_mcp_skills.domain.errors import PayloadTooLarge
+from comfyui_mcp_skills.domain.errors import PayloadTooLarge, WorkflowArgumentsError
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.workflow_schema import normalize_parameters
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
@@ -27,6 +27,49 @@ from comfyui_mcp_skills.infrastructure.persistence.orchestration_schedule import
 FailureInjector = Callable[[str], None]
 
 _MAX_INPUT_SNAPSHOT_BYTES = 1024 * 1024
+_MAX_OVERRIDES = 64
+_MAX_OVERRIDE_TARGET_LENGTH = 256
+
+
+def normalize_overrides(overrides: object) -> dict[str, Any]:
+    """Validate and canonically order one-run-only ``<node_id>.<input>`` overrides.
+
+    Only the target shape and the scalar value type are checked here, so the same
+    normalization can run before a graph exists (Plan snapshot, repair Plan
+    replay); whether a target names a real graph input is verified when the graph
+    is materialized. Keys are sorted, so the canonical JSON of the snapshot and
+    every digest derived from it stay stable.
+    """
+    if overrides is None:
+        return {}
+    if not isinstance(overrides, dict):
+        raise TypeError("overrides must be an object")
+    if len(overrides) > _MAX_OVERRIDES:
+        raise ValueError("overrides must not exceed 64 entries")
+    normalized: dict[str, Any] = {}
+    for target in sorted(overrides, key=str):
+        value = overrides[target]
+        if (
+            not isinstance(target, str)
+            or len(target) > _MAX_OVERRIDE_TARGET_LENGTH
+            or "\r" in target
+            or "\n" in target
+        ):
+            raise TypeError("override targets must be strings without line breaks")
+        node_id, separator, field = target.partition(".")
+        if not node_id or not separator or not field:
+            raise WorkflowArgumentsError(
+                f'Override target "{target}" must name "<node_id>.<input_field>" '
+                "of an existing node"
+            )
+        if isinstance(value, (list, dict)) or not isinstance(
+            value, (bool, int, float, str)
+        ):
+            raise WorkflowArgumentsError(
+                f'Override target "{target}" accepts scalar values only'
+            )
+        normalized[target] = value
+    return normalized
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,18 +166,31 @@ class ExecutionPlanningService:
         deployment_id: str = "",
         content_digest: str = "",
         retry_of: str = "",
+        overrides: dict[str, Any] | None = None,
     ) -> ExecutionIdentity:
-        input_snapshot = {
+        normalized_overrides = normalize_overrides(overrides)
+        input_snapshot: dict[str, Any] = {
             "arguments": arguments,
             "resolved_inputs": resolved_inputs if resolved_inputs is not None else arguments,
         }
+        if normalized_overrides:
+            # Only plans that actually override an input carry the key, so archived
+            # Plans written before overrides were tracked keep byte-identical
+            # snapshots and digests.
+            input_snapshot["overrides"] = normalized_overrides
         inputs_json = _canonical_json(input_snapshot)
         encoded_inputs = inputs_json.encode("utf-8")
         if len(encoded_inputs) > _MAX_INPUT_SNAPSHOT_BYTES:
             raise PayloadTooLarge("Execution Plan input snapshot exceeds 1 MiB")
         input_digest = hashlib.sha256(encoded_inputs).hexdigest()
+        raw_payload: dict[str, Any] = {
+            "arguments": arguments,
+            "resolved_inputs": arguments,
+        }
+        if normalized_overrides:
+            raw_payload["overrides"] = normalized_overrides
         raw_arguments_digest = hashlib.sha256(
-            _canonical_json({"arguments": arguments, "resolved_inputs": arguments}).encode("utf-8")
+            _canonical_json(raw_payload).encode("utf-8")
         ).hexdigest()
         created_at = datetime.now(timezone.utc).isoformat()
         connection = _connect(self._store)

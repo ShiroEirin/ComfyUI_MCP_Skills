@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 import uuid
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Any
 
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
-from comfyui_mcp_skills.application.planning import ExecutionIdentity, ExecutionPlanningService
+from comfyui_mcp_skills.application.planning import (
+    ExecutionIdentity,
+    ExecutionPlanningService,
+    normalize_overrides,
+)
 from comfyui_mcp_skills.application.ports import (
     ArtifactRepository,
     AssetRepository,
@@ -39,6 +45,7 @@ _DIRECT_OUTPUT_COMPATIBILITY = frozenset(
         ("LoadImageOutput", "image", "image", "output"),
     }
 )
+logger = logging.getLogger(__name__)
 
 
 def direct_output_compatible(
@@ -56,6 +63,183 @@ def direct_output_compatible(
     ) in _DIRECT_OUTPUT_COMPATIBILITY
 
 
+@dataclass(frozen=True, slots=True)
+class RiskyNodeRule:
+    """One extendable rule that flags a workflow node before submission.
+
+    ``class_types`` matches exact class types (case-insensitive), ``class_tokens``
+    matches whole identifier words of the class type, and ``input_tokens`` matches
+    whole identifier words of the node's input names. Adding a category is one
+    table entry instead of a new branch in the submission path.
+    """
+
+    category: str
+    severity: str
+    reason: str
+    class_types: frozenset[str]
+    class_tokens: frozenset[str]
+    input_tokens: frozenset[str] = frozenset()
+
+
+RISKY_NODE_RULES: tuple[RiskyNodeRule, ...] = (
+    RiskyNodeRule(
+        category="code_execution",
+        severity="high",
+        reason="executes arbitrary code or expressions on the ComfyUI host",
+        class_types=frozenset(
+            {
+                "pythonnode",
+                "pythonscript",
+                "pythoncode",
+                "pythoneval",
+                "executepython",
+                "evalnode",
+                "eval",
+                "shellexecute",
+                "wasnodesuiteexec",
+            }
+        ),
+        class_tokens=frozenset({"python", "pyscript", "eval", "exec", "execute"}),
+        input_tokens=frozenset({"code", "script", "expression", "exec_command"}),
+    ),
+    RiskyNodeRule(
+        category="network_request",
+        severity="high",
+        reason="performs an outbound network request from the ComfyUI host",
+        class_types=frozenset(
+            {
+                "httprequest",
+                "http_request",
+                "webrequest",
+                "requests",
+                "urlfetch",
+                "urlfetcher",
+                "fetchurl",
+                "downloadurl",
+                "downloadandload",
+                "loadimagefromurl",
+                "loadimageurl",
+                "webhook",
+            }
+        ),
+        class_tokens=frozenset(
+            {"http", "https", "url", "fetch", "download", "webhook", "request"}
+        ),
+        input_tokens=frozenset({"url", "urls", "uri", "endpoint", "webhook", "proxy"}),
+    ),
+    RiskyNodeRule(
+        category="external_api",
+        severity="high",
+        reason="calls a paid or external model API instead of the local ComfyUI runtime",
+        class_types=frozenset(
+            {
+                "openai",
+                "openaiapi",
+                "claude",
+                "gemini",
+                "fluxapi",
+                "replicate",
+                "runway",
+                "kling",
+                "midjourney",
+                "externalapi",
+            }
+        ),
+        class_tokens=frozenset(
+            {
+                "api",
+                "openai",
+                "anthropic",
+                "claude",
+                "gemini",
+                "replicate",
+                "fal",
+                "runway",
+                "kling",
+                "midjourney",
+                "cloud",
+            }
+        ),
+        input_tokens=frozenset({"api", "apikey"}),
+    ),
+)
+
+
+class RiskyWorkflowNodesError(WorkflowArgumentsError):
+    """Submission found nodes that execute code, reach the network, or call paid APIs."""
+
+    code = "RISKY_WORKFLOW_NODES"
+
+    def __init__(self, findings: tuple[dict[str, str], ...]) -> None:
+        summary = ", ".join(
+            f"{item['node_id']}({item['class_type']}:{item['category']})"
+            for item in findings
+        )
+        super().__init__(
+            "Workflow contains nodes outside the local runtime contract: "
+            f"{summary}. Pass allow_risky_nodes=true to submit anyway.",
+            details={"risky_nodes": [dict(item) for item in findings], "allow_risky_nodes": True},
+        )
+
+
+def _identifier_tokens(value: str) -> tuple[str, ...]:
+    """Split one class or field identifier into lowercase whole-word tokens."""
+    spaced = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", " ", value)
+    spaced = re.sub(r"(?<=[A-Z])(?=[A-Z][a-z])", " ", spaced)
+    return tuple(token.casefold() for token in re.findall(r"[A-Za-z0-9]+", spaced))
+
+
+def _node_sort_key(value: object) -> tuple[int, int | str]:
+    text = str(value)
+    return (0, int(text)) if text.isdigit() else (1, text)
+
+
+def scan_risky_nodes(graph: dict[str, Any]) -> tuple[dict[str, str], ...]:
+    """Return structured findings for nodes outside the local runtime contract.
+
+    Pure and deterministic: no I/O, sorted by node id, driven entirely by
+    ``RISKY_NODE_RULES`` so the policy stays unit-testable on its own.
+    """
+    findings: list[dict[str, str]] = []
+    for raw_node_id in sorted(graph, key=_node_sort_key):
+        node = graph[raw_node_id]
+        if not isinstance(node, dict):
+            continue
+        class_type = str(node.get("class_type", "")).strip()
+        if not class_type:
+            continue
+        class_key = class_type.casefold()
+        class_tokens = set(_identifier_tokens(class_type))
+        inputs = node.get("inputs")
+        input_tokens: set[str] = set()
+        if isinstance(inputs, dict):
+            for field in inputs:
+                input_tokens.update(_identifier_tokens(str(field)))
+        for rule in RISKY_NODE_RULES:
+            matched = class_type if class_key in rule.class_types else ""
+            if not matched:
+                shared = sorted(class_tokens & rule.class_tokens)
+                if shared:
+                    matched = shared[0]
+            if not matched:
+                shared_inputs = sorted(input_tokens & rule.input_tokens)
+                if shared_inputs:
+                    matched = f"input:{shared_inputs[0]}"
+            if matched:
+                findings.append(
+                    {
+                        "node_id": str(raw_node_id),
+                        "class_type": class_type,
+                        "category": rule.category,
+                        "severity": rule.severity,
+                        "reason": rule.reason,
+                        "matched": matched,
+                    }
+                )
+                break
+    return tuple(findings)
+
+
 class ExecutionService:
     def __init__(
         self,
@@ -66,6 +250,7 @@ class ExecutionService:
         gateway_factory: GatewayFactory,
         planning: ExecutionPlanningService | None = None,
         artifacts: ArtifactRepository | None = None,
+        risky_node_audit: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._catalog = catalog
         self._servers = servers
@@ -74,6 +259,7 @@ class ExecutionService:
         self._gateway_factory = gateway_factory
         self._planning = planning
         self._artifacts = artifacts
+        self._risky_node_audit = risky_node_audit
 
     def submit(
         self,
@@ -92,6 +278,7 @@ class ExecutionService:
         priority: float | None = None,
         targets: tuple[str, ...] = (),
         overrides: dict[str, Any] | None = None,
+        allow_risky_nodes: bool = False,
     ) -> Job:
         if not isinstance(idempotency_key, str) or len(idempotency_key) > 256:
             raise ValueError("idempotency_key must be a string up to 256 characters")
@@ -107,6 +294,9 @@ class ExecutionService:
             or any(ord(char) < 33 or ord(char) == 127 for char in client_id)
         ):
             raise ValueError("client_id must contain printable non-whitespace characters")
+        # Canonicalize once: the same normalized mapping feeds the request digest,
+        # the executed graph, and the immutable Plan snapshot.
+        normalized_overrides = normalize_overrides(overrides)
         pin = (revision_id, deployment_id, content_digest)
         if any(pin) and not all(pin):
             raise ValueError("execution pin is incomplete")
@@ -128,7 +318,7 @@ class ExecutionService:
             server_id, workflow.parameters, workflow.graph, arguments, owner_id
         )
         digest_arguments = arguments
-        if priority is not None or targets or overrides:
+        if priority is not None or targets or normalized_overrides:
             # Normalize before hashing: priority is float, targets are set-like
             # (order is meaningless to ComfyUI), so semantically identical
             # requests always produce the same digest regardless of caller.
@@ -147,10 +337,8 @@ class ExecutionService:
                     ),
                 },
             }
-            if overrides:
-                digest_arguments["_overrides"] = {
-                    key: overrides[key] for key in sorted(overrides)
-                }
+            if normalized_overrides:
+                digest_arguments["_overrides"] = normalized_overrides
         request_digest = self._runs.request_digest(workflow_id, digest_arguments)
         client_id = client_id or uuid.uuid4().hex
         connection = (
@@ -158,12 +346,23 @@ class ExecutionService:
         )
         gateway = self._gateway_factory(connection)
         graph = self._inject(workflow.graph, workflow.parameters, resolved)
-        if overrides:
-            _apply_overrides(graph, overrides)
+        if normalized_overrides:
+            _apply_overrides(graph, normalized_overrides, parameters=workflow.parameters)
         if targets and any(target not in graph for target in targets):
             raise ValueError(
                 "partial_execution_targets references a node missing from the "
                 "resolved workflow graph"
+            )
+        risky_findings = scan_risky_nodes(graph)
+        if risky_findings:
+            if not allow_risky_nodes:
+                raise RiskyWorkflowNodesError(risky_findings)
+            self._record_risky_allowance(
+                server_id=server_id,
+                workflow_id=workflow_id,
+                owner_id=owner_id,
+                client_id=client_id,
+                findings=risky_findings,
             )
         admission_token = self._runs.admit(server_id)
         try:
@@ -302,6 +501,7 @@ class ExecutionService:
                         deployment_id=deployment_id,
                         content_digest=content_digest,
                         retry_of=retry_of,
+                        overrides=normalized_overrides or None,
                     )
                 except BaseException:
                     self._runs.release_claim(
@@ -408,6 +608,36 @@ class ExecutionService:
     def _verify_pins(job: Job, *, revision_id: str, deployment_id: str) -> None:
         if revision_id and (job.revision_id != revision_id or job.deployment_id != deployment_id):
             raise IdempotencyConflict("Idempotency key resolved to different execution pins")
+
+    def _record_risky_allowance(
+        self,
+        *,
+        server_id: str,
+        workflow_id: str,
+        owner_id: str,
+        client_id: str,
+        findings: tuple[dict[str, str], ...],
+    ) -> None:
+        """Record an explicit ``allow_risky_nodes`` decision before submission.
+
+        The structured event is always logged; an injected audit sink (for example
+        the admin audit log) receives the same payload so the allowance never
+        disappears from the trail.
+        """
+        event = {
+            "event": "risky_nodes_allowed",
+            "server_id": server_id,
+            "workflow_id": workflow_id,
+            "owner_id": owner_id,
+            "client_id": client_id,
+            "risky_nodes": [dict(item) for item in findings],
+        }
+        logger.warning("risky workflow nodes explicitly allowed: %s", event)
+        if self._risky_node_audit is not None:
+            try:
+                self._risky_node_audit(event)
+            except Exception:
+                logger.exception("risky node audit sink failed")
 
     def _submission_unknown(
         self,
@@ -651,27 +881,100 @@ class ExecutionService:
         return result
 
 
-def _apply_overrides(graph: dict[str, Any], overrides: dict[str, Any]) -> None:
+_MEDIA_PARAMETER_TYPES = frozenset({"image", "mask", "audio", "video"})
+_MEDIA_FIELD_TOKENS = frozenset(
+    {"image", "images", "image2", "mask", "masks", "video", "videos", "audio", "audios"}
+)
+_MEDIA_REFERENCE_SUFFIXES = frozenset(
+    {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".bmp",
+        ".gif",
+        ".tif",
+        ".tiff",
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".mkv",
+        ".avi",
+        ".wav",
+        ".mp3",
+        ".flac",
+        ".ogg",
+        ".m4a",
+    }
+)
+_MEDIA_OVERRIDE_MESSAGE = (
+    'Override target "{target}" targets media input "{field}" ({kind}); media inputs '
+    "cannot be set through _overrides. Upload the file through the asset upload channel "
+    "(comfyui.asset.upload) or reuse an existing output URI (comfyui://artifacts/... or "
+    "comfyui://outputs/...), then pass the returned asset_id through the workflow parameter."
+)
+
+
+def _looks_like_media_reference(value: str) -> bool:
+    if value.startswith(("asset_", "comfyui://")):
+        return True
+    if value.endswith(" [output]"):
+        return True
+    return PurePosixPath(value.replace("\\", "/")).suffix.casefold() in _MEDIA_REFERENCE_SUFFIXES
+
+
+def _media_override_kind(
+    node_id: str,
+    field: str,
+    current_value: Any,
+    parameters: dict[str, Any],
+) -> str:
+    """Return the media kind when an override targets an asset-reference input.
+
+    Declared media parameters win, so a renamed input still resolves through the
+    published schema; the remaining heuristics cover undeclared third-party
+    loaders where the graph only exposes the raw field name or value.
+    """
+    for name in sorted(parameters):
+        metadata = parameters[name]
+        if not isinstance(metadata, dict):
+            continue
+        parameter_type = str(metadata.get("type", "")).casefold()
+        if parameter_type not in _MEDIA_PARAMETER_TYPES:
+            continue
+        if str(metadata.get("node_id", "")) == node_id and str(metadata.get("field", "")) == field:
+            return parameter_type
+    for token in _identifier_tokens(field):
+        if token in _MEDIA_FIELD_TOKENS:
+            for kind in ("image", "mask", "video", "audio"):
+                if token.startswith(kind):
+                    return kind
+    if isinstance(current_value, str) and _looks_like_media_reference(current_value):
+        return "media"
+    return ""
+
+
+def _apply_overrides(
+    graph: dict[str, Any],
+    overrides: dict[str, Any],
+    *,
+    parameters: dict[str, Any] | None = None,
+) -> None:
     """Apply one-run-only node input overrides to an injected graph copy.
 
     Targets use the ``<node_id>.<input_field>`` form and accept scalars only, so
     a one-off run can swap a checkpoint or a LoRA weight without publishing a new
     Revision. Rewiring a graph stays the job of the Revisions change surface.
+
+    Media inputs are asset references and are rejected here: they must pass the
+    same owner/server/media/lineage checks as ``ExecutionService._resolve_assets``,
+    which only the workflow parameter channel performs.
     """
-    if not isinstance(overrides, dict):
-        raise TypeError("overrides must be an object")
-    if len(overrides) > 64:
-        raise ValueError("overrides must not exceed 64 entries")
-    for target, value in overrides.items():
-        if (
-            not isinstance(target, str)
-            or len(target) > 256
-            or "\r" in target
-            or "\n" in target
-        ):
-            raise TypeError("override targets must be strings without line breaks")
-        node_id, separator, field = target.partition(".")
-        node = graph.get(node_id) if separator and field else None
+    normalized = normalize_overrides(overrides)
+    declared = parameters or {}
+    for target, value in normalized.items():
+        node_id, _separator, field = target.partition(".")
+        node = graph.get(node_id)
         if not isinstance(node, dict):
             raise WorkflowArgumentsError(
                 f'Override target "{target}" must name "<node_id>.<input_field>" '
@@ -682,10 +985,10 @@ def _apply_overrides(graph: dict[str, Any], overrides: dict[str, Any]) -> None:
             raise WorkflowArgumentsError(
                 f'Override target "{target}" references a missing input'
             )
-        if isinstance(value, (list, dict)) or not isinstance(
-            value, (bool, int, float, str)
-        ):
+        media_kind = _media_override_kind(node_id, field, inputs.get(field), declared)
+        if media_kind:
             raise WorkflowArgumentsError(
-                f'Override target "{target}" accepts scalar values only'
+                _MEDIA_OVERRIDE_MESSAGE.format(target=target, field=field, kind=media_kind),
+                details={"target": target, "field": field, "parameter_type": media_kind},
             )
         inputs[field] = value

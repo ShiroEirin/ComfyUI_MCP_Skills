@@ -13,13 +13,14 @@ import pytest
 
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.execution import ExecutionService
-from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.jobs import JobService, JobWaitTimeout
 from comfyui_mcp_skills.application.servers import ServerRegistry
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
     IdempotencyConflict,
     ServerOffline,
     UnsafeCancel,
+    WorkflowArgumentsError,
 )
 from comfyui_mcp_skills.domain.models import Asset, Job
 from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
@@ -342,21 +343,87 @@ def test_execution_rejects_raw_media_reference_for_owned_request(
     assert gateway.queued == []
 
 
-def test_running_cancel_is_safely_rejected(tmp_path: Path) -> None:
+class _InterruptingGateway(FakeGateway):
+    """Running Job disappears from the queue once the interrupt is accepted."""
+
+    def interrupt(self, prompt_id: str = "") -> dict[str, Any]:
+        self.running = False
+        return super().interrupt(prompt_id)
+
+    def get_queue(self, timeout_seconds: float | None = None) -> dict[str, Any]:
+        return {
+            "queue_running": [[0, "prompt-running"]] if self.running else [],
+            "queue_pending": [],
+        }
+
+
+class _GlobalOnlyGateway:
+    """Engine without prompt-scoped interrupt: only a global stop is possible."""
+
+    def get_history(
+        self, prompt_id: str, timeout_seconds: float | None = None
+    ) -> dict[str, Any] | None:
+        return None
+
+    def get_queue(self, timeout_seconds: float | None = None) -> dict[str, Any]:
+        return {"queue_running": [[0, "prompt-running"]], "queue_pending": []}
+
+
+def test_running_cancel_uses_prompt_scoped_interrupt(tmp_path: Path) -> None:
+    _project(tmp_path)
+    runs = FileRunRepository(tmp_path)
+    runs.save(Job("prompt-running", "local", "img2img", "submitted"))
+    gateway = _InterruptingGateway()
+    gateway.running = True
+    service = JobService(ServerRegistry(tmp_path), runs, lambda _config: gateway)
+
+    stopped = service.cancel("local", "prompt-running")
+
+    assert gateway.interrupted == ["prompt-running"]  # targeted, not global
+    assert stopped.status == "interrupted"
+    assert runs.get("local", "prompt-running").status == "interrupted"  # type: ignore[union-attr]
+
+
+def test_running_cancel_reports_the_state_the_engine_still_has(tmp_path: Path) -> None:
+    """An accepted interrupt that the engine has not applied yet stays running."""
     _project(tmp_path)
     runs = FileRunRepository(tmp_path)
     runs.save(Job("prompt-running", "local", "img2img", "submitted"))
     gateway = FakeGateway()
-    gateway.get_queue = lambda: {
+    gateway.get_queue = lambda: {  # type: ignore[method-assign]
         "queue_running": [[0, "prompt-running"]],
         "queue_pending": [],
     }
     service = JobService(ServerRegistry(tmp_path), runs, lambda _config: gateway)
 
+    current = service.cancel("local", "prompt-running")
+
+    assert gateway.interrupted == ["prompt-running"]
+    assert current.status == "running"
+
+
+def test_running_cancel_without_prompt_interrupt_stays_unsafe(tmp_path: Path) -> None:
+    _project(tmp_path)
+    runs = FileRunRepository(tmp_path)
+    runs.save(Job("prompt-running", "local", "img2img", "submitted"))
+    service = JobService(ServerRegistry(tmp_path), runs, lambda _config: _GlobalOnlyGateway())
+
     with pytest.raises(UnsafeCancel):
         service.cancel("local", "prompt-running")
 
-    assert gateway.interrupted == []
+
+def test_empty_prompt_id_is_an_argument_error(tmp_path: Path) -> None:
+    _project(tmp_path)
+    service = JobService(
+        ServerRegistry(tmp_path), FileRunRepository(tmp_path), lambda _c: FakeGateway()
+    )
+
+    with pytest.raises(WorkflowArgumentsError, match="non-empty"):
+        service.get("local", "")
+    with pytest.raises(WorkflowArgumentsError, match="non-empty"):
+        service.cancel("local", "")
+    with pytest.raises(WorkflowArgumentsError, match="non-empty"):
+        service.wait("local", "", timeout_seconds=0)
 
 
 def test_job_outputs_include_gifs_and_media_metadata(tmp_path: Path) -> None:
@@ -409,7 +476,7 @@ def test_job_outputs_include_video_key_and_media_metadata(tmp_path: Path) -> Non
     assert output["canonical_uri"].startswith("comfyui://artifacts/artifact_")
 
 
-def test_wait_zero_returns_handle_and_callback_errors_propagate(tmp_path: Path) -> None:
+def test_wait_reports_timeout_and_callback_errors_propagate(tmp_path: Path) -> None:
     _project(tmp_path)
     runs = FileRunRepository(tmp_path)
     saved = Job(
@@ -423,7 +490,14 @@ def test_wait_zero_returns_handle_and_callback_errors_propagate(tmp_path: Path) 
     gateway = FakeGateway()
     service = JobService(ServerRegistry(tmp_path), runs, lambda _config: gateway)
 
-    assert service.wait("local", "prompt-wait", timeout_seconds=0) == saved
+    with pytest.raises(JobWaitTimeout) as timed_out:
+        service.wait("local", "prompt-wait", timeout_seconds=0)
+    # The deadline is explicit, and the prompt handle survives for another poll.
+    assert timed_out.value.timed_out is True
+    assert timed_out.value.waited_seconds == pytest.approx(0.0, abs=0.5)
+    assert timed_out.value.job == saved
+    assert timed_out.value.last_status == "submitted"
+
     with pytest.raises(ValueError, match="callback failed"):
         service.wait(
             "local",

@@ -24,7 +24,7 @@
 
 - **轻量下可用**：工作流发现与动态执行（`comfyui.run.*`）、`asset.upload`、`job.get`/`job.cancel`、`engine.history`（引擎历史只读直连）、`local.plugins`（需 server 条目配置 `local_root`，未配置/云端会话按既有契约返回 `available:false`）、节点/模型只读目录（`node.list/describe`、`model.list`，需对应 Toolset 授权）。
 - **需 SQLite aggregate cutover 后可用**：`job.list` 历史分页、Workflow Revision/Plan/Experiment/Routing/Diagnostic、Artifact/Lineage、`workflow.visualize`、`job.history.suggest` 等高级持久化能力——对应 aggregate 切换前工具不挂载或明确返回 backend unavailable，与「数据库存在但未 cutover」的行为一致。
-- 全新目录默认保持文件仓库；生产切换由 `comfyui-mcp-migrate` 显式执行（见[安装教程](INSTALLATION.zh-CN.md#12-保留策略与迁移)）。
+- 全新目录默认保持文件仓库；生产切换由 `comfyui-mcp-migrate` 显式执行（见[安装教程](INSTALLATION.zh-CN.md#13-保留策略与迁移)）。
 
 ## 3. 本地 5 分钟上手
 
@@ -113,4 +113,4 @@ my-comfyui-mcp/
 2. `comfyui.engine.history` 查看引擎历史；`comfyui.local.plugins` 查看插件清单（需配置 `local_root`）。
 3. 确认数据目录未生成控制平面数据库（`data/control-plane.sqlite3` 不存在），即处于轻量模式。
 
-> 提示：轻量模式下没有编排 worker 与 SQLite 持久化，跨进程恢复/审批/实验等增强能力不可用；需要这些能力时按[安装教程](INSTALLATION.zh-CN.md#12-保留策略与迁移)执行生产 cutover。
+> 提示：轻量模式下没有编排 worker 与 SQLite 持久化，跨进程恢复/审批/实验等增强能力不可用；需要这些能力时按[安装教程](INSTALLATION.zh-CN.md#13-保留策略与迁移)执行生产 cutover。

@@ -50,7 +50,11 @@ class WorkflowInspectionService:
         object_info = gateway.get_object_info()
         graph = _revision_graph(revision)
         semantic = self._graphs.describe(graph, object_info=object_info)
-        validation = self._validation.validate_api(graph, object_info)
+        # ``current_validation`` judges the Revision against today's runtime while
+        # ``historical_validity`` only replays what was recorded when it was
+        # accepted. A graph that stops satisfying a newer rule therefore stays
+        # readable and describable, it just stops being currently executable.
+        current_validation = self._validation.validate_api(graph, object_info)
         return {
             **_safe_deployment(deployment),
             "revision_created_at": str(revision.get("created_at", "")),
@@ -59,7 +63,10 @@ class WorkflowInspectionService:
             "dependency_contract": _object(
                 revision.get("dependency_contract"), "dependency contract"
             ),
-            "validation": validation,
+            "validation": current_validation,
+            "current_validation": current_validation,
+            "historical_validity": _historical_validity(revision, deployment),
+            "currently_executable": bool(current_validation.get("valid")),
         }
 
     def dependencies_check(
@@ -145,8 +152,32 @@ def _safe_deployment(value: dict[str, Any]) -> dict[str, Any]:
         "content_digest",
         "validation_status",
         "published",
+        "historical_validity",
     )
     return {field: value[field] for field in fields if field in value}
+
+
+def _historical_validity(
+    revision: dict[str, Any], deployment: dict[str, Any]
+) -> dict[str, Any]:
+    """Return the recorded validity of a Revision, never a re-judgement.
+
+    Repositories that already expose ``historical_validity`` are authoritative;
+    otherwise the recorded deployment ``validation_status`` is the only fact
+    available and must not be replaced by a validation run under today's rules.
+    """
+    for recorded in (revision.get("historical_validity"), deployment.get("historical_validity")):
+        if isinstance(recorded, dict):
+            return dict(recorded)
+    status = str(deployment.get("validation_status", "")) or str(
+        revision.get("validation_status", "")
+    )
+    return {
+        "valid": status == "valid",
+        "status": status or "unrecorded",
+        "revision_id": str(revision.get("revision_id", "")),
+        "source": "recorded_deployment",
+    }
 
 
 def _revision_graph(revision: dict[str, Any]) -> dict[str, Any]:

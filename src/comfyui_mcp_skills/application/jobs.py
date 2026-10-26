@@ -9,7 +9,7 @@ import re
 import time
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, NoReturn
 
 from comfyui_mcp_skills.application.assets import MediaType, classify_media_type
 from comfyui_mcp_skills.application.pagination import (
@@ -61,6 +61,31 @@ _JOB_LIST_STATUSES = frozenset(
     }
 )
 _MAX_JOB_LIST_LIMIT = 100
+
+
+class JobWaitTimeout(TimeoutError):
+    """``JobService.wait`` hit its deadline without a terminal Job.
+
+    A non-terminal Job returned as if it were a result is indistinguishable from
+    a finished one, so the deadline is reported explicitly. ``job`` keeps the
+    last persisted handle (never ``None`` when the Job is known) so the caller
+    can keep polling instead of losing the prompt.
+    """
+
+    timed_out = True
+
+    def __init__(self, prompt_id: str, waited_seconds: float, job: Job) -> None:
+        super().__init__(
+            f"Job {prompt_id} did not reach a terminal status after "
+            f"{waited_seconds:.1f}s (last status: {job.status})"
+        )
+        self.prompt_id = prompt_id
+        self.waited_seconds = max(0.0, waited_seconds)
+        self.job = job
+
+    @property
+    def last_status(self) -> str:
+        return self.job.status
 
 
 class JobService:
@@ -187,8 +212,10 @@ class JobService:
         owner_id: str,
         deadline: float | None = None,
     ) -> Job:
-        if not prompt_id:
-            raise JobNotFound("prompt_id must not be empty")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            # An absent handle is a caller mistake, not a missing Job: calling it
+            # JobNotFound would hide an argument bug behind a 404-style answer.
+            raise WorkflowArgumentsError("prompt_id must be a non-empty string")
         saved = self._runs.get(server_id, prompt_id)
         self._authorize_owner(saved, prompt_id, owner_id)
         if saved is not None and saved.status == "lost":
@@ -273,8 +300,17 @@ class JobService:
         cancel_check: Callable[[], None] | None = None,
         owner_id: str = "",
     ) -> Job:
-        """Wait within an absolute deadline while preserving the prompt handle."""
-        deadline = time.monotonic() + max(timeout_seconds, 0)
+        """Wait within an absolute deadline while preserving the prompt handle.
+
+        A Job that is still queued/running when the deadline passes is reported as
+        :class:`JobWaitTimeout` (``timed_out`` + ``waited_seconds`` + the last
+        handle) instead of being returned as if it were a result. The same holds
+        for ``timeout_seconds=0``, which never inspects a terminal state.
+        """
+        started = time.monotonic()
+        deadline = started + max(timeout_seconds, 0)
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise WorkflowArgumentsError("prompt_id must be a non-empty string")
         saved = self._runs.get(server_id, prompt_id)
         self._authorize_owner(saved, prompt_id, owner_id)
         gateway = self._gateway_factory(self._connection(owner_id, server_id))
@@ -289,7 +325,7 @@ class JobService:
                     cancel_check,
                 ):
                     if time.monotonic() >= deadline:
-                        return self._persisted_or_raise(saved, prompt_id)
+                        self._raise_timeout(saved, prompt_id, started)
                     if cancel_check is not None:
                         cancel_check()
                     if progress is not None:
@@ -301,7 +337,7 @@ class JobService:
                     if event_type == "executing" and data.get("node") is None:
                         break
                 if time.monotonic() >= deadline:
-                    return self._persisted_or_raise(saved, prompt_id)
+                    self._raise_timeout(saved, prompt_id, started)
                 job = self._get_until(
                     server_id,
                     prompt_id,
@@ -327,11 +363,18 @@ class JobService:
             if job.status in _TERMINAL_STATUSES:
                 return job
             time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-        return self._persisted_or_raise(saved, prompt_id)
+        self._raise_timeout(saved, prompt_id, started)
+
+    def _raise_timeout(
+        self, fallback: Job | None, prompt_id: str, started: float
+    ) -> NoReturn:
+        """Report an expired wait deadline without faking a terminal status."""
+        job = self._persisted_or_raise(fallback, prompt_id)
+        raise JobWaitTimeout(prompt_id, time.monotonic() - started, job)
 
     def cancel(self, server_id: str, prompt_id: str, *, owner_id: str = "") -> Job:
-        if not prompt_id:
-            raise JobNotFound("prompt_id must not be empty")
+        if not isinstance(prompt_id, str) or not prompt_id:
+            raise WorkflowArgumentsError("prompt_id must be a non-empty string")
         existing = self._runs.get(server_id, prompt_id)
         self._authorize_owner(existing, prompt_id, owner_id)
         if existing is None:
@@ -341,9 +384,7 @@ class JobService:
             return current
         gateway = self._gateway_factory(self._connection(owner_id, server_id))
         if current.status == "running":
-            raise UnsafeCancel(
-                "Safe targeted cancellation is unavailable for a running ComfyUI job"
-            )
+            return self._interrupt_running(gateway, current, server_id, prompt_id, owner_id)
         gateway.queue_delete([prompt_id])
         history = gateway.get_history(prompt_id)
         if history:
@@ -354,6 +395,47 @@ class JobService:
         if self._in_queue(queue.get("queue_pending", []), prompt_id):
             return current
         job = self._copy(current, server_id, prompt_id, "cancelled", owner_id=owner_id)
+        self._runs.save(job)
+        return job
+
+    def _interrupt_running(
+        self,
+        gateway: ComfyUIGateway,
+        current: Job,
+        server_id: str,
+        prompt_id: str,
+        owner_id: str,
+    ) -> Job:
+        """Cancel one running Job through ComfyUI's prompt-scoped interrupt.
+
+        ComfyUI's ``/interrupt`` accepts a ``prompt_id``, so a single running
+        Job can be stopped without touching the rest of the engine. A gateway
+        that cannot address one prompt would have to interrupt globally, which
+        is exactly what ``UnsafeCancel`` guards, so that path stays fail-closed.
+        """
+        interrupt = getattr(gateway, "interrupt", None)
+        if not callable(interrupt):
+            raise UnsafeCancel(
+                "Safe targeted cancellation is unavailable: the gateway cannot "
+                "interrupt a single prompt"
+            )
+        try:
+            interrupt(prompt_id)
+        except (AttributeError, NotImplementedError, TypeError) as exc:
+            raise UnsafeCancel(
+                "Safe targeted cancellation is unavailable: prompt-scoped "
+                "interrupt is not supported by this gateway"
+            ) from exc
+        history = gateway.get_history(prompt_id)
+        if history:
+            return self.get(server_id, prompt_id, owner_id=owner_id)
+        queue = gateway.get_queue()
+        if self._in_queue(queue.get("queue_running", []), prompt_id):
+            # The interrupt was accepted but the engine still lists the prompt:
+            # report the state it actually has instead of claiming a stop.
+            job = self._copy(current, server_id, prompt_id, "running", owner_id=owner_id)
+        else:
+            job = self._copy(current, server_id, prompt_id, "interrupted", owner_id=owner_id)
         self._runs.save(job)
         return job
 

@@ -20,6 +20,37 @@ from comfyui_mcp_skills.domain.identifiers import validate_identifier
 
 _BUNDLE_VERSION = 1
 _PLAN_TTL = timedelta(hours=1)
+# Transport facts a Server entry carries besides its URL and credentials. They
+# are not secrets, so a Config Bundle must carry them verbatim: dropping them
+# silently turned an export/import round trip into a broken local session
+# (``local_root`` drives local.plugins/model metadata, ``runtime`` drives the
+# restart controller, ``output_dir`` drives output resolution).
+_SERVER_FACT_FIELDS = ("local_root", "output_dir", "timeout", "runtime")
+_MAX_RUNTIME_FIELDS = 8
+
+
+def _server_fact(field: str, value: object) -> object:
+    """Validate one preserved Server fact; unsupported shapes are rejected."""
+    if field == "local_root":
+        return bounded_string(value, "local_root", maximum=1024)
+    if field == "output_dir":
+        return bounded_string(value, "output_dir", maximum=255)
+    if field == "timeout":
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("timeout must be a number between 0.1 and 60 seconds")
+        if not 0.1 <= float(value) <= 60.0:
+            raise ValueError("timeout must be a number between 0.1 and 60 seconds")
+        return value
+    if field == "runtime":
+        if not isinstance(value, Mapping) or len(value) > _MAX_RUNTIME_FIELDS:
+            raise ValueError("runtime must be a bounded object")
+        return {
+            bounded_string(key, "runtime key", maximum=64): bounded_string(
+                item, "runtime value", maximum=128
+            )
+            for key, item in value.items()
+        }
+    raise ValueError("unsupported Config Bundle Server field")
 
 
 class ConfigBundleService:
@@ -115,16 +146,19 @@ class ConfigBundleService:
         current = self._repository.current_revision(owner_id)
         if expected != current:
             raise ValueError("Config Bundle expected_revision conflicts with current revision")
-        summary = _merge_summary(
-            strip_secret_values(self._repository.export_snapshot(owner_id)), normalized
-        )
+        snapshot = strip_secret_values(self._repository.export_snapshot(owner_id))
+        # Explicit merge semantics: a Server fact the Bundle states wins, and a
+        # fact it omits keeps the stored value instead of resetting to a default.
+        content_with_facts = _merge_missing_server_facts(normalized, snapshot)
+        source_digest = digest(content_with_facts)
+        summary = _merge_summary(snapshot, content_with_facts)
         now = self._clock()
         immutable = {
             "owner_id": owner_id,
             "expected_revision": expected,
             "bundle_version": _BUNDLE_VERSION,
             "source_digest": source_digest,
-            "content": normalized,
+            "content": content_with_facts,
             "merge_summary": summary,
             "created_at": _time(now),
             "expires_at": _time(now + _PLAN_TTL),
@@ -175,6 +209,44 @@ def _public_bundle(bundle: Mapping[str, Any]) -> dict[str, Any]:
     return bounded_public(result)
 
 
+def _merge_missing_server_facts(
+    content: Mapping[str, Any], snapshot: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Return ``content`` with absent Server facts filled from the stored entry.
+
+    A field the incoming Bundle states is authoritative; a field it omits keeps
+    the value already stored for that Server (never a freshly invented default).
+    A stored value that no longer validates is skipped instead of failing an
+    otherwise valid import.
+    """
+    stored: dict[str, Mapping[str, Any]] = {}
+    raw_servers = snapshot.get("servers")
+    if isinstance(raw_servers, list):
+        for item in raw_servers:
+            if isinstance(item, Mapping) and item.get("server_id"):
+                stored[str(item["server_id"])] = item
+    merged = dict(content)
+    servers: list[Any] = []
+    incoming = content.get("servers")
+    for entry in incoming if isinstance(incoming, list) else []:
+        if not isinstance(entry, Mapping):
+            servers.append(entry)
+            continue
+        target = dict(entry)
+        existing = stored.get(str(entry.get("server_id", "")))
+        if existing is not None:
+            for field in _SERVER_FACT_FIELDS:
+                if target.get(field) is not None or existing.get(field) is None:
+                    continue
+                try:
+                    target[field] = _server_fact(field, existing[field])
+                except ValueError:
+                    continue
+        servers.append(target)
+    merged["servers"] = servers
+    return merged
+
+
 def _normalize_content(value: Mapping[str, Any]) -> dict[str, Any]:
     if set(value) - {"servers", "workflows", "default_server"}:
         raise ValueError("Config Bundle content fields are unsupported")
@@ -218,6 +290,11 @@ def _normalize_content(value: Mapping[str, Any]) -> dict[str, Any]:
                 )
                 for key, reference in refs.items()
             }
+        for field in _SERVER_FACT_FIELDS:
+            # Absent facts stay absent: a default is never invented here, so an
+            # import can fill it from the stored Server or leave the entry as-is.
+            if raw.get(field) is not None:
+                item[field] = _server_fact(field, raw[field])
         servers.append(item)
     default_server = value.get("default_server")
     if default_server is not None:

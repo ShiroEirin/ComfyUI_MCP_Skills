@@ -45,7 +45,7 @@ from comfyui_mcp_skills.adapters.mcp.defaults import (
 )
 from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_URI
 from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
-from comfyui_mcp_skills.adapters.mcp.output_image import export_output_image
+from comfyui_mcp_skills.adapters.mcp.output_image import OutputOwnership, export_output_image
 from comfyui_mcp_skills.adapters.mcp.prompts import create_prompt_handlers
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
@@ -103,7 +103,7 @@ from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.experiment_orchestration import ExperimentAdvanceHandler
 from comfyui_mcp_skills.application.experiments import ExperimentService, get_experiment_variant
-from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.jobs import JobService, JobWaitTimeout
 from comfyui_mcp_skills.application.model_guidance import guidance as model_guidance
 from comfyui_mcp_skills.application.observability import ObservationService
 from comfyui_mcp_skills.application.orchestration import (
@@ -116,7 +116,7 @@ from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.provisioning import ProvisioningWorkHandler
 from comfyui_mcp_skills.application.provisioning_ports import ManagerGateway
-from comfyui_mcp_skills.application.routing import RoutingService
+from comfyui_mcp_skills.application.routing import RoutingRepository, RoutingService
 from comfyui_mcp_skills.application.runtime_control import (
     RuntimeController,
     RuntimeControlService,
@@ -147,13 +147,15 @@ from comfyui_mcp_skills.domain.errors import (
     AuditIdempotencyConflict,
     ComfyUISkillsError,
     ServerNotFound,
+    WorkflowChangeConflict,
+    WorkflowChangeNotFound,
     WorkflowNotFound,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
 from comfyui_mcp_skills.domain.models import Workflow
 from comfyui_mcp_skills.domain.orchestration import PROVISIONING_WORK_TYPE
 from comfyui_mcp_skills.domain.parameter_suggestions import suggest_parameters
-from comfyui_mcp_skills.domain.workflow_schema import build_input_schema
+from comfyui_mcp_skills.domain.workflow_schema import build_input_schema, normalize_parameters
 from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
@@ -353,6 +355,181 @@ def _required_revision_id(deployment: dict[str, Any], workflow_id: str, server_i
             f"Workflow not found: {server_id}/{workflow_id}"
         )
     return revision_id
+
+
+class _PinnedRoutingRepository:
+    """Routing port narrowed to exactly one explicitly pinned Revision.
+
+    Only the candidate list changes; planning, ownership and commit fencing keep
+    delegating to the real repository, so a pinned plan is persisted, explained
+    and committed through the same paths as a published one.
+    """
+
+    def __init__(self, repository: RoutingRepository, context: dict[str, Any]) -> None:
+        self._repository = repository
+        self._context = context
+
+    def list_routing_contexts(self, owner_id: str, workflow_id: str) -> list[dict[str, Any]]:
+        return [dict(self._context)]
+
+    def resolve_server_connection(
+        self, owner_id: str, server_id: str, revision: int, config_digest: str
+    ) -> dict[str, Any] | None:
+        return self._repository.resolve_server_connection(
+            owner_id, server_id, revision, config_digest
+        )
+
+    def save_routing_plan(self, plan: dict[str, Any]) -> dict[str, Any]:
+        return self._repository.save_routing_plan(plan)
+
+    def get_routing_plan(self, plan_id: str, owner_id: str) -> dict[str, Any] | None:
+        return self._repository.get_routing_plan(plan_id, owner_id)
+
+    def claim_routing_commit(
+        self, plan_id: str, plan_digest: str, owner_id: str, idempotency_digest: str
+    ) -> None:
+        self._repository.claim_routing_commit(
+            plan_id, plan_digest, owner_id, idempotency_digest
+        )
+
+    def mark_routing_plan_committed(
+        self, plan_id: str, plan_digest: str, owner_id: str, job_id: str
+    ) -> dict[str, Any]:
+        return self._repository.mark_routing_plan_committed(
+            plan_id, plan_digest, owner_id, job_id
+        )
+
+
+def _pinned_routing_context(
+    workflow_repository: SQLiteWorkflowRepository,
+    routing_repository: SQLiteRoutingRepository,
+    *,
+    owner_id: str,
+    workflow_id: str,
+    revision_id: str,
+    server_id: str,
+    deployment_id: str,
+    content_digest: str,
+) -> dict[str, Any]:
+    """Resolve one pinned Revision into a routing candidate context.
+
+    The pin must win over the published Deployment: a freshly committed change
+    is still unpublished, and trialling it is the point of pinning. The context
+    is therefore rebuilt from the stored Revision (the repository scopes
+    revisions to the acting principal) while the Server runtime facts are taken
+    from the published context of that same Server when one exists.
+    """
+    try:
+        revision = workflow_repository.get_revision(revision_id)
+    except LookupError as exc:
+        raise WorkflowChangeNotFound(
+            f"Workflow Revision was not found: {revision_id}",
+            details={"revision_id": revision_id, "workflow_id": workflow_id},
+        ) from exc
+    stored_workflow = str(revision.get("workflow_id", ""))
+    if stored_workflow != workflow_id:
+        raise WorkflowChangeNotFound(
+            f"Workflow Revision {revision_id} belongs to workflow {stored_workflow}",
+            details={
+                "revision_id": revision_id,
+                "workflow_id": workflow_id,
+                "revision_workflow_id": stored_workflow,
+            },
+        )
+    stored_digest = str(revision.get("content_digest", ""))
+    if content_digest and content_digest != stored_digest:
+        raise WorkflowChangeConflict(
+            "Pinned content_digest does not match the stored Revision",
+            details={
+                "content_digest": content_digest,
+                "stored_content_digest": stored_digest,
+            },
+        )
+    validity = revision.get("historical_validity")
+    recorded = validity.get("deployment_ids") if isinstance(validity, dict) else None
+    deployment_ids = [str(item) for item in recorded] if isinstance(recorded, list) else []
+    if deployment_id:
+        if deployment_ids and deployment_id not in deployment_ids:
+            raise WorkflowChangeConflict(
+                "Pinned deployment_id does not belong to the pinned Revision",
+                details={
+                    "revision_id": revision_id,
+                    "deployment_id": deployment_id,
+                },
+            )
+    elif len(deployment_ids) == 1:
+        deployment_id = deployment_ids[0]
+    else:
+        raise WorkflowChangeConflict(
+            "Pinned Revision has no single Deployment to target",
+            details={
+                "revision_id": revision_id,
+                "deployment_ids": deployment_ids,
+                "hint": "pass deployment_id from comfyui.admin.workflow.change.commit",
+            },
+        )
+    server_facts: dict[str, Any] = {}
+    for context in routing_repository.list_routing_contexts(owner_id, workflow_id):
+        if str(context.get("server_id", "")) != server_id:
+            continue
+        server_facts = context
+        if str(context.get("revision_id", "")) == revision_id:
+            break
+    schema = revision.get("parameter_schema")
+    return {
+        "owner_id": owner_id,
+        "server_id": server_id,
+        "revision_id": revision_id,
+        "deployment_id": deployment_id,
+        "content_digest": stored_digest,
+        "parameters": normalize_parameters(schema if isinstance(schema, dict) else {}),
+        "server_revision": int(server_facts.get("server_revision", 0)),
+        "server_config_digest": str(server_facts.get("server_config_digest", "")),
+        "queue_depth": int(server_facts.get("queue_depth", 0)),
+        "execution_slots": int(server_facts.get("execution_slots", 1)),
+        "subject_submission_quota": int(server_facts.get("subject_submission_quota", 0)),
+        "available_vram_bytes": int(server_facts.get("available_vram_bytes", 0)),
+        "required_vram_bytes": int(server_facts.get("required_vram_bytes", 0)),
+        "missing_dependencies": list(server_facts.get("missing_dependencies", [])),
+        "reuse_mode": str(server_facts.get("reuse_mode", "none")),
+        "pinned": True,
+    }
+
+
+def _pinned_routing_service(
+    routing_repository: SQLiteRoutingRepository,
+    workflow_repository: SQLiteWorkflowRepository,
+    execution: ExecutionService,
+    probe: Callable[[dict[str, Any]], dict[str, Any]],
+    *,
+    owner_id: str,
+    workflow_id: str,
+    revision_id: str,
+    server_id: str,
+    deployment_id: str,
+    content_digest: str,
+) -> RoutingService:
+    """Build a per-call RoutingService whose only candidate is the pinned Revision."""
+    if not server_id:
+        raise WorkflowChangeConflict(
+            "Pinned Revision requires the target server_id",
+            details={"revision_id": revision_id, "field": "server_id"},
+        )
+    context = _pinned_routing_context(
+        workflow_repository,
+        routing_repository,
+        owner_id=owner_id,
+        workflow_id=workflow_id,
+        revision_id=revision_id,
+        server_id=server_id,
+        deployment_id=deployment_id,
+        content_digest=content_digest,
+    )
+    return RoutingService(
+        _PinnedRoutingRepository(routing_repository, context),
+        execution,
+        probe=probe,
+    )
 
 
 # ComfyUI status_str values we project; anything else maps to "unknown".
@@ -1102,6 +1279,7 @@ def create_server(
                     "wait_timeout_seconds",
                     "priority",
                     "partial_execution_targets",
+                    "allow_risky_nodes",
                 }
                 if unexpected_options:
                     raise ValueError(
@@ -1154,6 +1332,9 @@ def create_server(
                                 "without line breaks"
                             )
                     targets = tuple(dict.fromkeys(targets_raw))
+                allow_risky_nodes = execution_options.get("allow_risky_nodes", False)
+                if not isinstance(allow_risky_nodes, bool):
+                    raise TypeError("allow_risky_nodes must be a boolean")
                 arguments = apply_defaults(arguments, workflow.parameters)
                 await ctx.session.report_progress(1, None, "Submitting ComfyUI workflow")
                 job = await anyio.to_thread.run_sync(
@@ -1167,6 +1348,7 @@ def create_server(
                         priority=priority,
                         targets=targets,
                         overrides=overrides_options,
+                        allow_risky_nodes=allow_risky_nodes,
                     )
                 )
                 await ctx.session.report_progress(2, None, "Workflow submitted")
@@ -1187,17 +1369,31 @@ def create_server(
                             message,
                         )
 
-                    job = await anyio.to_thread.run_sync(
-                        lambda: jobs.wait(
-                            workflow.server_id,
-                            job.prompt_id,
-                            timeout_seconds=timeout_seconds,
-                            progress=report,
-                            cancel_check=anyio.from_thread.check_cancelled,
-                            owner_id=owner_id,
-                        ),
-                        abandon_on_cancel=True,
-                    )
+                    try:
+                        job = await anyio.to_thread.run_sync(
+                            lambda: jobs.wait(
+                                workflow.server_id,
+                                job.prompt_id,
+                                timeout_seconds=timeout_seconds,
+                                progress=report,
+                                cancel_check=anyio.from_thread.check_cancelled,
+                                owner_id=owner_id,
+                            ),
+                            abandon_on_cancel=True,
+                        )
+                    except JobWaitTimeout as exc:
+                        # A deadline is not a result: surface it explicitly with the
+                        # last persisted handle so the caller can keep polling
+                        # instead of mistaking a running Job for a finished one.
+                        document = job_dict(exc.job)
+                        document.update(
+                            {
+                                "timed_out": True,
+                                "waited_seconds": round(exc.waited_seconds, 3),
+                                "last_status": exc.last_status,
+                            }
+                        )
+                        return tool_result(document)
                 return tool_result(job_dict(job))
             params = params.model_copy(update={"name": canonical_by_external[requested_name]})
             request_authorization = AuthorizationContext(
@@ -1262,19 +1458,68 @@ def create_server(
                             "policy",
                             "submission_window",
                             "request_id",
+                            "revision_id",
+                            "deployment_id",
+                            "content_digest",
                         },
                     )
-                    result = await anyio.to_thread.run_sync(
-                        lambda: routing.plan(
-                            owner_id,
-                            validate_identifier(
-                                required_string(arguments, "workflow_id", max_length=128),
-                                field="workflow_id",
+                    planning_workflow_id = validate_identifier(
+                        required_string(arguments, "workflow_id", max_length=128),
+                        field="workflow_id",
+                    )
+                    planning_server_id = optional_string(
+                        arguments, "server_id", "", max_length=128
+                    )
+                    pinned_revision_id = optional_string(
+                        arguments, "revision_id", "", max_length=128
+                    )
+                    pinned_deployment_id = optional_string(
+                        arguments, "deployment_id", "", max_length=128
+                    )
+                    pinned_content_digest = optional_string(
+                        arguments, "content_digest", "", max_length=64
+                    )
+                    planning_service = routing
+                    if pinned_revision_id:
+                        if not isinstance(workflow_repository, SQLiteWorkflowRepository):
+                            raise ValueError(
+                                "Pinned execution targets require the SQLite Workflow store"
+                            )
+                        if routing_repository is None:
+                            raise ValueError(
+                                "Pinned execution targets require the SQLite Routing store"
+                            )
+                        planning_service = _pinned_routing_service(
+                            routing_repository,
+                            workflow_repository,
+                            execution,
+                            probe_routing_context,
+                            owner_id=owner_id,
+                            workflow_id=planning_workflow_id,
+                            revision_id=validate_identifier(
+                                pinned_revision_id, field="revision_id"
                             ),
+                            server_id=planning_server_id,
+                            deployment_id=(
+                                validate_identifier(pinned_deployment_id, field="deployment_id")
+                                if pinned_deployment_id
+                                else ""
+                            ),
+                            content_digest=pinned_content_digest,
+                        )
+                    elif pinned_deployment_id or pinned_content_digest:
+                        raise ValueError(
+                            "deployment_id/content_digest require revision_id: only an "
+                            "explicit Revision pins an execution target"
+                        )
+                    result = await anyio.to_thread.run_sync(
+                        lambda: planning_service.plan(
+                            owner_id,
+                            planning_workflow_id,
                             required_object(
                                 arguments, "arguments", max_properties=256, max_bytes=1024 * 1024
                             ),
-                            server_id=optional_string(arguments, "server_id", "", max_length=128),
+                            server_id=planning_server_id,
                             policy=required_object(
                                 {"policy": arguments.get("policy", {})},
                                 "policy",
@@ -1637,11 +1882,14 @@ def create_server(
                     )
                 server_id = required_string(arguments, "server_id")
                 workflow_id = required_string(arguments, "workflow_id")
-                operations = arguments.get("operations")
-                if not isinstance(operations, list) or not all(
-                    isinstance(operation, dict) for operation in operations
+                raw_operations = arguments.get("operations")
+                if not isinstance(raw_operations, list) or not all(
+                    isinstance(operation, dict) for operation in raw_operations
                 ):
                     raise TypeError("operations must be an array of objects")
+                operations: list[dict[str, Any]] = [
+                    dict(operation) for operation in raw_operations
+                ]
                 gateway = gateway_factory(servers.connection(server_id))
                 object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
                 result = await anyio.to_thread.run_sync(
@@ -1669,8 +1917,8 @@ def create_server(
                     raise ValueError(
                         "Workflow change commit requires the SQLite Workflow store"
                     )
-                operations = arguments.get("operations")
-                if operations is not None:
+                raw_inline_operations = arguments.get("operations")
+                if raw_inline_operations is not None:
                     if "plan_id" in arguments or "plan_digest" in arguments:
                         raise ValueError(
                             "operations cannot be combined with plan_id/plan_digest"
@@ -1680,17 +1928,20 @@ def create_server(
                         raise TypeError("dry_run must be a boolean")
                     server_id = required_string(arguments, "server_id")
                     workflow_id = required_string(arguments, "workflow_id")
-                    if not isinstance(operations, list) or not all(
-                        isinstance(operation, dict) for operation in operations
+                    if not isinstance(raw_inline_operations, list) or not all(
+                        isinstance(operation, dict) for operation in raw_inline_operations
                     ):
                         raise TypeError("operations must be an array of objects")
+                    inline_operations: list[dict[str, Any]] = [
+                        dict(operation) for operation in raw_inline_operations
+                    ]
                     gateway = gateway_factory(servers.connection(server_id))
                     object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
                     planned = await anyio.to_thread.run_sync(
                         lambda: workflow_changes.plan(
                             workflow_id,
                             server_id,
-                            operations,
+                            inline_operations,
                             object_info=object_info,
                         )
                     )
@@ -1784,11 +2035,22 @@ def create_server(
                     graph = revision.get("graph")
                     if not isinstance(graph, dict):
                         raise ValueError("Workflow revision has no graph")
-                    stored = revision.get("parameters")
+                    # A Revision stores its public parameters under
+                    # parameter_schema["parameters"]; a bare "parameters" key is
+                    # never written, so read through the schema.
+                    parameter_schema = revision.get("parameter_schema")
+                    stored_parameters = (
+                        parameter_schema.get("parameters")
+                        if isinstance(parameter_schema, dict)
+                        else None
+                    )
                     result = {
                         **result,
                         "parameter_suggestions": suggest_parameters(
-                            graph, stored if isinstance(stored, dict) else {}
+                            graph,
+                            stored_parameters
+                            if isinstance(stored_parameters, dict)
+                            else {},
                         ),
                     }
                 return tool_result(result)
@@ -1861,7 +2123,7 @@ def create_server(
                         userdata.list_userdata_workflows
                     )
                     needle = query.casefold()
-                    entries = [
+                    entries: list[dict[str, Any]] = [
                         {
                             "workflow_uri": f"comfyui://userdata/{server_id}/{path}",
                             "path": path,
@@ -2183,12 +2445,29 @@ def create_server(
                 return tool_result(result)
             if params.name == "comfyui.output.image":
                 validate_fixed_arguments(
-                    arguments, {"server_id", "filename", "subfolder", "storage_type"}
+                    arguments,
+                    {"server_id", "filename", "subfolder", "storage_type", "job_id"},
                 )
                 server_id = required_string(arguments, "server_id")
                 filename = required_string(arguments, "filename")
                 subfolder = optional_string(arguments, "subfolder", "")
                 storage_type = optional_string(arguments, "storage_type", "output")
+                job_id = optional_string(arguments, "job_id", "")
+                ownership: OutputOwnership | None = None
+                if job_id:
+                    if asset_library_repository is None:
+                        raise MCPError(
+                            code=INVALID_PARAMS,
+                            message=(
+                                "job_id ownership verification requires the SQLite "
+                                "asset store"
+                            ),
+                        )
+                    ownership = OutputOwnership(
+                        owner_id=owner_id,
+                        job_id=job_id,
+                        artifacts=asset_library_repository,
+                    )
                 gateway = gateway_factory(owner_server_connection(owner_id, server_id))
                 exported = await anyio.to_thread.run_sync(
                     lambda: export_output_image(
@@ -2197,6 +2476,7 @@ def create_server(
                         filename=filename,
                         subfolder=subfolder,
                         storage_type=storage_type,
+                        ownership=ownership,
                     )
                 )
                 if exported.payload is None:
@@ -2272,7 +2552,9 @@ def create_server(
                     "code": "INVALID_ARGUMENTS",
                     "message": "Invalid tool arguments",
                     "retryable": False,
-                    "details": {},
+                    # The concrete reason survives so a caller can repair the
+                    # request (field name, rejected value, candidate list).
+                    "details": {"reason": str(exc)},
                 }
             return tool_result(error, error=True)
         except RuntimeError as exc:

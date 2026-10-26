@@ -207,6 +207,17 @@ class SQLiteWorkflowRepository:
                             AND p.committed_revision_id=r.revision_id))""",
                     (revision_id, owner_id, owner_id),
                 ).fetchone()
+            deployments = (
+                []
+                if row is None
+                else connection.execute(
+                    """SELECT deployment_id,server_id,validation_status,published,created_at
+                       FROM workflow_deployments
+                       WHERE workflow_id=? AND revision_id=?
+                       ORDER BY deployment_id""",
+                    (str(row[1]), revision_id),
+                ).fetchall()
+            )
         finally:
             connection.close()
         if row is None:
@@ -219,6 +230,9 @@ class SQLiteWorkflowRepository:
             "dependency_contract": _json_object(str(row[4]), field="dependency contract"),
             "content_digest": str(row[5]),
             "created_at": str(row[6]),
+            # Recorded validity, never re-judged against today's rules: a historical
+            # graph may no longer run on the current runtime and still stays readable.
+            "historical_validity": _historical_validity(revision_id, deployments),
         }
 
     def get_published_revision(self, workflow_id: str) -> dict[str, Any]:
@@ -528,6 +542,29 @@ def _revision_digest(
         value["revision_metadata"] = metadata
     payload = _canonical_json(value)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _historical_validity(
+    revision_id: str, deployments: list[tuple[object, ...]]
+) -> dict[str, Any]:
+    """Describe the validity recorded for one Revision when it was written.
+
+    Only persisted deployment facts are used, so a historical graph that no longer
+    satisfies a newer rule keeps its recorded status instead of being re-judged.
+    """
+    statuses = [str(row[2]) for row in deployments]
+    valid = bool(statuses) and all(status == "valid" for status in statuses)
+    status = "valid" if valid else next(
+        (value for value in statuses if value != "valid"), "unrecorded"
+    )
+    return {
+        "valid": valid,
+        "status": status,
+        "revision_id": revision_id,
+        "recorded_at": max((str(row[4]) for row in deployments), default=""),
+        "deployment_ids": [str(row[0]) for row in deployments],
+        "source": "recorded_deployment",
+    }
 
 
 def _json_object(raw: str, *, field: str) -> dict[str, Any]:

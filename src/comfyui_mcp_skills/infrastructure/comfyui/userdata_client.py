@@ -64,10 +64,13 @@ class UserdataClient(SharedClient):
             raise ValueError("userdata workflow path exceeds 1024 characters")
         encoded = urllib.parse.quote(workflow_path, safe="")
         try:
+            # ``_get_json_bounded`` forwards unknown keyword arguments straight
+            # to ``requests.Session.get``; ``description`` belongs to the
+            # bounded decoder, never to the transport, and would raise a
+            # TypeError that the ``RequestException`` handler cannot catch.
             return self._get_json_bounded(
                 f"/userdata/{encoded}",
                 max_bytes=2 * 1024 * 1024,
-                description="ComfyUI userdata workflow",
             )
         except requests.RequestException:
             # Connection/HTTP failures and 404s read as "not found"; an

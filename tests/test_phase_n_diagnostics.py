@@ -218,21 +218,23 @@ class RecordingExecution:
         deployment_id: str = "",
         content_digest: str = "",
         retry_of: str = "",
+        overrides: dict[str, Any] | None = None,
     ) -> Job:
-        self.calls.append(
-            {
-                "server_id": server_id,
-                "workflow_id": workflow_id,
-                "arguments": copy.deepcopy(arguments),
-                "idempotency_key": idempotency_key,
-                "owner_id": owner_id,
-                "client_id": client_id,
-                "revision_id": revision_id,
-                "deployment_id": deployment_id,
-                "content_digest": content_digest,
-                "retry_of": retry_of,
-            }
-        )
+        call = {
+            "server_id": server_id,
+            "workflow_id": workflow_id,
+            "arguments": copy.deepcopy(arguments),
+            "idempotency_key": idempotency_key,
+            "owner_id": owner_id,
+            "client_id": client_id,
+            "revision_id": revision_id,
+            "deployment_id": deployment_id,
+            "content_digest": content_digest,
+            "retry_of": retry_of,
+        }
+        if overrides:
+            call["overrides"] = copy.deepcopy(overrides)
+        self.calls.append(call)
         return Job(
             prompt_id="prompt-retry",
             server_id=server_id,
@@ -440,6 +442,30 @@ def test_retry_diff_distinguishes_json_number_and_boolean_types() -> None:
     ]
 
 
+def test_retry_plan_persists_and_replays_one_run_overrides() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.retry_context = _retry_context()
+    execution = RecordingExecution()
+    service = RetryService(repository, execution, clock=lambda: _NOW)
+
+    plan = service.plan(_JOB_ID, "owner-a", {"steps": 15, "_overrides": {"7.seed": 99}})
+
+    stored = repository.plans[plan["repair_plan_id"]]
+    assert stored["normalized_changes"] == {"_overrides": {"7.seed": 99}, "steps": 15}
+    assert stored["resulting_arguments"]["_overrides"] == {"7.seed": 99}
+    assert {
+        "path": "/arguments/_overrides",
+        "operation": "add",
+        "before": None,
+        "after": {"7.seed": 99},
+    } in stored["diff"]
+
+    service.commit(plan["repair_plan_id"], plan["plan_digest"], "owner-a")
+
+    assert execution.calls[0]["arguments"] == {"seed": 7, "steps": 15, "nullable": None}
+    assert execution.calls[0]["overrides"] == {"7.seed": 99}
+
+
 def test_retry_commit_pins_execution_and_is_idempotent() -> None:
     repository = MemoryDiagnosticRetryRepository()
     repository.retry_context = _retry_context()
@@ -520,3 +546,34 @@ def test_retry_plan_and_get_are_owner_bound_and_validate_json_changes() -> None:
     assert service.get(plan["repair_plan_id"], "owner-a") == plan
     with pytest.raises(RepairPlanNotFound):
         service.get(plan["repair_plan_id"], "owner-b")
+
+
+def test_retry_replays_the_recorded_overrides_without_repeating_them() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.retry_context = _retry_context(overrides={"7.seed": 99})
+    execution = RecordingExecution()
+    service = RetryService(repository, execution, clock=lambda: _NOW)
+
+    # The caller only changes steps; the Plan-recorded one-run override must
+    # still reach the retried graph.
+    plan = service.plan(_JOB_ID, "owner-a", {"steps": 15})
+
+    stored = repository.plans[plan["repair_plan_id"]]
+    assert stored["resulting_arguments"]["_overrides"] == {"7.seed": 99}
+
+    service.commit(plan["repair_plan_id"], plan["plan_digest"], "owner-a")
+
+    assert execution.calls[0]["arguments"] == {"seed": 7, "steps": 15, "nullable": None}
+    assert execution.calls[0]["overrides"] == {"7.seed": 99}
+
+
+def test_retry_explicit_overrides_replace_the_recorded_ones() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.retry_context = _retry_context(overrides={"7.seed": 99})
+    execution = RecordingExecution()
+    service = RetryService(repository, execution, clock=lambda: _NOW)
+
+    plan = service.plan(_JOB_ID, "owner-a", {"_overrides": {"7.seed": 5}})
+    service.commit(plan["repair_plan_id"], plan["plan_digest"], "owner-a")
+
+    assert execution.calls[0]["overrides"] == {"7.seed": 5}

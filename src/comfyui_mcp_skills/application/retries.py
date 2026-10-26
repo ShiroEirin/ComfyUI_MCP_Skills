@@ -11,6 +11,7 @@ from typing import Any
 
 from comfyui_mcp_skills.application.control_plane_ports import ExecutionSubmitter
 from comfyui_mcp_skills.application.diagnostic_ports import RetryRepository
+from comfyui_mcp_skills.application.planning import normalize_overrides
 from comfyui_mcp_skills.domain.control_plane import validate_control_plane_id
 from comfyui_mcp_skills.domain.errors import (
     RepairPlanConflict,
@@ -117,10 +118,25 @@ class RetryService:
         original = _json_copy(context.get("raw_arguments"), "original_arguments_snapshot")
         if not isinstance(original, dict):
             raise RetryNotAllowed("Original arguments snapshot is unavailable")
-        normalized = _json_copy(changes, "changes")
-        if not isinstance(normalized, dict):
+        changed = _json_copy(changes, "changes")
+        if not isinstance(changed, dict):
             raise ValueError("changes must be a JSON object")
-        normalized = {str(key): normalized[key] for key in sorted(normalized)}
+        # One-run overrides travel through the same ``_overrides`` key the execute
+        # surface accepts. They stay inside the persisted snapshot so a retry
+        # replays exactly the graph the original attempt asked for.
+        # An explicit ``_overrides`` on the retry request wins; otherwise replay
+        # the one-run overrides the original Plan recorded, so a retry keeps the
+        # graph the failed attempt actually asked for.
+        explicit_overrides = changed.pop("_overrides", None)
+        overrides = (
+            normalize_overrides(explicit_overrides)
+            if explicit_overrides is not None
+            else normalize_overrides(context.get("overrides"))
+        )
+        normalized = {str(key): changed[key] for key in sorted(changed)}
+        if overrides:
+            normalized["_overrides"] = overrides
+            normalized = {key: normalized[key] for key in sorted(normalized)}
         resulting = copy.deepcopy(original)
         diff: list[dict[str, Any]] = []
         for key, after in normalized.items():
@@ -209,11 +225,14 @@ class RetryService:
             )
         except (LookupError, ValueError) as exc:
             raise RepairPlanConflict("Repair plan is expired or conflicts") from exc
+        submitted_arguments = _json_copy(plan["resulting_arguments"], "resulting_arguments")
+        overrides = normalize_overrides(submitted_arguments.pop("_overrides", None))
+        submit_options: dict[str, Any] = {"overrides": overrides} if overrides else {}
         try:
             job = self._execution.submit(
                 str(plan["server_id"]),
                 str(plan["workflow_id"]),
-                _json_copy(plan["resulting_arguments"], "resulting_arguments"),
+                submitted_arguments,
                 idempotency_key=f"repair:{repair_plan_id}",
                 owner_id=owner_id,
                 client_id=repair_plan_id,
@@ -221,6 +240,7 @@ class RetryService:
                 deployment_id=str(plan["pinned_deployment_id"]),
                 content_digest=str(plan["pinned_content_digest"]),
                 retry_of=str(plan["original_job_id"]),
+                **submit_options,
             )
         except Exception as exc:
             raise RetryNotAllowed("Canonical retry Job could not be submitted") from exc

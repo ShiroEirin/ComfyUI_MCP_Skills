@@ -7,8 +7,14 @@ here comes from the caller-supplied ``object_info``; nothing is invented.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
+
+# Semantic recipes locate their target by class family. They accept these two
+# optional arguments to pin the target explicitly when a graph holds several
+# nodes of the same family; ``node_ids`` maps one argument to one node.
+SEMANTIC_TARGET_ARGUMENTS = frozenset({"node_id", "node_ids"})
 
 # Recipe argument contracts: required keys must be present, optional keys may
 # be omitted (defaults applied); ``exact`` recipes (set_scalar_input.v1) keep
@@ -43,57 +49,57 @@ RECIPE_CONTRACTS: dict[str, dict[str, Any]] = {
     # agent can express intent ("swap the checkpoint") without knowing node ids.
     "change_checkpoint.v1": {
         "required": frozenset({"ckpt_name"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "swap_vae.v1": {
         "required": frozenset({"vae_name"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "change_clip.v1": {
         "required": frozenset({"clip_name"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "change_unet.v1": {
         "required": frozenset({"unet_name"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "change_sampler.v1": {
         "required": frozenset({"sampler_name"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "change_scheduler.v1": {
         "required": frozenset({"scheduler"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "set_steps.v1": {
         "required": frozenset({"steps"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "set_cfg.v1": {
         "required": frozenset({"cfg"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "set_seed.v1": {
         "required": frozenset({"seed"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "set_resolution.v1": {
         "required": frozenset({"width", "height"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
     "set_batch_size.v1": {
         "required": frozenset({"batch_size"}),
-        "optional": frozenset(),
+        "optional": SEMANTIC_TARGET_ARGUMENTS,
         "exact": False,
     },
 }
@@ -312,6 +318,23 @@ def _normalized_arguments(
                 f"operations[{index}].arguments.negative_conditioning_node_id "
                 "must be a bounded string or null"
             )
+    if "node_ids" in normalized:
+        node_ids = normalized["node_ids"]
+        if not isinstance(node_ids, dict) or not node_ids or len(node_ids) > 8:
+            raise RecipeError(
+                f"operations[{index}].arguments.node_ids must be an object with "
+                "1 to 8 argument-to-node entries"
+            )
+        for argument, target in node_ids.items():
+            if not isinstance(argument, str) or not argument or len(argument) > 256:
+                raise RecipeError(
+                    f"operations[{index}].arguments.node_ids has an invalid argument name"
+                )
+            if not isinstance(target, str) or not target or len(target) > 256:
+                raise RecipeError(
+                    f"operations[{index}].arguments.node_ids.{argument} must be a "
+                    "bounded string"
+                )
     for key in ("model", "lora_name", "filename_prefix"):
         if key in normalized:
             value = normalized[key]
@@ -402,31 +425,174 @@ def _apply_semantic(
     *,
     index: int,
 ) -> None:
-    """Locate the single node of the recipe's class family and set its fields."""
+    """Locate the recipe's target node(s) and set their fields.
+
+    A unique class match still resolves automatically. When the graph holds
+    several nodes of the class family the recipe never guesses: the caller pins
+    the target with ``node_id`` (one node for every field) or ``node_ids`` (one
+    node per argument), otherwise the structured candidate list comes back.
+    """
     target = _SEMANTIC_RECIPES[recipe_id]
-    classes = target["classes"]
+    classes: tuple[str, ...] = tuple(target["classes"])
+    fields: dict[str, tuple[str, ...]] = target["fields"]
+    pinned = arguments.get("node_id")
+    pinned_map = arguments.get("node_ids")
+    if pinned is not None and pinned_map is not None:
+        raise RecipeError(
+            f"operations[{index}].arguments.node_id and "
+            f"operations[{index}].arguments.node_ids are mutually exclusive"
+        )
     matches = [
         node_id
         for node_id, node in graph.items()
         if isinstance(node, dict) and node.get("class_type") in classes
     ]
-    if len(matches) != 1:
-        raise RecipeError(
-            f"operations[{index}] recipe {recipe_id} needs exactly one "
-            f"{' or '.join(classes)} node, found {len(matches)}"
-        )
-    node_id = matches[0]
-    inputs = _node_inputs(graph, node_id, index)
-    for argument, candidates in target["fields"].items():
+    if pinned_map is not None:
+        assert isinstance(pinned_map, dict)  # normalized by _normalized_arguments
+        unknown = sorted(set(pinned_map) - set(fields))
+        if unknown:
+            raise RecipeError(
+                f"operations[{index}].arguments.node_ids has unknown field(s) for "
+                f"{recipe_id}: {', '.join(unknown)}"
+            )
+
+    def resolve(argument: str) -> str:
+        if pinned is not None:
+            return _pinned_semantic_node(
+                graph,
+                classes,
+                fields,
+                str(pinned),
+                matches,
+                recipe_id,
+                index=index,
+                field="node_id",
+            )
+        if isinstance(pinned_map, dict) and argument in pinned_map:
+            return _pinned_semantic_node(
+                graph,
+                classes,
+                fields,
+                str(pinned_map[argument]),
+                matches,
+                recipe_id,
+                index=index,
+                field=f"node_ids.{argument}",
+            )
+        if len(matches) != 1:
+            raise _semantic_match_error(
+                graph, matches, fields, recipe_id, index=index, field="node_id"
+            )
+        return matches[0]
+
+    for argument, candidates in fields.items():
         value = arguments[argument]
         if _is_connection(value):
             raise RecipeError(f"operations[{index}].arguments.{argument} must be scalar")
+        node_id = resolve(argument)
+        inputs = _node_inputs(graph, node_id, index)
         field = next((name for name in candidates if name in inputs), candidates[0])
         if _is_connection(inputs.get(field)):
             raise RecipeError(
                 f"operations[{index}] {node_id}.{field} is linked; disconnect it first"
             )
         inputs[field] = value
+
+
+def _semantic_match_error(
+    graph: dict[str, Any],
+    matches: list[str],
+    fields: dict[str, tuple[str, ...]],
+    recipe_id: str,
+    *,
+    index: int,
+    field: str,
+) -> RecipeError:
+    """Build the structured "pick a target" error for an ambiguous recipe."""
+    classes = _SEMANTIC_RECIPES[recipe_id]["classes"]
+    detail = json.dumps(
+        {
+            "field": f"operations[{index}].arguments.{field}",
+            "recipe_id": recipe_id,
+            "target_classes": list(classes),
+            "candidates": _semantic_candidates(graph, matches, fields),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    hint = (
+        "set operations[{0}].arguments.node_id to one candidate"
+        if field == "node_id"
+        else "set operations[{0}].arguments.node_ids.{1} to one candidate"
+    ).format(index, field.removeprefix("node_ids."))
+    return RecipeError(
+        f"operations[{index}] recipe {recipe_id} needs exactly one "
+        f"{' or '.join(classes)} node, found {len(matches)}; {hint}: {detail}"
+    )
+
+
+def _pinned_semantic_node(
+    graph: dict[str, Any],
+    classes: tuple[str, ...],
+    fields: dict[str, tuple[str, ...]],
+    node_id: str,
+    matches: list[str],
+    recipe_id: str,
+    *,
+    index: int,
+    field: str,
+) -> str:
+    """Validate one caller-pinned node against the recipe's class family."""
+    node = graph.get(node_id)
+    if isinstance(node, dict) and node.get("class_type") in classes:
+        return node_id
+    detail = json.dumps(
+        {
+            "field": f"operations[{index}].arguments.{field}",
+            "recipe_id": recipe_id,
+            "target_classes": list(classes),
+            "candidates": _semantic_candidates(graph, matches, fields),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    raise RecipeError(
+        f"operations[{index}].arguments.{field} {node_id} is not a "
+        f"{' or '.join(classes)} node; candidates: {detail}"
+    )
+
+
+def _semantic_candidates(
+    graph: dict[str, Any], matches: list[str], fields: dict[str, tuple[str, ...]]
+) -> list[dict[str, Any]]:
+    """Summarize each candidate target so an agent can pick one by node_id."""
+    candidates: list[dict[str, Any]] = []
+    for node_id in sorted(matches, key=_node_id_sort_key):
+        node = graph.get(node_id)
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        key_inputs: dict[str, Any] = {}
+        if isinstance(inputs, dict):
+            for names in fields.values():
+                for name in names:
+                    if name not in inputs:
+                        continue
+                    value = inputs[name]
+                    key_inputs[name] = "->" + str(value[0]) if _is_connection(value) else value
+        candidates.append(
+            {
+                "node_id": node_id,
+                "class_type": str(node.get("class_type", "")) if isinstance(node, dict) else "",
+                "inputs": key_inputs,
+            }
+        )
+    return candidates
+
+
+def _node_id_sort_key(node_id: str) -> tuple[int, str]:
+    try:
+        return (0, f"{int(node_id):012d}")
+    except ValueError:
+        return (1, node_id)
 
 
 def _apply_upscale(

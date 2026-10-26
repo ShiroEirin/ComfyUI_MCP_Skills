@@ -147,7 +147,8 @@ class WorkflowChangeService:
             ) from exc
         base_revision_id = _required_string(deployment, "revision_id")
         base = self._repository.get_revision(base_revision_id)
-        graph = _json_copy(base.get("graph"), "Workflow graph")
+        base_graph = _json_copy(base.get("graph"), "Workflow graph")
+        graph = _json_copy(base_graph, "Workflow graph")
         base_schema = _json_copy(base.get("parameter_schema"), "parameter schema")
         parameter_schema = _json_copy(base_schema, "parameter schema")
         normalized_operations = tuple(
@@ -183,6 +184,7 @@ class WorkflowChangeService:
             not in explicit_targets
         }
         parameters.update(explicit)
+        _sync_changed_parameter_defaults(parameters, base_graph, graph, object_info)
         _apply_exposures(parameters, normalized_operations, graph, object_info)
         parameter_schema["parameters"] = normalize_parameters({"parameters": parameters})
         validate_parameter_targets(parameter_schema["parameters"], graph)
@@ -205,7 +207,7 @@ class WorkflowChangeService:
         before_output_contract = _stored_output_contract(base_schema)
         diff = _semantic_diff(
             base_revision_id,
-            graph_before=_json_copy(base.get("graph"), "base Workflow graph"),
+            graph_before=base_graph,
             graph_after=graph,
             schema_before=base_schema,
             schema_after=parameter_schema,
@@ -1068,6 +1070,62 @@ def _apply_exposures(
 # declared_parameter lives in workflow_recipes (shared with recipe exposure);
 # keep the private alias for the existing expose_parameter flow.
 _declared_parameter = declared_parameter
+
+
+def _sync_changed_parameter_defaults(
+    parameters: dict[str, dict[str, Any]],
+    before_graph: dict[str, Any],
+    after_graph: dict[str, Any],
+    object_info: dict[str, Any],
+) -> None:
+    """Keep declared parameter metadata in step with graph inputs a plan changed.
+
+    ``parameters.update(explicit)`` lets a stored entry win over the generated
+    one, so a parameter that targets an input this plan rewrote would keep
+    advertising the superseded value: describe() would report a default that no
+    run ever uses. Only inputs that actually changed are synced, and only the
+    facts a parameter already advertises are rewritten -- an untouched
+    parameter keeps its explicit default (still the highest-priority source for
+    that target) and a parameter that never declared a constraint never gains
+    one. That keeps "same content -> same Revision" intact for a plan that
+    restores the earlier values.
+    """
+    for metadata in parameters.values():
+        if not isinstance(metadata, dict):
+            continue
+        node_id = str(metadata.get("node_id", ""))
+        field = str(metadata.get("field", ""))
+        if not node_id or not field:
+            continue
+        found_before, value_before = _input_value(before_graph, node_id, field)
+        found_after, value_after = _input_value(after_graph, node_id, field)
+        if not found_after:
+            continue
+        if found_before and value_before == value_after:
+            continue
+        if "default" in metadata:
+            metadata["default"] = value_after
+        node = after_graph.get(node_id)
+        class_type = str(node.get("class_type", "")) if isinstance(node, dict) else ""
+        info = object_info.get(class_type)
+        if not isinstance(info, dict):
+            continue
+        try:
+            declared = declared_parameter(info, field, value_after)
+        except ValueError:
+            continue
+        for key in ("enum", "minimum", "maximum"):
+            if key in metadata and key in declared:
+                metadata[key] = declared[key]
+
+
+def _input_value(graph: dict[str, Any], node_id: str, field: str) -> tuple[bool, Any]:
+    """Return (present, value) for one node input without inventing defaults."""
+    node = graph.get(node_id)
+    inputs = node.get("inputs") if isinstance(node, dict) else None
+    if not isinstance(inputs, dict) or field not in inputs:
+        return (False, None)
+    return (True, inputs[field])
 
 
 def _validate_acyclic(graph: dict[str, Any]) -> None:

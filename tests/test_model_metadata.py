@@ -98,6 +98,77 @@ def test_models_without_metadata_flag_keeps_the_plain_page() -> None:
     assert "metadata" not in page
 
 
+def test_models_metadata_supports_the_flat_layout(tmp_path: Path) -> None:
+    _write_safetensors(tmp_path / "models" / "loras" / "alpha.safetensors", {"a": "1"})
+    service = DiscoveryService(
+        _Servers({"local_root": str(tmp_path)}), lambda _config: _Gateway()
+    )
+
+    metadata = service.models("local", kind="loras", include_metadata=True)["metadata"]
+
+    assert metadata["available"] is True
+    assert metadata["layout"] == "flat"
+    assert metadata["files"][0]["metadata"] == {"a": "1"}
+
+
+def test_models_metadata_supports_the_aki_nested_layout(tmp_path: Path) -> None:
+    _write_safetensors(
+        tmp_path / "ComfyUI" / "models" / "loras" / "alpha.safetensors", {"a": "1"}
+    )
+    _write_safetensors(
+        tmp_path / "ComfyUI" / "models" / "loras" / "sub" / "beta.safetensors", {"b": "2"}
+    )
+    service = DiscoveryService(
+        _Servers({"local_root": str(tmp_path)}), lambda _config: _Gateway()
+    )
+
+    metadata = service.models("local", kind="loras", include_metadata=True)["metadata"]
+
+    assert metadata["available"] is True
+    assert metadata["layout"] == "nested"
+    assert [item["name"] for item in metadata["files"]] == [
+        "alpha.safetensors",
+        "sub/beta.safetensors",
+    ]
+    assert metadata["missing"] == ["missing.safetensors"]
+
+
+def test_models_metadata_prefers_nested_when_both_layouts_exist(tmp_path: Path) -> None:
+    _write_safetensors(
+        tmp_path / "ComfyUI" / "models" / "loras" / "alpha.safetensors",
+        {"source": "nested"},
+    )
+    _write_safetensors(
+        tmp_path / "models" / "loras" / "alpha.safetensors", {"source": "flat"}
+    )
+    service = DiscoveryService(
+        _Servers({"local_root": str(tmp_path)}), lambda _config: _Gateway()
+    )
+
+    metadata = service.models("local", kind="loras", include_metadata=True)["metadata"]
+
+    assert metadata["layout"] == "nested"
+    assert metadata["files"][0]["metadata"] == {"source": "nested"}
+
+
+def test_models_metadata_reports_none_when_the_kind_folder_is_missing(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "models" / "checkpoints").mkdir(parents=True)
+    service = DiscoveryService(
+        _Servers({"local_root": str(tmp_path)}), lambda _config: _Gateway()
+    )
+
+    metadata = service.models("local", kind="loras", include_metadata=True)["metadata"]
+
+    assert metadata == {
+        "available": True,
+        "layout": "none",
+        "files": [],
+        "missing": ["alpha.safetensors", "missing.safetensors", "sub/beta.safetensors"],
+    }
+
+
 class _WindowsGateway:
     """Windows ComfyUI spells sub-folder entries with a backslash."""
 

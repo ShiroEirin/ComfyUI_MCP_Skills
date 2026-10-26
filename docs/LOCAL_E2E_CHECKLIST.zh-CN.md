@@ -17,6 +17,8 @@
 | 工作流 | 至少 1 个已发布 Revision + Deployment | 动态执行工具由发布状态生成 |
 
 > 提示：`comfyui.capability.search` / `capability.describe` 可在任何面使用，用来确认某个工具在你当前权限下是否可见。
+>
+> **跨面说明（重要）**：Toolset 是**互斥的授权面**，一个 MCP 条目只暴露一个面的工具。authoring 面（`comfyui:observe,comfyui:author`）不暴露动态 `comfyui.run.*`，execution 面（默认 `local-stdio` + `comfyui:execute`）不暴露 `change.plan/commit`、`workflow.describe/visualize`、`output.image`。所以本清单要按顺序跑完，需要**两条指向同一数据目录的 MCP 条目**（一条 authoring、一条 execution），在对应步骤切换到相应条目；不要在单个条目里找齐全部工具，那是设计如此而不是配置失败。
 
 ---
 
@@ -75,9 +77,11 @@
 
 ## 5. 执行与一次性覆盖（核心）
 
+> 本节只在 **execution** 面可见（动态 `comfyui.run.*` 由已发布 Deployment 生成）；在 authoring 条目里看不到这些工具是正常的，切到 execution 条目再调用。
+
 | 步骤 | 调用 | 预期 |
 |---|---|---|
-| 5.1 | 动态工具（名称形如 `comfyui_<server>_<workflow>`）`{"prompt": "a cat"}` | 返回 Job（`prompt_id`） |
+| 5.1 | 动态工具（名称形如 `comfyui.run.<server>.<workflow>`，如 `comfyui.run.local.txt2img`）`{"prompt": "a cat"}` | 返回 Job（`prompt_id`） |
 | 5.2 | 动态工具 `{"prompt": "a cat", "_overrides": {"4.ckpt_name": "other.safetensors"}}` | 同上，但**本次**用另一个 checkpoint，**不修改任何 Revision** |
 | 5.3 | 动态工具 `{"prompt": "a cat", "_overrides": {"10.strength_model": 0.5}}` | 调 LoRA 权重，同样不落 Revision |
 | 5.4 | `_overrides` 指向不存在的节点/字段 | **报错**（不静默忽略） |
@@ -105,8 +109,8 @@
 
 | 步骤 | 调用 | 预期 |
 |---|---|---|
-| 7.1 | `comfyui.job.get(server_id="local", prompt_id="<id>")` | Job 状态 + 输出资源链接 |
-| 7.2 | `comfyui.output.image(server_id="local", filename="<输出文件名>")` | 默认返回**标准 MCP 图片块**（宿主渲染/落盘/去重）；若设了 `COMFYUI_MCP_IMAGE_TAG_DIR`，改返回 `@@image:upload/<日期>/<名>@@` 路径标签 |
+| 7.1 | `comfyui.job.get(server_id="local", prompt_id="<id>")` | Job 状态 + 输出资源链接（execution 面） |
+| 7.2 | `comfyui.output.image(server_id="local", filename="<输出文件名>")` | 默认返回**标准 MCP 图片块**（宿主渲染/落盘/去重）；若设了 `COMFYUI_MCP_IMAGE_TAG_DIR`，改返回 `@@image:upload/<日期>/<名>@@` 路径标签（authoring 面）。MIME 由图片内容嗅探得出，扩展名写错也会返回真实类型；非图片内容会被拒绝 |
 | 7.3 | `comfyui.asset.list(limit=5)` | 最近资产（用于串联复刻/元数据） |
 | 7.4 | `comfyui.asset.metadata.extract(asset_id="<id>")` | `recovered_parameters` + 可选匹配到的 `revision`（用于复刻） |
 

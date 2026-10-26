@@ -26,38 +26,38 @@
 
 ## 2. 本项目现状盘点
 
-### 2.1 工具面分布（89 个 capability，代码实测）
+### 2.1 工具面分布（92 个 capability，代码实测）
 
 | 类别 | 数量 | 占比 |
 |---|---|---|
-| 管理 `comfyui.admin.*`（审批 / 审计 / 配置 / 依赖 / 服务器 / 发布） | 27 | 30% |
-| 运维 `server.*` / `queue.*` / `log.*` / `runtime.*` | 14 | 16% |
-| 资产库 `asset.*` | 11 | 12% |
-| 执行 / 任务 `job.*` / `execution.*` / `policy` / `route` | 11 | 12% |
-| 实验对比 `experiment.*` | 7 | 8% |
-| 工作流编辑 `workflow.*` / `revision.*` | 6 | 7% |
-| 节点模型感知 `node.*` / `model.*` | 5 | 6% |
-| 其他（capability 自身、`output.image` 等） | 8 | 9% |
+| 管理 `comfyui.admin.*`（审批 / 审计 / 配置 / 依赖 / 服务器 / 发布） | 27 | 29.3% |
+| 运维 `server.*` / `queue.*` / `log.*` / `runtime.*` | 14 | 15.2% |
+| 资产库 `asset.*` | 11 | 12.0% |
+| 执行 / 任务 `job.*` / `execution.*` / `policy` / `route` | 11 | 12.0% |
+| 实验对比 `experiment.*` | 7 | 7.6% |
+| 工作流编辑 `workflow.*` / `revision.*` | 7 | 7.6% |
+| 节点模型感知 `node.*` / `model.*` | 6 | 6.5% |
+| 其他（capability 自身、`output.image`、`defaults` 等） | 9 | 9.8% |
 
-按 toolset 归属（一个 capability 可属多个面）：`admin` 36 / `execution` 30 / `operations` 28 / `authoring` 20。
+按 toolset 归属（一个 capability 可属多个面）：`admin` 36 / `execution` 31 / `operations` 29 / `authoring` 22。
 
-**结论**：管理 + 运维 + 资产 + 实验 = **59 个（66%）**；创作链路（执行 + 编辑 + 感知）≈ 23 个（**26%**）。
+**结论**：管理 + 运维 + 资产 + 实验 = **59 个（64%）**；创作链路（执行 + 编辑 + 感知）= 24 个（**26%**）。
 
 ### 2.2 高频诉求现状核对
 
 | 诉求 | 现状 | 落点 |
 |---|---|---|
 | 调用工作流生图 | ✅ 完整 | 动态工作流工具（每个已发布 revision → 一个工具，schema 来自 `expose_parameter` 注册的参数） |
-| 快速替换模型 | ⚠️ **机制有，快捷没有** | `set_scalar_input.v1` 配方 / `expose_parameter`，但必须走 `admin.workflow.change.plan` → `commit`（需 `comfyui:author` + plan digest 二次确认） |
-| 替换 LoRA | ⚠️ 同上 | `lora_model.v1` 配方 |
+| 快速替换模型 | ✅ 已交付 | 动态 `comfyui.run.*` 的 `_overrides` 一次性覆盖（如 `{"4.ckpt_name": "other.safetensors"}`），不修改任何 Revision；结构性改动仍走 `admin.workflow.change.plan` → `commit` |
+| 替换 LoRA | ✅ 已交付 | 同上，`_overrides` 直接改 `strength_model` 等 LoRA 字段；结构性新增用 `lora_model.v1` 配方 |
 | 动态加辅助节点 | ✅ 能力齐全 | 10 个操作：`add_node` / `remove_node` / `replace_node` / `set_input` / **`connect`** / `disconnect` / `expose_parameter` / `insert_subgraph` / `extract_subgraph` / `apply_recipe`；5 个内置配方：`set_scalar_input.v1` / `upscale_image.v1` / `save_image.v1` / `lora_model.v1` / `controlnet_apply.v1` |
 | 质量对比 | ✅ 有 | `experiment.*`（plan / commit / variant.list / rate / promote / get / cancel） |
 
-**诊断**：能力基本齐全，但存在三个结构性问题——
+**诊断**：能力基本齐全，但仍有三个结构性问题——
 
-1. **发现成本极高**：10 个改图操作、5 个配方全部藏在 `admin.workflow.change.*` 之下
-2. **高频操作走了重流程**：「换个 checkpoint 再出一张」需要 plan → digest → commit → 发布新 revision
-3. **模型知识为零**：`model.list` 返回纯文件名字符串（`application/discovery.py:389` → `gateway.get_models(kind)`），没有 hash / 大小 / 触发词 / 预览 / 来源
+1. **发现成本偏高**：10 个改图操作、5 个配方全部藏在 `admin.workflow.change.*` 之下
+2. **结构性改动仍走重流程**：换 checkpoint / 调 LoRA 权重已由 `_overrides` 覆盖，但加节点、改连线仍需 plan → digest → commit → 发布新 revision
+3. **模型知识只有磁盘事实**：`model.list(include_metadata=true)` 返回 `size_bytes` / `mtime` / safetensors `__metadata__`（含触发词 `ss_tag_frequency`），但没有 hash / 预览图 / 来源与 Civitai/HuggingFace 反查
 
 ---
 
@@ -67,13 +67,13 @@
 |---|---|---|---|
 | 1 | 工作流即工具（动态 schema） | Pixelle / joenorton | ✅ |
 | 2 | **UI 内 `$name` 标记暴露参数** | Pixelle | ❌ 走 plan/commit |
-| 3 | **自动发现工作流参数**（`describe_workflow`） | pytraveler | ❌ |
-| 4 | **单次运行覆盖**（one-run-only overrides） | yutianxiao6 / joenorton | ❌ |
+| 3 | **自动发现工作流参数**（`describe_workflow`） | pytraveler | ✅ `workflow.describe(suggest_parameters=true)` 返回 `parameter_suggestions` |
+| 4 | **单次运行覆盖**（one-run-only overrides） | yutianxiao6 / joenorton | ✅ 动态工具的 `_overrides`（只接受标量，不落 Revision） |
 | 5 | **`regenerate(asset_id, overrides)`** | joenorton / artokun | ❌ |
-| 6 | **默认值系统**（`get_defaults` / `set_defaults`） | joenorton / artokun / miller-joe | ❌ |
+| 6 | **默认值系统**（`get_defaults` / `set_defaults`） | joenorton / artokun / miller-joe | ✅ `comfyui.defaults`（get / set / clear，落 `defaults.json`） |
 | 7 | 看图进上下文（`view_image`） | joenorton / artokun | ✅ |
 | 8 | **模型生态**（Civitai/HF 搜索·下载·hash 反查·safetensors 头验证） | xingxue-ux / artokun | ❌ |
-| 9 | **图片元数据提取**（从 PNG 反推 prompt/seed/LoRA，复刻） | xingxue-ux | ❌ |
+| 9 | **图片元数据提取**（从 PNG 反推 prompt/seed/LoRA，复刻） | xingxue-ux | ⚠️ 工具存在（`comfyui.asset.metadata.extract`），但**不作为 agent 主路径**：agent 直接看图即可，不从元数据反推提示词 |
 | 10 | **Agent Skill 教「怎么组合工具」** | yutianxiao6 / artokun | ❌ |
 | 11 | **实时画布 bridge**（WebSocket 驱动浏览器中未保存的图） | pytraveler / yutianxiao6 | ❌ |
 | 12 | **执行前危险节点扫描**（`eval`/`exec`/云端付费节点） | hybridindie | ❌ 仅有事后审计 |
@@ -86,7 +86,7 @@
 | 19 | 默认 LoRA 组合 + 实战经验库 | xingxue-ux | ❌ |
 | 20 | 跨 host plugin 适配（Claude Code / Cursor / Gemini CLI…） | yutianxiao6 | ❌ |
 
-**命中率 4/20。**
+**命中率 7/20**（其中 #13「MCP Resources 只读状态」为部分命中）。
 
 ---
 
@@ -101,9 +101,9 @@
 | yutianxiao6 | `one-run-only overrides`：提交时附带覆盖，不落 revision |
 | joenorton / artokun | `regenerate(asset_id, overrides)`：按资产重跑 + 参数覆盖 |
 
-**本项目**：任何参数变化都要 `plan` → 生成 digest → `commit` 发布新 revision。
+**本项目**：结构性改动仍要 `plan` → 生成 digest → `commit` 发布新 revision；高频低风险参数已由动态工具的 `_overrides` 一次性覆盖（`{"4.ckpt_name": ...}`），不落 revision。
 
-安全性与灵活性需要权衡，但当前设计把**高频低风险操作**（换 checkpoint / 调 steps）与**低频高风险操作**（改图结构）放在了同一条重流程上。
+安全性与灵活性已有分层：`_overrides` 承接换 checkpoint / 调 steps，只有改图结构才走重流程。
 
 ### ② 竞品把「知识」与「工具」分开
 
@@ -131,21 +131,21 @@ hybridindie（3★）在 README 中直接批评了同类：
 
 ```
 Tier 0 · 补齐地基
-  comfyui.workflow.params   参数暴露三选一：UI 内 $name 标记 / 自动发现 / 显式 expose
-  comfyui.defaults          get / set 默认参数（可持久化）
+  comfyui.workflow.params   参数暴露三选一：UI 内 $name 标记 / 自动发现（已交付：workflow.describe suggest_parameters）/ 显式 expose
+  comfyui.defaults          get / set 默认参数（已交付：comfyui.defaults）
 
 Tier 1 · 创作闭环
   comfyui.generate          workflow_id? + prompt? + overrides? + execute
-  comfyui.view              看图 / 列资产 / 资产元数据
-  comfyui.regenerate        asset_id + overrides → 重跑（含 one-run-only 覆盖）
-  comfyui.image.inspect     从图片元数据反推 prompt/seed/LoRA（复刻）
+  comfyui.view              看图 / 列资产 / 资产元数据（已交付：output.image / asset.list / asset.metadata.extract）
+  comfyui.regenerate        asset_id + overrides → 重跑（overrides 已交付为动态工具 `_overrides`，按 asset_id 重跑仍缺）
+  comfyui.image.inspect     从图片元数据反推 prompt/seed/LoRA（已交付：asset.metadata.extract）
 
 Tier 2 · 工作流（作者）
-  comfyui.workflow.edit     现有 10 个 op + plan/commit 合并为「一次调用 + dry_run」
+  comfyui.workflow.edit     现有 10 个 op + plan/commit 合并为「一次调用 + dry_run」（已部分交付：change.commit 内联模式 + dry_run）
   comfyui.workflow.list / describe / visualize
 
 Tier 3 · 模型与知识
-  comfyui.model.catalog     本地模型 + hash + 大小 + 触发词
+  comfyui.model.catalog     本地模型 + hash + 大小 + 触发词（大小/触发词已交付：model.list include_metadata）
   comfyui.model.search / download   Civitai / HuggingFace + safetensors 头验证
   Skill: comfyui-workflow   教 agent「怎么组合工具」（不进 MCP，零架构成本）
 
@@ -154,7 +154,7 @@ Tier 4 · 治理（保留 + 补事前拦截）
   + 执行前危险节点扫描（eval / exec / 云端付费节点）
 ```
 
-**不建议做**：削减 admin / audit / provisioning —— 这是本项目相对竞品的差异化护城河（竞品全都没有企业级授权分面、审计、审批、依赖管理、revision 契约），只是不应占据 66% 的工具面注意力。
+**不建议做**：削减 admin / audit / provisioning —— 这是本项目相对竞品的差异化护城河（竞品全都没有企业级授权分面、审计、审批、依赖管理、revision 契约），只是不应占据 64% 的工具面注意力。
 
 ---
 
@@ -162,13 +162,13 @@ Tier 4 · 治理（保留 + 补事前拦截）
 
 | 顺序 | 内容 | 理由 |
 |---|---|---|
-| P0 | `comfyui.regenerate`（含 one-run-only overrides） | 闭环最短，直接解决「换模型/LoRA 一次调用」；底座（`asset.*` + `job.*` + `execution.*`）已具备 |
-| P1 | `comfyui.defaults` | 让模型不必重复传参，立竿见影 |
-| P2 | `comfyui.workflow.params`（快捷参数暴露） | 借鉴 Pixelle `$name` / pytraveler 自动发现 |
-| P3 | `comfyui.image.inspect` + `model.catalog` | 复刻能力 + 模型元数据 |
+| P0 | `comfyui.regenerate`（按 `asset_id` 重跑） | `_overrides`（一次性覆盖）已交付；仍缺按资产重跑的聚合工具，底座（`asset.*` + `job.*` + `execution.*`）已具备 |
+| P1 | `comfyui.defaults` | **已交付**（get / set / clear，`defaults.json` 持久化） |
+| P2 | `comfyui.workflow.params`（快捷参数暴露） | 自动发现部分已由 `workflow.describe(suggest_parameters=true)` 提供；UI 内 `$name` 标记仍缺 |
+| P3 | `comfyui.image.inspect` + `model.catalog` | 复刻能力已由 `asset.metadata.extract` 提供；`model.catalog`（hash / 预览 / 来源）仍缺 |
 | P4 | `model.search` / `model.download` | 补模型生态，工作量最大 |
 | P5 | 执行前危险节点扫描 | 补治理短板 |
-| P6 | 工具聚合（89 → 更少，action 参数化） | 收益大但重构风险高，最后做 |
+| P6 | 工具聚合（92 → 更少，action 参数化） | 收益大但重构风险高，最后做 |
 
 ---
 

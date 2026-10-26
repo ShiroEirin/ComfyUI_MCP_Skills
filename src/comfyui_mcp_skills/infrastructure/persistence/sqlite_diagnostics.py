@@ -269,6 +269,7 @@ class SQLiteDiagnosticRetryRepository:
                 return None
             raw: object = _safe_json(str(row[9])) if row[9] else {}
             args = raw.get("arguments", {}) if isinstance(raw, dict) else {}
+            overrides = raw.get("overrides") if isinstance(raw, dict) else None
             return {
                 "job_id": str(row[0]),
                 "owner_id": str(row[1]),
@@ -280,6 +281,10 @@ class SQLiteDiagnosticRetryRepository:
                 "deployment_id": row[7] or "",
                 "content_digest": row[8] or "",
                 "raw_arguments": copy.deepcopy(args) if isinstance(args, dict) else {},
+                # The Plan snapshot keeps the one-run overrides next to the
+                # arguments; surfacing them lets a retry replay the same graph
+                # even when the caller does not repeat them.
+                "overrides": copy.deepcopy(overrides) if isinstance(overrides, dict) else {},
                 "legacy_migrated": bool(row[10]),
             }
         finally:

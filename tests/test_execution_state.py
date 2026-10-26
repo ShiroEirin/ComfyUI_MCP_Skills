@@ -12,7 +12,7 @@ import typer
 import websocket
 
 from comfyui_mcp_skills.application import jobs as jobs_module
-from comfyui_mcp_skills.application.jobs import JobService
+from comfyui_mcp_skills.application.jobs import JobService, JobWaitTimeout
 from comfyui_mcp_skills.domain.models import Job
 from comfyui_mcp_skills.infrastructure.comfyui import jobs_client as comfyui_jobs_client_module
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
@@ -205,10 +205,13 @@ def test_job_wait_caps_each_query_to_remaining_deadline() -> None:
             "comfyui_mcp_skills.infrastructure.comfyui.core_client.requests.Session.get",
             side_effect=request_get,
         ),
+        pytest.raises(JobWaitTimeout) as timed_out,
     ):
-        result = service.wait("local", "prompt-1", timeout_seconds=1)
+        service.wait("local", "prompt-1", timeout_seconds=1)
 
-    assert result == saved
+    assert timed_out.value.job == saved
+    assert timed_out.value.timed_out is True
+    assert timed_out.value.waited_seconds == pytest.approx(1.0)
     assert query_timeouts == pytest.approx([1.0, 0.6])
 
 
@@ -245,10 +248,15 @@ def test_job_wait_does_not_refresh_after_websocket_reaches_deadline() -> None:
 
     gateway.ws_events.side_effect = websocket_events
     service = JobService(registry, runs, lambda _config: gateway)
-    with patch.object(jobs_module.time, "monotonic", clock.monotonic):
-        result = service.wait("local", "prompt-1", timeout_seconds=1)
+    with (
+        patch.object(jobs_module.time, "monotonic", clock.monotonic),
+        pytest.raises(JobWaitTimeout) as timed_out,
+    ):
+        service.wait("local", "prompt-1", timeout_seconds=1)
 
-    assert result == latest
+    assert timed_out.value.job == latest
+    assert timed_out.value.timed_out is True
+    assert timed_out.value.waited_seconds == pytest.approx(1.0)
     gateway.get_history.assert_not_called()
     gateway.get_queue.assert_not_called()
 

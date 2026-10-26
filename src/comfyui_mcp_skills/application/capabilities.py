@@ -343,8 +343,13 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "comfyui.workflow.visualize",
         "Render a workflow as Mermaid",
         "Bounded Mermaid flowchart of one published workflow with aliased node ids.",
-        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
-        frozenset({Scope.OBSERVE}),
+        # OPERATIONS/ADMIN admit no AUTHOR scope, so listing them here would
+        # advertise a capability those surfaces can never expose.
+        frozenset({Toolset.AUTHORING}),
+        # Mirrors authorization._TOOL_SCOPES, the single source of truth: this
+        # authoring view is AUTHOR-only so it never lands on the operations or
+        # execution surfaces.
+        frozenset({Scope.AUTHOR}),
         RiskLevel.LOW,
         ("visualize", "mermaid", "diagram"),
     ),
@@ -386,12 +391,13 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
     ),
     CapabilitySpec(
         "comfyui.node.ports",
-        "List a node's linkable ports",
-        "Project only the typed input/output ports an agent needs for connections.",
+        "List a node's input and output ports",
+        "Project typed link ports plus widget facts (default/current value, "
+        "options, numeric bounds) an agent needs to fill or connect a node.",
         frozenset({Toolset.OPERATIONS, Toolset.AUTHORING}),
         frozenset({Scope.OBSERVE}),
         RiskLevel.LOW,
-        ("port", "connect", "graph", "schema"),
+        ("port", "connect", "graph", "schema", "widget", "default"),
     ),
     CapabilitySpec(
         "comfyui.output.image",
@@ -425,7 +431,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "List workflow revisions",
         "List immutable revisions for a workflow.",
         frozenset({Toolset.AUTHORING}),
-        frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+        # G3 authoring-only surface; mirrors authorization._TOOL_SCOPES.
+        frozenset({Scope.AUTHOR}),
         RiskLevel.LOW,
         ("history", "version"),
     ),
@@ -434,7 +441,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "Compare workflow revisions",
         "Return bounded graph, parameter, dependency, and output contract differences.",
         frozenset({Toolset.AUTHORING}),
-        frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+        # G3 authoring-only surface; mirrors authorization._TOOL_SCOPES.
+        frozenset({Scope.AUTHOR}),
         RiskLevel.LOW,
         ("revision", "diff", "change"),
     ),
@@ -443,7 +451,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "Describe a workflow",
         "Read a published workflow Revision and Deployment summary.",
         frozenset({Toolset.AUTHORING}),
-        frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+        # G3 authoring-only surface; mirrors authorization._TOOL_SCOPES.
+        frozenset({Scope.AUTHOR}),
         RiskLevel.LOW,
         ("schema", "deployment", "revision"),
     ),
@@ -470,7 +479,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "Check workflow dependencies",
         "Compare one published Revision's bounded node and model contract to a server.",
         frozenset({Toolset.AUTHORING}),
-        frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+        # G3 authoring-only surface; mirrors authorization._TOOL_SCOPES.
+        frozenset({Scope.AUTHOR}),
         RiskLevel.LOW,
         ("dependency", "model", "node", "readiness"),
     ),

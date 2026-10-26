@@ -25,6 +25,7 @@ from mcp.types import (
 from comfyui_mcp_skills.application.auth_context import current_authorization
 from comfyui_mcp_skills.application.authorization import Scope, parse_scopes
 from comfyui_mcp_skills.application.capabilities import CAPABILITY_BY_NAME, PROJECT_ICON_SRC
+from comfyui_mcp_skills.application.workflow_recipes import RECIPE_CONTRACTS
 from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Job, Workflow
 
@@ -173,6 +174,14 @@ EXECUTION_PROPERTY: dict[str, Any] = {
                 "maxLength": 128,
                 "pattern": r"^(?!.*[\r\n]).{1,128}$",
             },
+        },
+        "allow_risky_nodes": {
+            "type": "boolean",
+            "default": False,
+            "description": (
+                "Submit even when the graph contains code-execution, network, "
+                "or paid external-API nodes. Every allowance is audited."
+            ),
         },
     },
     "additionalProperties": False,
@@ -790,6 +799,231 @@ def decorate_tool(tool: Tool, *, risk: str | None = None, toolset: str | None = 
     )
 
 
+def workflow_operations_schema() -> dict[str, Any]:
+    """Return the closed JSON Schema for one workflow change ``operations`` array.
+
+    Each supported ``op`` is its own ``oneOf`` branch, so an unknown operation is
+    rejected by the schema itself instead of failing later inside the service.
+    Branches mirror ``_apply_operation`` field-by-field: identical names,
+    identical required keys, no additional properties, plus one worked example
+    per operation so an agent can build a request without guessing.
+    """
+
+    def operation(
+        op: str,
+        *,
+        description: str,
+        properties: dict[str, Any],
+        required: tuple[str, ...],
+        example: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "description": description,
+            "properties": {"op": {"enum": [op]}, **properties},
+            "required": ["op", *required],
+            "additionalProperties": False,
+            "examples": [{"op": op, **example}],
+        }
+
+    node_id = {"type": "string", "minLength": 1, "maxLength": 256}
+    class_type = {"type": "string", "minLength": 1, "maxLength": 128}
+    node_inputs = {"type": "object", "maxProperties": 256}
+    output_index = {"type": "integer", "minimum": 0}
+    value = {
+        "description": (
+            "Scalar input value; create a node-to-node link with the connect operation"
+        ),
+        # A two-element array is the connection encoding and set_input rejects it.
+        "not": {"type": "array", "minItems": 2, "maxItems": 2},
+    }
+    branches = [
+        operation(
+            "add_node",
+            description="Insert a new node that is not wired to anything yet.",
+            properties={
+                "node_id": node_id,
+                "class_type": class_type,
+                "inputs": node_inputs,
+            },
+            required=("node_id", "class_type", "inputs"),
+            example={"node_id": "10", "class_type": "KSampler", "inputs": {"seed": 1}},
+        ),
+        operation(
+            "remove_node",
+            description="Delete a node; it must have no remaining connection.",
+            properties={"node_id": node_id},
+            required=("node_id",),
+            example={"node_id": "10"},
+        ),
+        operation(
+            "replace_node",
+            description="Replace one node in place, dropping its public parameters.",
+            properties={
+                "node_id": node_id,
+                "class_type": class_type,
+                "inputs": node_inputs,
+            },
+            required=("node_id", "class_type", "inputs"),
+            example={
+                "node_id": "4",
+                "class_type": "KSamplerAdvanced",
+                "inputs": {"cfg": 6.5},
+            },
+        ),
+        operation(
+            "set_input",
+            description="Set one scalar input value on an existing node.",
+            properties={
+                "node_id": node_id,
+                "field": {"type": "string", "minLength": 1, "maxLength": 256},
+                "value": value,
+            },
+            required=("node_id", "field", "value"),
+            example={"node_id": "1", "field": "text", "value": "a blue cat"},
+        ),
+        operation(
+            "connect",
+            description="Link one node output into another node input.",
+            properties={
+                "source_node_id": node_id,
+                "source_output": output_index,
+                "target_node_id": node_id,
+                "target_input": {"type": "string", "minLength": 1, "maxLength": 256},
+            },
+            required=(
+                "source_node_id",
+                "source_output",
+                "target_node_id",
+                "target_input",
+            ),
+            example={
+                "source_node_id": "4",
+                "source_output": 0,
+                "target_node_id": "7",
+                "target_input": "model",
+            },
+        ),
+        operation(
+            "disconnect",
+            description="Remove one existing connection from a node input.",
+            properties={
+                "node_id": node_id,
+                "field": {"type": "string", "minLength": 1, "maxLength": 256},
+            },
+            required=("node_id", "field"),
+            example={"node_id": "7", "field": "model"},
+        ),
+        operation(
+            "expose_parameter",
+            description="Publish one scalar node input as a workflow parameter.",
+            properties={
+                "node_id": node_id,
+                "field": {"type": "string", "minLength": 1, "maxLength": 256},
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "required": {"type": "boolean", "default": False},
+            },
+            required=("node_id", "field", "name"),
+            example={
+                "node_id": "4",
+                "field": "ckpt_name",
+                "name": "checkpoint",
+                "required": True,
+            },
+        ),
+        operation(
+            "insert_subgraph",
+            description="Insert an inline subgraph (nodes) under an id prefix.",
+            properties={
+                "id_prefix": {"type": "string", "minLength": 1, "maxLength": 128},
+                "nodes": {"type": "object", "maxProperties": 100},
+                "subgraph": False,
+            },
+            required=("id_prefix", "nodes"),
+            example={
+                "id_prefix": "hires",
+                "nodes": {"a": {"class_type": "Image", "inputs": {}}},
+            },
+        ),
+        operation(
+            "insert_subgraph",
+            description="Instantiate a previously extracted subgraph by name.",
+            properties={
+                "id_prefix": {"type": "string", "minLength": 1, "maxLength": 128},
+                "nodes": False,
+                "subgraph": {"type": "string", "minLength": 1, "maxLength": 128},
+            },
+            required=("id_prefix", "subgraph"),
+            example={"id_prefix": "hires", "subgraph": "upscale_chain"},
+        ),
+        operation(
+            "extract_subgraph",
+            description=(
+                "Snapshot selected nodes with their boundary contract for reuse "
+                "by insert_subgraph."
+            ),
+            properties={
+                "name": {"type": "string", "minLength": 1, "maxLength": 128},
+                "node_ids": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 100,
+                    "items": node_id,
+                },
+            },
+            required=("name", "node_ids"),
+            example={"name": "upscale_chain", "node_ids": ["2", "3"]},
+        ),
+        operation(
+            "apply_recipe",
+            description=(
+                "Apply a registered recipe. Recipe arguments are described by "
+                "comfyui.workflow.recipe.list; semantic recipes accept node_id "
+                "(one target) or node_ids (target per argument) to disambiguate."
+            ),
+            properties={
+                "recipe_id": {"enum": sorted(RECIPE_CONTRACTS)},
+                "arguments": {
+                    "type": "object",
+                    "maxProperties": 16,
+                    "examples": [
+                        {"ckpt_name": "sdxl.safetensors"},
+                        {"ckpt_name": "sdxl.safetensors", "node_id": "4"},
+                        {"steps": 24, "node_ids": {"steps": "7"}},
+                    ],
+                },
+            },
+            required=("recipe_id", "arguments"),
+            example={
+                "recipe_id": "change_checkpoint.v1",
+                "arguments": {"ckpt_name": "sdxl.safetensors", "node_id": "4"},
+            },
+        ),
+    ]
+    return {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 100,
+        "items": {"oneOf": branches},
+        "examples": [
+            [{"op": "set_input", "node_id": "1", "field": "text", "value": "a blue cat"}],
+            [
+                {
+                    "op": "apply_recipe",
+                    "recipe_id": "change_checkpoint.v1",
+                    "arguments": {"ckpt_name": "sdxl.safetensors"},
+                },
+                {
+                    "op": "expose_parameter",
+                    "node_id": "4",
+                    "field": "ckpt_name",
+                    "name": "checkpoint",
+                },
+            ],
+        ],
+    }
+
+
 def fixed_tools() -> list[Tool]:
     blueprint_output = {
         "type": "object",
@@ -1117,6 +1351,14 @@ def fixed_tools() -> list[Tool]:
                         "enum": ["output"],
                         "default": "output",
                     },
+                    "job_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "description": (
+                            "Owning Job id. When set, the export must match one of "
+                            "that Job's recorded Artifacts for the caller."
+                        ),
+                    },
                 },
                 "required": ["server_id", "filename"],
                 "additionalProperties": False,
@@ -1260,12 +1502,7 @@ def fixed_tools() -> list[Tool]:
                 "properties": {
                     "server_id": {"type": "string", "minLength": 1},
                     "workflow_id": {"type": "string", "minLength": 1},
-                    "operations": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 100,
-                        "items": {"type": "object"},
-                    },
+                    "operations": workflow_operations_schema(),
                 },
                 "required": ["server_id", "workflow_id", "operations"],
                 "additionalProperties": False,
@@ -1297,12 +1534,7 @@ def fixed_tools() -> list[Tool]:
                     },
                     "server_id": {"type": "string", "minLength": 1},
                     "workflow_id": {"type": "string", "minLength": 1},
-                    "operations": {
-                        "type": "array",
-                        "minItems": 1,
-                        "maxItems": 100,
-                        "items": {"type": "object"},
-                    },
+                    "operations": workflow_operations_schema(),
                     "dry_run": {"type": "boolean", "default": False},
                 },
                 "required": [],
@@ -1471,6 +1703,32 @@ def phase_k_tools() -> list[Tool]:
                         "default": 0,
                     },
                     "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "revision_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": r"^revision_[A-Za-z0-9][A-Za-z0-9_-]{0,118}$",
+                        "description": (
+                            "Pin the plan to one Revision, including an unpublished "
+                            "one (a freshly committed change). Overrides the "
+                            "published Deployment and requires server_id."
+                        ),
+                    },
+                    "deployment_id": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 128,
+                        "pattern": r"^deployment_[A-Za-z0-9][A-Za-z0-9_-]{0,117}$",
+                        "description": (
+                            "Deployment of the pinned Revision; defaults to the "
+                            "Revision's only Deployment."
+                        ),
+                    },
+                    "content_digest": {
+                        "type": "string",
+                        "pattern": r"^[0-9a-f]{64}$",
+                        "description": "Expected content digest of the pinned Revision.",
+                    },
                 },
                 "required": ["workflow_id", "arguments"],
                 "additionalProperties": False,

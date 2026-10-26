@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+_CONTROL_MODES = frozenset({"fixed", "increment", "decrement", "randomize"})
+
 
 def detect_workflow_format(source: object) -> str:
     if (
@@ -171,12 +173,11 @@ def convert_editor_node_inputs(
         index += 1
         if field in control_fields and index < len(widget_values):
             marker = widget_values[index]
-            if isinstance(marker, str) and marker.lower() in {
-                "fixed",
-                "increment",
-                "decrement",
-                "randomize",
-            }:
+            if isinstance(marker, str) and marker.casefold() in _CONTROL_MODES:
+                # The editor keeps the seed control mode next to the value. The API
+                # graph has no slot for it, so record the loss explicitly instead of
+                # consuming the entry silently and leaving agents to guess.
+                dropped.add(f"{field}.control_after_generate={marker.casefold()}")
                 index += 1
     dropped.update(f"widgets_values[{extra}]" for extra in range(index, len(widget_values)))
     return converted, dropped | (set(widget_names) - set(converted))

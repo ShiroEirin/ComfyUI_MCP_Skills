@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import posixpath
 import re
 import time
 from collections.abc import Callable
@@ -300,7 +301,17 @@ def create_admin_server(
                                             ),
                                             "properties": {
                                                 "kind": {"enum": ["server_userdata"]},
-                                                "path": {"type": "string"},
+                                                "path": {
+                                                    "type": "string",
+                                                    "minLength": 1,
+                                                    "maxLength": 1024,
+                                                    "description": (
+                                                        "Relative userdata path "
+                                                        "under workflows/ ending in "
+                                                        ".json, e.g. "
+                                                        "workflows/nooba/base 文生图.json"
+                                                    ),
+                                                },
                                             },
                                             "required": ["kind", "path"],
                                             "additionalProperties": False,
@@ -732,8 +743,10 @@ def create_admin_server(
                         workflow_path
                     ):
                         raise TypeError(
-                            "source.path must be a relative workflows/*.json path "
-                            "for server_userdata"
+                            "source.path must be a relative path under workflows/ "
+                            "ending in .json (nested folders, spaces and Unicode "
+                            "names are allowed; absolute paths, '..', control "
+                            "characters and URL prefixes are rejected)"
                         )
                     config = servers.connection(server_id)
                     userdata_client = ComfyUIClient(
@@ -1204,7 +1217,19 @@ def create_admin_server(
     )
 
 
-_USERDATA_PATH = re.compile(r"^workflows/[A-Za-z0-9][A-Za-z0-9_.-]*\.json$")
+# ComfyUI userdata stores real workflow trees ("workflows/nooba/基础文生图.json"),
+# so the guard is segment-based instead of one flat character regex: nested
+# folders, spaces and Unicode names are legitimate, while anything that can
+# climb out of the workflows tree, escape to another scheme, or name a
+# non-JSON file stays rejected.
+_USERDATA_ROOT = "workflows"
+_USERDATA_SUFFIX = ".json"
+_USERDATA_MAX_LENGTH = 1024
+_USERDATA_MAX_SEGMENTS = 8
+# Characters Windows refuses in a file name; the engine runs on Windows often
+# enough that a path carrying them can never be read back.
+_USERDATA_FORBIDDEN_CHARACTERS = frozenset('<>:"|?*')
+_USERDATA_SCHEME_PREFIXES = ("file:", "http:", "https:", "data:", "ftp:")
 
 # A folder inventory larger than this is treated as unreadable rather than
 # compared exhaustively; documented so the cap cannot be mistaken for a bug.
@@ -1212,8 +1237,44 @@ _MODEL_INVENTORY_LIMIT = 10_000
 
 
 def _safe_userdata_path(value: object) -> bool:
-    """Userdata paths must be relative workflows/*.json with safe characters."""
-    return isinstance(value, str) and _USERDATA_PATH.fullmatch(value) is not None
+    """Userdata paths must be relative ``workflows/**.json`` paths.
+
+    Every segment is normalized and compared before the path is accepted, so
+    the check is structural rather than a character allow-list: nested folders,
+    spaces and Unicode names pass, absolute paths (``C:\\``, ``/``, UNC
+    ``\\\\``), ``..`` segments, empty segments, control characters, non-``.json``
+    suffixes and URL/scheme prefixes never do.
+    """
+    if not isinstance(value, str) or not value or len(value) > _USERDATA_MAX_LENGTH:
+        return False
+    # Windows separators never appear in a ComfyUI userdata path; treating them
+    # as literal characters would let "workflows\\..\\x.json" slip through.
+    if "\\" in value:
+        return False
+    if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
+        return False
+    if "://" in value or value.casefold().startswith(_USERDATA_SCHEME_PREFIXES):
+        return False
+    # Normalization is the contract: "a//b", "./a" and trailing dots all change
+    # the string, so a value that survives unchanged cannot hide a traversal.
+    if posixpath.normpath(value) != value:
+        return False
+    segments = value.split("/")
+    if not 2 <= len(segments) <= _USERDATA_MAX_SEGMENTS:
+        return False
+    if segments[0] != _USERDATA_ROOT:
+        return False
+    for segment in segments:
+        if not segment or segment in {".", ".."}:
+            return False
+        if segment != segment.strip():
+            return False
+        if segment.startswith("~"):
+            return False
+        if any(char in _USERDATA_FORBIDDEN_CHARACTERS for char in segment):
+            return False
+    filename = segments[-1]
+    return filename.casefold().endswith(_USERDATA_SUFFIX) and filename != _USERDATA_SUFFIX
 
 
 def _read_authorized_local_workflow(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from comfyui_mcp_skills.infrastructure.persistence.sqlite_experiments import (
 )
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import (
     SQLiteWorkflowRepository,
+    _revision_digest,
 )
 
 OBJECT_INFO: dict[str, Any] = {
@@ -450,7 +452,41 @@ def test_editor_conversion_preserves_reroute_combo_and_control_marker() -> None:
         "seed": 42,
     }
     assert unsupported == ()
-    assert dropped == ()
+    # The editor control mode has no API slot: it is now reported as an explicit
+    # loss item carrying node id, widget name and the recorded mode.
+    assert dropped == ("2.seed.control_after_generate=fixed",)
+
+
+def test_editor_conversion_records_control_after_generate_mode_as_loss() -> None:
+    object_info = {
+        "Sampler": {
+            "input": {
+                "required": {
+                    "seed": ["INT", {"control_after_generate": True}],
+                    "steps": ["INT", {"default": 20}],
+                }
+            },
+            "input_order": {"required": ["seed", "steps"]},
+            "output": [],
+        }
+    }
+    editor = {
+        "nodes": [
+            {
+                "id": 4,
+                "type": "Sampler",
+                "inputs": [],
+                "widgets_values": [7, "randomize", 12],
+            }
+        ],
+        "links": [],
+    }
+
+    graph, unsupported, dropped = convert_editor_workflow(editor, object_info)
+
+    assert graph["4"]["inputs"] == {"seed": 7, "steps": 12}
+    assert unsupported == ()
+    assert dropped == ("4.seed.control_after_generate=randomize",)
 
 
 def test_validation_rejects_incompatible_connection_types() -> None:
@@ -556,6 +592,37 @@ def test_describe_returns_semantics_without_raw_graph() -> None:
     assert result["semantic_graph"]["node_count"] == 4
     assert "graph" not in result
     assert result["validation"]["valid"] is True
+
+
+def test_describe_separates_historical_validity_from_current_validation() -> None:
+    class RetiredNodeReader(_WorkflowReader):
+        def get_revision(self, revision_id: str) -> dict[str, Any]:
+            revision = super().get_revision(revision_id)
+            revision["graph"] = {"1": {"class_type": "RetiredNode", "inputs": {}}}
+            revision["historical_validity"] = {
+                "valid": True,
+                "status": "valid",
+                "revision_id": revision_id,
+                "source": "recorded_deployment",
+            }
+            return revision
+
+    graphs, validation = _services()
+    service = WorkflowInspectionService(RetiredNodeReader(), graphs, validation)
+
+    result = service.describe("bird", "local", _Gateway())
+
+    assert result["historical_validity"]["valid"] is True
+    assert result["historical_validity"]["status"] == "valid"
+    assert result["current_validation"]["valid"] is False
+    assert "unknown_node_type" in {
+        issue["code"] for issue in result["current_validation"]["issues"]
+    }
+    # Backwards compatible alias: ``validation`` still carries the current result.
+    assert result["validation"] == result["current_validation"]
+    assert result["currently_executable"] is False
+    # A historical graph that fails today's rules stays describable.
+    assert result["semantic_graph"]["node_count"] == 1
 
 
 def test_dependency_check_reports_missing_models_and_installed_nodes() -> None:
@@ -872,3 +939,47 @@ async def test_phase_i_describe_and_dependency_tools_use_published_revision(
     assert "comfyui.workflow.dependencies.check" in names
     assert described.structured_content["semantic_graph"]["node_count"] == 4
     assert dependencies.structured_content["missing_models"][0]["filename"] == ("model.safetensors")
+
+
+def test_revision_historical_validity_is_recorded_not_recomputed(tmp_path: Path) -> None:
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    workflows = SQLiteWorkflowRepository(store)
+    graph = {"1": {"class_type": "RetiredNode", "inputs": {}}}
+    schema: dict[str, Any] = {"parameters": {}}
+    created = workflows.create_revision(
+        workflow_id="legacy",
+        server_id="local",
+        graph=graph,
+        parameter_schema=schema,
+        dependency_contract={},
+        content_digest=_revision_digest(graph, schema, {}),
+    )
+
+    recorded = workflows.get_revision(created["revision_id"])
+
+    assert recorded["historical_validity"] == {
+        "valid": True,
+        "status": "valid",
+        "revision_id": created["revision_id"],
+        "recorded_at": recorded["historical_validity"]["recorded_at"],
+        "deployment_ids": [created["deployment_id"]],
+        "source": "recorded_deployment",
+    }
+    # Today's rules know nothing about RetiredNode, yet the historical graph stays
+    # readable: recorded validity is never re-judged on read.
+    assert recorded["graph"] == graph
+
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "UPDATE workflow_deployments SET validation_status = 'rejected' "
+            "WHERE deployment_id = ?",
+            (created["deployment_id"],),
+        )
+        connection.commit()
+
+    legacy = workflows.get_revision(created["revision_id"])
+
+    assert legacy["historical_validity"]["valid"] is False
+    assert legacy["historical_validity"]["status"] == "rejected"
+    assert legacy["graph"] == graph

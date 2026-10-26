@@ -1221,7 +1221,9 @@ async def test_admin_workflow_import_rejects_unsafe_userdata_path(
             "/absolute/path.json",
             "workflows\\windows.json",
             "workflows/not-json.txt",
-            "workflows/with space.json",
+            "workflows/nested/../../escape.json",
+            "workflows//empty-segment.json",
+            "https://example.test/workflows/remote.json",
         ):
             result = await client.call_tool(
                 "comfyui.admin.workflow.import",
@@ -1232,6 +1234,78 @@ async def test_admin_workflow_import_rejects_unsafe_userdata_path(
                 },
             )
             assert result.is_error is True, bad_path
+
+
+@pytest.mark.anyio
+async def test_admin_workflow_import_accepts_nested_userdata_path(
+    tmp_path: Path,
+) -> None:
+    """A nested folder, spaces and Unicode in a userdata path are legitimate."""
+    import sqlite3
+    from datetime import datetime, timezone
+    from unittest.mock import patch
+
+    _project(tmp_path)
+    store = SQLiteControlPlaneStore(tmp_path / "data" / "control-plane.sqlite3")
+    store.initialize()
+    with sqlite3.connect(store.path) as connection:
+        for kind_name in ("workflow", "revision", "deployment"):
+            connection.execute(
+                "INSERT INTO store_migrations("
+                "aggregate_kind, version, status, checksum, switched_at"
+                ") VALUES (?, 1, 'switched', ?, ?)",
+                (kind_name, "a" * 64, datetime.now(timezone.utc).isoformat()),
+            )
+        connection.commit()
+
+    body = b'{"1": {"class_type": "Test", "inputs": {}}}'
+
+    class _ImportGateway:
+        def get_object_info(self) -> dict[str, Any]:
+            return {}
+
+        def get_node_replacements(self) -> dict[str, Any]:
+            return {}
+
+    class _Response:
+        status_code = 200
+        headers = {"Content-Length": str(len(body))}
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_content(self, chunk_size: int = 8192):
+            for index in range(0, len(body), chunk_size):
+                yield body[index : index + chunk_size]
+
+        def close(self) -> None:
+            return None
+
+    with patch(
+        "comfyui_mcp_skills.infrastructure.comfyui.core_client.CoreClient._get",
+        return_value=_Response(),
+    ):
+        server = create_admin_server(
+            tmp_path,
+            enabled=True,
+            gateway_factory=lambda _config: _ImportGateway(),
+        )
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "comfyui.admin.workflow.import",
+                {
+                    "server_id": "local",
+                    "workflow_id": "from-nested",
+                    "source": {
+                        "kind": "server_userdata",
+                        "path": "workflows/nooba/noobAI 基础文生图工作流.json",
+                    },
+                },
+            )
+
+    assert result.is_error is False
+    assert result.structured_content["workflow_id"] == "from-nested"
+    assert result.structured_content["source_format"] == "api"
 
 
 @pytest.mark.anyio

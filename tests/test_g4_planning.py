@@ -168,6 +168,65 @@ def test_planning_reuses_digest_and_rolls_back_plan_with_job_on_failure(tmp_path
         assert connection.execute("SELECT count(*) FROM jobs").fetchone() == (1,)
 
 
+def test_planning_digest_and_snapshot_include_one_run_overrides(tmp_path: Path) -> None:
+    store = _project(tmp_path)
+    service = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
+    common = {
+        "server_id": "local",
+        "workflow_id": "portrait",
+        "owner_id": "principal",
+        "arguments": {"seed": 7},
+    }
+
+    first = service.materialize(
+        **common,
+        client_id="client-1",
+        overrides={"7.steps": 30, "4.ckpt_name": "other.safetensors"},
+    )
+    reordered = service.materialize(
+        **common,
+        client_id="client-2",
+        overrides={"4.ckpt_name": "other.safetensors", "7.steps": 30},
+    )
+    changed = service.materialize(**common, client_id="client-3", overrides={"7.steps": 31})
+    plain = service.materialize(**common, client_id="client-4")
+
+    assert first.plan_digest == reordered.plan_digest
+    assert first.plan_digest != changed.plan_digest
+    assert first.plan_digest != plain.plan_digest
+
+    with sqlite3.connect(store.path) as connection:
+        snapshot = json.loads(
+            connection.execute(
+                "SELECT resolved_inputs_json FROM execution_plans WHERE plan_id = ?",
+                (first.plan_id,),
+            ).fetchone()[0]
+        )
+        plain_snapshot = json.loads(
+            connection.execute(
+                "SELECT resolved_inputs_json FROM execution_plans WHERE plan_id = ?",
+                (plain.plan_id,),
+            ).fetchone()[0]
+        )
+        first_raw = connection.execute(
+            "SELECT raw_arguments_digest FROM execution_plans WHERE plan_id = ?",
+            (first.plan_id,),
+        ).fetchone()[0]
+        changed_raw = connection.execute(
+            "SELECT raw_arguments_digest FROM execution_plans WHERE plan_id = ?",
+            (changed.plan_id,),
+        ).fetchone()[0]
+
+    assert snapshot == {
+        "arguments": {"seed": 7},
+        "resolved_inputs": {"seed": 7},
+        "overrides": {"4.ckpt_name": "other.safetensors", "7.steps": 30},
+    }
+    assert first_raw != changed_raw
+    # Plans written without overrides keep the legacy two-key snapshot and digest.
+    assert plain_snapshot == {"arguments": {"seed": 7}, "resolved_inputs": {"seed": 7}}
+
+
 def test_planning_rejects_idempotent_job_with_conflicting_retry_lineage(tmp_path: Path) -> None:
     store = _project(tmp_path)
     service = ExecutionPlanningService(store, SQLiteWorkflowRepository(store))
