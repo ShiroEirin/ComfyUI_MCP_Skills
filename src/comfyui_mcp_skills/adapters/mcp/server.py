@@ -248,6 +248,7 @@ def _free_locked(
     server_id: str,
     unload_models: bool,
     free_memory: bool,
+    force: bool,
 ) -> dict[str, Any]:
     """Run server.free under a request-scoped lock: check, intent, execute, terminal.
 
@@ -283,7 +284,10 @@ def _free_locked(
         )
         try:
             result = observation.free(
-                server_id, unload_models=unload_models, free_memory=free_memory
+                server_id,
+                unload_models=unload_models,
+                free_memory=free_memory,
+                force=force,
             )
         except Exception as exc:
             try:
@@ -2377,11 +2381,13 @@ def create_server(
                 return tool_result(result)
             if params.name == "comfyui.server.free":
                 validate_fixed_arguments(
-                    arguments, {"server_id", "unload_models", "free_memory", "request_id"}
+                    arguments,
+                    {"server_id", "unload_models", "free_memory", "force", "request_id"},
                 )
                 server_id = required_string(arguments, "server_id", max_length=128)
                 unload_models = optional_boolean(arguments, "unload_models", False)
                 free_memory = optional_boolean(arguments, "free_memory", False)
+                force = optional_boolean(arguments, "force", False)
                 if not (unload_models or free_memory):
                     raise ValueError("at least one memory action must be selected")
                 audit_log = JsonlAuditLog(base_dir / "data" / "admin-audit.jsonl")
@@ -2398,11 +2404,13 @@ def create_server(
                             "server_id": server_id,
                             "unload_models": unload_models,
                             "free_memory": free_memory,
+                            "force": force,
                         },
                         observation,
                         server_id,
                         unload_models,
                         free_memory,
+                        force,
                     )
                 )
                 return tool_result(result)

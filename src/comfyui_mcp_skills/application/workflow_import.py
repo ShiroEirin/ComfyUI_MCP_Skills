@@ -12,6 +12,7 @@ from typing import Any, Protocol
 from comfyui_mcp_skills.application.workflow_conversion import (
     convert_editor_workflow,
     detect_workflow_format,
+    is_lossless_drop,
 )
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -126,7 +127,15 @@ class WorkflowImportService:
         digest = _content_digest(graph, parameters, dependencies, semantic["outputs"])
         deprecated = _deprecated_nodes(graph, node_replacements or {})
         issues = tuple(dict(issue) for issue in validation["issues"])
-        manual = bool(unsupported or dropped or issues or dependencies["coverage"] != "complete")
+        # ``control_after_generate`` never reaches an API prompt, so it stays
+        # visible in ``dropped_fields`` without forcing a manual review.
+        blocking_drops = tuple(entry for entry in dropped if not is_lossless_drop(entry))
+        manual = bool(
+            unsupported
+            or blocking_drops
+            or issues
+            or dependencies["coverage"] != "complete"
+        )
         return ImportPreview(
             workflow_id,
             server_id,

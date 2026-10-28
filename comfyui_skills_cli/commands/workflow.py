@@ -13,6 +13,7 @@ import typer
 from comfyui_mcp_skills.application.workflow_conversion import (
     convert_editor_node_inputs,
     convert_editor_workflow,
+    is_lossless_drop,
 )
 from comfyui_mcp_skills.application.workflow_graph import WorkflowValidationService
 from comfyui_mcp_skills.domain.workflow_semantics import ParameterRoleRegistry
@@ -224,8 +225,12 @@ def _convert_editor_to_api(
     graph, unsupported, dropped = convert_editor_workflow(editor_data, object_info)
     if unsupported:
         raise ValueError("Unknown ComfyUI node types: " + ", ".join(unsupported))
-    if dropped:
-        raise ValueError("Editor conversion would drop fields: " + ", ".join(dropped))
+    # ``control_after_generate`` is an editor-only widget: it never enters an
+    # API prompt, so losing it cannot change the executed graph. Only a real
+    # field loss may block the import.
+    blocking = [entry for entry in dropped if not is_lossless_drop(entry)]
+    if blocking:
+        raise ValueError("Editor conversion would drop fields: " + ", ".join(blocking))
     return graph
 
 

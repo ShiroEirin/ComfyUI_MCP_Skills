@@ -7,6 +7,17 @@ from typing import Any
 
 _CONTROL_MODES = frozenset({"fixed", "increment", "decrement", "randomize"})
 
+# Editor-only widgets that never enter an API prompt. Dropping them cannot
+# change the executed graph, so they must be reported but never block an import.
+_LOSSLESS_DROP_MARKERS = (".control_after_generate=",)
+
+
+def is_lossless_drop(entry: str) -> bool:
+    """True when a dropped entry cannot change the executed graph."""
+    return isinstance(entry, str) and any(
+        marker in entry for marker in _LOSSLESS_DROP_MARKERS
+    )
+
 
 def detect_workflow_format(source: object) -> str:
     if (

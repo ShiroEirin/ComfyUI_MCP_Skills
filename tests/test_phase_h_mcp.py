@@ -418,7 +418,7 @@ async def test_server_free_audits_success_and_failure(tmp_path: Path) -> None:
     async with Client(server) as client:
         ok = await client.call_tool(
             "comfyui.server.free",
-            {"server_id": "local", "unload_models": True},
+            {"server_id": "local", "unload_models": True, "force": True},
         )
     assert ok.structured_content["audit_status"] == "audited"
     assert ok.structured_content["request_id"]
@@ -448,7 +448,7 @@ async def test_server_free_audits_success_and_failure(tmp_path: Path) -> None:
     async with Client(server2) as client:
         bad = await client.call_tool(
             "comfyui.server.free",
-            {"server_id": "local", "free_memory": True},
+            {"server_id": "local", "free_memory": True, "force": True},
         )
     assert bad.is_error is True
     lines = (tmp_path / "data" / "admin-audit.jsonl").read_text(encoding="utf-8").splitlines()
@@ -485,7 +485,12 @@ async def test_server_free_rejects_request_id_reuse(tmp_path: Path) -> None:
     async with Client(server) as client:
         first = await client.call_tool(
             "comfyui.server.free",
-            {"server_id": "local", "unload_models": True, "request_id": "free-request-1"},
+            {
+                "server_id": "local",
+                "unload_models": True,
+                "force": True,
+                "request_id": "free-request-1",
+            },
         )
         second = await client.call_tool(
             "comfyui.server.free",
@@ -493,7 +498,12 @@ async def test_server_free_rejects_request_id_reuse(tmp_path: Path) -> None:
         )
         distinct = await client.call_tool(
             "comfyui.server.free",
-            {"server_id": "local", "unload_models": True, "request_id": "free-request-2"},
+            {
+                "server_id": "local",
+                "unload_models": True,
+                "force": True,
+                "request_id": "free-request-2",
+            },
         )
 
     assert first.structured_content["audit_status"] == "audited"
@@ -535,7 +545,12 @@ async def test_server_free_concurrent_same_request_id_executes_once(
         async with Client(server) as client:
             return await client.call_tool(
                 "comfyui.server.free",
-                {"server_id": "local", "unload_models": True, "request_id": "concurrent-1"},
+                {
+                    "server_id": "local",
+                    "unload_models": True,
+                    "force": True,
+                    "request_id": "concurrent-1",
+                },
             )
 
     async def exercise() -> list[Any]:
@@ -650,7 +665,7 @@ async def test_server_free_success_terminal_write_failure_refuses_audited(
         async with Client(server) as client:
             result = await client.call_tool(
                 "comfyui.server.free",
-                {"server_id": "local", "unload_models": True},
+                {"server_id": "local", "unload_models": True, "force": True},
             )
 
     assert result.is_error is True

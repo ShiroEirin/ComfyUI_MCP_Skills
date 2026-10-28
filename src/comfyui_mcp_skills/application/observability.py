@@ -14,7 +14,11 @@ from typing import Any
 
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.servers import ServerRegistry
-from comfyui_mcp_skills.domain.errors import ExecutionFailed, WorkflowArgumentsError
+from comfyui_mcp_skills.domain.errors import (
+    ExecutionFailed,
+    MemoryReleaseBlocked,
+    WorkflowArgumentsError,
+)
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
 
@@ -426,12 +430,19 @@ class ObservationService:
         *,
         unload_models: bool,
         free_memory: bool,
+        force: bool = False,
     ) -> dict[str, Any]:
         if not isinstance(unload_models, bool) or not isinstance(free_memory, bool):
             raise WorkflowArgumentsError("unload_models and free_memory must be booleans")
+        if not isinstance(force, bool):
+            raise WorkflowArgumentsError("force must be a boolean")
         if not unload_models and not free_memory:
             raise WorkflowArgumentsError("at least one memory release action must be selected")
         gateway = self._gateway(server_id)
+        # Releasing VRAM under a live prompt kills real work, so the default is
+        # to refuse until the caller explicitly accepts that risk.
+        if not force:
+            self._require_idle_queue(gateway, server_id)
         raw = gateway.free_memory(
             unload_models=unload_models,
             free_memory=free_memory,
@@ -450,8 +461,36 @@ class ObservationService:
             "success": success,
             "unload_models": unload_models,
             "free_memory": free_memory,
+            "force": force,
             "impact": impact,
         }
+
+    @staticmethod
+    def _require_idle_queue(gateway: ComfyUIGateway, server_id: str) -> None:
+        """Refuse a destructive release while prompts are running or queued."""
+        try:
+            raw = gateway.get_queue()
+        except Exception as exc:
+            raise MemoryReleaseBlocked(
+                "Cannot verify the ComfyUI queue; pass force=true to release anyway",
+                details={"server_id": server_id, "reason": type(exc).__name__},
+            ) from exc
+        if not isinstance(raw, dict):
+            raise MemoryReleaseBlocked(
+                "ComfyUI queue response is invalid; pass force=true to release anyway",
+                details={"server_id": server_id, "reason": "invalid_queue_response"},
+            )
+        running = raw.get("queue_running", [])
+        pending = raw.get("queue_pending", [])
+        counts = {
+            "running": len(running) if isinstance(running, list) else 0,
+            "pending": len(pending) if isinstance(pending, list) else 0,
+        }
+        if counts["running"] or counts["pending"]:
+            raise MemoryReleaseBlocked(
+                "ComfyUI has running or queued work; pass force=true to release anyway",
+                details={"server_id": server_id, **counts, "force": True},
+            )
 
     def _gateway(self, server_id: str) -> ComfyUIGateway:
         return self._gateway_factory(self._servers.connection(server_id))

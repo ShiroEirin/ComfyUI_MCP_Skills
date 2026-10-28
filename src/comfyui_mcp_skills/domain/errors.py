@@ -36,6 +36,17 @@ class WorkflowArgumentsError(ComfyUISkillsError):
     code = "INVALID_WORKFLOW_ARGUMENTS"
 
 
+class MemoryReleaseBlocked(ComfyUISkillsError):
+    """A destructive memory release was refused while work is in flight.
+
+    Releasing VRAM under a running or queued prompt interrupts real work, so the
+    refusal is a first-class outcome carrying the observed queue counts. The
+    caller can repeat the request with ``force=true`` once that is intended.
+    """
+
+    code = "MEMORY_RELEASE_BLOCKED"
+
+
 class WorkflowNotFound(ComfyUISkillsError):
     code = "WORKFLOW_NOT_FOUND"
 

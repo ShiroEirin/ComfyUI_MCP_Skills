@@ -2008,6 +2008,7 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
             "success": {"type": "boolean"},
             "unload_models": {"type": "boolean"},
             "free_memory": {"type": "boolean"},
+            "force": {"type": "boolean"},
             "impact": {
                 "type": "array",
                 "items": {"type": "string", "enum": ["loaded_models", "runtime_memory"]},
@@ -2288,6 +2289,14 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
                     "server_id": server_identifier,
                     "unload_models": {"type": "boolean", "default": False},
                     "free_memory": {"type": "boolean", "default": False},
+                    "force": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "Release memory even when prompts are running or queued. "
+                            "The default refuses so live work is never interrupted."
+                        ),
+                    },
                     "request_id": {
                         "type": "string",
                         "maxLength": 128,

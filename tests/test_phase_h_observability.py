@@ -351,7 +351,9 @@ def test_media_locator_rejects_absolute_traversal_and_unc_paths() -> None:
 def test_free_requires_effect_and_forwards_both_explicit_booleans(tmp_path: Path) -> None:
     service, gateway = _service(tmp_path)
 
-    result = service.free("local", unload_models=False, free_memory=True)
+    # The shared fake gateway reports a live queue, so an explicit release has
+    # to accept that risk; the idle-queue path has its own test module.
+    result = service.free("local", unload_models=False, free_memory=True, force=True)
 
     assert gateway.free_requests == [(False, True)]
     assert result == {
@@ -359,15 +361,16 @@ def test_free_requires_effect_and_forwards_both_explicit_booleans(tmp_path: Path
         "success": True,
         "unload_models": False,
         "free_memory": True,
+        "force": True,
         "impact": ["runtime_memory"],
     }
     with pytest.raises(WorkflowArgumentsError):
         service.free("local", unload_models=False, free_memory=False)
     gateway.free_memory = lambda **_kwargs: {}
     with pytest.raises(ExecutionFailed, match="outcome is unknown"):
-        service.free("local", unload_models=True, free_memory=False)
+        service.free("local", unload_models=True, free_memory=False, force=True)
     gateway.free_memory = lambda **_kwargs: {"success": False}
-    failed = service.free("local", unload_models=True, free_memory=True)
+    failed = service.free("local", unload_models=True, free_memory=True, force=True)
     assert failed["success"] is False
     assert failed["impact"] == []
 
