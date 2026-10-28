@@ -94,11 +94,24 @@ class WorkflowGraphService:
 
 class WorkflowValidationService:
     def validate_api(
-        self, graph: object, object_info: dict[str, Any] | None = None
+        self,
+        graph: object,
+        object_info: dict[str, Any] | None = None,
+        *,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         issues: list[dict[str, str]] = []
         unsupported: set[str] = set()
-        if not isinstance(graph, dict) or not graph:
+        if not isinstance(graph, dict):
+            return _validation_result(
+                [_issue("invalid_graph", "Workflow graph must be an object")],
+                set(),
+            )
+        if not graph:
+            # An empty graph is a valid scaffold baseline: the caller starts
+            # from zero nodes and composes them with change operations.
+            if allow_empty:
+                return _validation_result([], set())
             return _validation_result(
                 [_issue("invalid_graph", "Workflow graph must be a non-empty object")],
                 set(),

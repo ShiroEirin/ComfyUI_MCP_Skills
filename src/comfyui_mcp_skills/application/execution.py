@@ -99,8 +99,12 @@ RISKY_NODE_RULES: tuple[RiskyNodeRule, ...] = (
                 "wasnodesuiteexec",
             }
         ),
-        class_tokens=frozenset({"python", "pyscript", "eval", "exec", "execute"}),
-        input_tokens=frozenset({"code", "script", "expression", "exec_command"}),
+        # "execute" and bare "code" were too broad: they flagged local-only
+        # nodes such as ExecutePrompt or a node with an input named "code".
+        class_tokens=frozenset({"python", "pyscript", "eval", "exec"}),
+        input_tokens=frozenset(
+            {"python_code", "source_code", "code_text", "script", "expression", "exec_command"}
+        ),
     ),
     RiskyNodeRule(
         category="network_request",
@@ -145,9 +149,10 @@ RISKY_NODE_RULES: tuple[RiskyNodeRule, ...] = (
                 "externalapi",
             }
         ),
+        # Bare "api" matched local nodes like APIImageLoader; the vendor names
+        # below still catch every external provider this rule targets.
         class_tokens=frozenset(
             {
-                "api",
                 "openai",
                 "anthropic",
                 "claude",
@@ -160,6 +165,8 @@ RISKY_NODE_RULES: tuple[RiskyNodeRule, ...] = (
                 "cloud",
             }
         ),
+        # Input names are tokenized on underscores, so ``api_key`` arrives as
+        # ``api`` + ``key``; the credential input itself is the signal here.
         input_tokens=frozenset({"api", "apikey"}),
     ),
 )

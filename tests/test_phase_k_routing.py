@@ -157,6 +157,17 @@ def test_routing_respects_locked_server_and_reports_policy_violations() -> None:
     assert locked["selected_server_id"] == "busy"
     assert locked["selection_reason"] == "caller_locked_server"
 
+    pinned = service.plan(
+        "owner-a",
+        "portrait",
+        {"steps": 20},
+        server_id="idle",
+        policy={"max_steps": 30, "max_queue_depth": 10},
+        pinned=True,
+    )
+    assert pinned["selected_server_id"] == "idle"
+    assert pinned["selection_reason"] == "pinned_revision"
+
     with pytest.raises(ValueError, match="Policy rejected execution") as rejected:
         service.plan(
             "owner-a",

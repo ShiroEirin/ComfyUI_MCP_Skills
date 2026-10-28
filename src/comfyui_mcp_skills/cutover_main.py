@@ -76,7 +76,11 @@ def _failure(
     if writes and backup is not None:
         payload["recovery"] = {
             "evidence": backup.get("destination"),
-            "action": "rerun with COMFYUI_MCP_MIGRATION_EVIDENCE set to this path",
+            "action": (
+                "rerun with COMFYUI_MCP_MIGRATION_EVIDENCE set to this path; "
+                "the resume path replays the frozen manifest and does not re-check "
+                "the live source directory"
+            ),
         }
     return payload
 
@@ -96,6 +100,10 @@ def main() -> int:
         source_root = Path(os.environ.get("COMFYUI_MCP_DIR", os.getcwd()))
         rehearsal = FileMigrationRehearsal(source_root)
         evidence_value = os.environ.get("COMFYUI_MCP_MIGRATION_EVIDENCE", "").strip()
+        # A resume replays the frozen evidence. The live source directory may
+        # already be reorganized or gone, so drift checks against it would make
+        # the advertised recovery path impossible to follow.
+        resuming = bool(evidence_value)
         if evidence_value:
             evidence_root = Path(evidence_value).absolute()
             manifest = MigrationManifest.load(evidence_root / "migration-manifest.json")
@@ -127,12 +135,13 @@ def main() -> int:
 
         asset = rehearsal.cutover_g1(asset_plan, store)
         job = rehearsal.cutover_g1(job_plan, store)
-        conflicts = rehearsal.verify_manifest(manifest)
-        if conflicts:
-            first = conflicts[0]
-            raise ManifestDriftError(
-                f"source drift: {first.code}: {first.relative_path}: {first.message}"
-            )
+        if not resuming:
+            conflicts = rehearsal.verify_manifest(manifest)
+            if conflicts:
+                first = conflicts[0]
+                raise ManifestDriftError(
+                    f"source drift: {first.code}: {first.relative_path}: {first.message}"
+                )
         workflow = cutover_g3_import_plan(workflow_plan, store)
         payload = {
             "ok": True,

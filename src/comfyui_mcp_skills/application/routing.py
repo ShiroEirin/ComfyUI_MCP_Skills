@@ -77,6 +77,7 @@ class RoutingService:
         policy: Mapping[str, Any] | None = None,
         submission_window: int = 0,
         request_id: str = "",
+        pinned: bool = False,
     ) -> dict[str, Any]:
         owner_id = _identity(owner_id, "owner_id")
         workflow_id = validate_identifier(workflow_id, field="workflow_id")
@@ -118,7 +119,11 @@ class RoutingService:
         candidates.sort(key=_candidate_order)
         eligible = [item for item in candidates if not item["exclusion_reasons"]]
         if not eligible:
-            raise LookupError("No compatible published Deployment is available")
+            raise LookupError(
+                "Pinned Revision is not executable on the target Server"
+                if pinned
+                else "No compatible published Deployment is available"
+            )
         selected = eligible[0]
         if locked_server and selected["server_id"] != locked_server:
             raise LookupError("Caller-locked Server is unavailable")
@@ -142,7 +147,9 @@ class RoutingService:
             "submission_window": submission_window,
             "reuse_mode": selected["reuse_mode"],
             "selection_reason": (
-                "caller_locked_server" if locked_server else "lowest_eligible_queue_pressure"
+                "pinned_revision"
+                if pinned
+                else ("caller_locked_server" if locked_server else "lowest_eligible_queue_pressure")
             ),
             "estimate_available": False,
             "estimate": None,

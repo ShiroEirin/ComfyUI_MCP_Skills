@@ -1538,6 +1538,7 @@ def create_server(
                                 maximum=10_000,
                             ),
                             request_id=optional_string(arguments, "request_id", "", max_length=256),
+                            pinned=bool(pinned_revision_id),
                         )
                     )
                 elif params.name == "comfyui.execution.commit":

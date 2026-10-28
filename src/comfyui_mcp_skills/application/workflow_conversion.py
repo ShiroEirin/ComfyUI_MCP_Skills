@@ -28,7 +28,6 @@ def detect_workflow_format(source: object) -> str:
         return "editor"
     if (
         isinstance(source, dict)
-        and source
         and all(
             isinstance(node, dict)
             and isinstance(node.get("class_type"), str)
@@ -36,6 +35,9 @@ def detect_workflow_format(source: object) -> str:
             for node in source.values()
         )
     ):
+        # An empty mapping is a valid empty API graph: it is the scaffold
+        # baseline a caller composes with change operations. Non-empty checks
+        # still reject anything whose values are not nodes.
         return "api"
     raise ValueError("Unrecognized workflow format")
 

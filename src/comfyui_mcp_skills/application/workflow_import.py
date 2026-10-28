@@ -55,6 +55,7 @@ class ImportPreview:
     dropped_fields: tuple[str, ...]
     issues: tuple[dict[str, str], ...]
     requires_manual_review: bool
+    allow_empty_graph: bool = False
 
     def to_public_dict(self) -> dict[str, Any]:
         return {
@@ -96,6 +97,7 @@ class WorkflowImportService:
         object_info: dict[str, Any],
         media_type: str = "image",
         node_replacements: dict[str, str] | None = None,
+        allow_empty: bool = False,
     ) -> ImportPreview:
         workflow_id = validate_identifier(workflow_id, field="workflow_id")
         server_id = validate_identifier(server_id, field="server_id")
@@ -106,7 +108,7 @@ class WorkflowImportService:
             graph, unsupported, dropped = convert_editor_workflow(source, object_info)
         else:
             graph = _copy_json_object(source, field="workflow")
-        validation = self._validation.validate_api(graph, object_info)
+        validation = self._validation.validate_api(graph, object_info, allow_empty=allow_empty)
         unsupported = tuple(sorted(set(unsupported) | set(validation["unsupported_nodes"])))
         semantic = self._graphs.describe(graph, object_info=object_info, media_type=media_type)
         parameters = semantic["parameters"]
@@ -150,6 +152,7 @@ class WorkflowImportService:
             dropped,
             issues,
             manual,
+            allow_empty,
         )
 
     def preview_many(
@@ -160,6 +163,7 @@ class WorkflowImportService:
         object_info: dict[str, Any],
         media_type: str = "image",
         node_replacements: dict[str, str] | None = None,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         if not 1 <= len(items) <= 100:
             raise ValueError("Workflow import batch must contain between 1 and 100 items")
@@ -175,6 +179,7 @@ class WorkflowImportService:
                     object_info=object_info,
                     media_type=media_type,
                     node_replacements=node_replacements,
+                    allow_empty=allow_empty,
                 )
             except (TypeError, ValueError) as exc:
                 results.append(
@@ -203,7 +208,9 @@ class WorkflowImportService:
     def commit(self, preview: ImportPreview) -> dict[str, Any]:
         if preview.requires_manual_review:
             raise ValueError("Workflow import requires manual review")
-        if int(preview.dependency_contract.get("output_cardinality", 0)) <= 0:
+        if int(preview.dependency_contract.get("output_cardinality", 0)) <= 0 and (
+            not preview.allow_empty_graph
+        ):
             raise ValueError("Workflow import has no executable output contract")
         return self._revisions.create_revision(
             workflow_id=preview.workflow_id,

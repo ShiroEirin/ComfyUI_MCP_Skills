@@ -347,6 +347,14 @@ def create_admin_server(
                                     "default": "image",
                                 },
                                 "commit": {"type": "boolean", "default": False},
+                                "allow_empty_graph": {
+                                    "type": "boolean",
+                                    "default": False,
+                                    "description": (
+                                        "Import an empty graph as a scaffold baseline. "
+                                        "Compose nodes afterwards with change operations."
+                                    ),
+                                },
                             },
                             "required": ["server_id", "workflow_id", "source"],
                             "additionalProperties": False,
@@ -713,7 +721,14 @@ def create_admin_server(
                     raise MCPError(code=INVALID_PARAMS, message="Workflow import unavailable")
                 _validate_keys(
                     arguments,
-                    {"server_id", "workflow_id", "source", "media_type", "commit"},
+                    {
+                        "server_id",
+                        "workflow_id",
+                        "source",
+                        "media_type",
+                        "commit",
+                        "allow_empty_graph",
+                    },
                 )
                 server_id = _required_string(arguments, "server_id")
                 workflow_id = _required_string(arguments, "workflow_id")
@@ -771,6 +786,11 @@ def create_admin_server(
                 commit = arguments.get("commit", False)
                 if not isinstance(commit, bool):
                     raise TypeError("commit must be a boolean")
+                # An empty graph is a scaffold baseline: the caller composes it
+                # with change operations afterwards, so it must be importable.
+                allow_empty_graph = arguments.get("allow_empty_graph", False)
+                if not isinstance(allow_empty_graph, bool):
+                    raise TypeError("allow_empty_graph must be a boolean")
                 gateway = gateway_factory(servers.connection(server_id))
                 object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
                 replacement_reader = getattr(gateway, "get_node_replacements", None)
@@ -795,6 +815,7 @@ def create_admin_server(
                             for old, new in replacements.items()
                             if isinstance(old, str) and isinstance(new, str)
                         },
+                        allow_empty=allow_empty_graph,
                     )
                 )
                 result = preview.to_public_dict()

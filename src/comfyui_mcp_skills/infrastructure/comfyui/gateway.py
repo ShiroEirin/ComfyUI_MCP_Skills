@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -13,13 +14,56 @@ from comfyui_mcp_skills.domain.errors import ExecutionFailed, ServerOffline, Upl
 from comfyui_mcp_skills.infrastructure.comfyui.capabilities import classify_capability_status
 from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 
+_SECRET_SCHEMES = ("env:",)
+_KNOWN_SECRET_FIELDS = frozenset({"auth", "comfy_api_key"})
+
+
+def _resolve_secret_refs(config: dict[str, Any]) -> dict[str, str]:
+    """Resolve ``secret_refs`` to concrete values without persisting secrets.
+
+    Only the ``env:`` scheme is supported: the reference names an environment
+    variable, so a Config Bundle can travel without carrying the secret itself.
+    An unknown scheme or a missing variable fails loudly instead of silently
+    connecting with an empty credential.
+    """
+    refs = config.get("secret_refs")
+    if refs is None:
+        return {}
+    if not isinstance(refs, dict):
+        raise ValueError("secret_refs must be an object")
+    resolved: dict[str, str] = {}
+    for field, ref in refs.items():
+        if not isinstance(field, str) or not field:
+            raise ValueError("secret_refs keys must be non-empty strings")
+        if field not in _KNOWN_SECRET_FIELDS:
+            raise ValueError(
+                f"secret_refs[{field}] is not a supported credential field; "
+                f"supported: {', '.join(sorted(_KNOWN_SECRET_FIELDS))}"
+            )
+        if not isinstance(ref, str) or not ref:
+            raise ValueError(f"secret_refs[{field}] must be a non-empty string")
+        scheme = next((item for item in _SECRET_SCHEMES if ref.startswith(item)), "")
+        if not scheme:
+            raise ValueError(
+                f"secret_refs[{field}] uses an unsupported scheme; supported: env:"
+            )
+        name = ref[len(scheme) :]
+        value = os.environ.get(name, "")
+        if not value:
+            raise ValueError(
+                f"secret_refs[{field}] references env var {name!r} which is not set"
+            )
+        resolved[field] = value
+    return resolved
+
 
 class ComfyUIGatewayAdapter:
     def __init__(self, config: dict[str, Any]) -> None:
+        secrets = _resolve_secret_refs(config)
         self._client = ComfyUIClient(
             server_url=str(config.get("url", "http://127.0.0.1:8188")),
-            auth=str(config.get("auth", "")),
-            comfy_api_key=str(config.get("comfy_api_key", "")),
+            auth=secrets.get("auth", str(config.get("auth", ""))),
+            comfy_api_key=secrets.get("comfy_api_key", str(config.get("comfy_api_key", ""))),
             timeout=float(config.get("timeout", 30.0)),
         )
 
