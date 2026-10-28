@@ -558,13 +558,9 @@ def _verify_identity(
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    from comfyui_mcp_skills.application.json_codec import canonical_json
+
+    return canonical_json(value)
 
 
 def _connect(store: SQLiteControlPlaneStore) -> sqlite3.Connection:

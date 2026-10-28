@@ -1203,17 +1203,11 @@ def _json_copy(value: object, field: str) -> dict[str, Any]:
 def _revision_digest(
     graph: dict[str, Any], schema: dict[str, Any], dependencies: dict[str, Any]
 ) -> str:
-    value = {
-        "identity_version": 2,
-        "graph": graph,
-        "parameters": schema.get("parameters", {}),
-        "dependencies": dependencies,
-        "output_contract": schema.get("_output_contract"),
-    }
-    metadata = schema.get("_revision")
-    if isinstance(metadata, dict) and metadata:
-        value["revision_metadata"] = metadata
-    return _sha256(value)
+    from comfyui_mcp_skills.application.revision_identity import (
+        revision_digest_from_schema,
+    )
+
+    return revision_digest_from_schema(graph, schema, dependencies)
 
 
 def _sha256(value: object) -> str:

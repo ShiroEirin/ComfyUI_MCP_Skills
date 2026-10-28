@@ -457,12 +457,11 @@ class SQLiteWorkflowRepository:
         )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA synchronous = FULL")
-        connection.execute("PRAGMA trusted_schema = OFF")
-        return connection
+        from comfyui_mcp_skills.infrastructure.persistence.sqlite_connection import (
+            connect_control_plane,
+        )
+
+        return connect_control_plane(self._store.path)
 
     @staticmethod
     def _workflow_from_row(row: sqlite3.Row | tuple[object, ...]) -> Workflow:
@@ -530,18 +529,11 @@ def _revision_digest(
     parameter_schema: dict[str, Any],
     dependency_contract: dict[str, Any],
 ) -> str:
-    value = {
-        "identity_version": 2,
-        "graph": graph,
-        "parameters": parameter_schema.get("parameters", {}),
-        "dependencies": dependency_contract,
-        "output_contract": parameter_schema.get("_output_contract"),
-    }
-    metadata = parameter_schema.get("_revision")
-    if isinstance(metadata, dict) and metadata:
-        value["revision_metadata"] = metadata
-    payload = _canonical_json(value)
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    from comfyui_mcp_skills.application.revision_identity import (
+        revision_digest_from_schema,
+    )
+
+    return revision_digest_from_schema(graph, parameter_schema, dependency_contract)
 
 
 def _historical_validity(

@@ -1179,14 +1179,12 @@ def _is_sha256(value: object) -> bool:
 
 
 def _canonical(value: object) -> bytes:
-    return json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode()
+    from comfyui_mcp_skills.application.json_codec import canonical_json_bytes
+
+    return canonical_json_bytes(value)
 
 
 def _digest(value: object) -> str:
-    return hashlib.sha256(_canonical(value)).hexdigest()
+    from comfyui_mcp_skills.application.json_codec import digest
+
+    return digest(value)

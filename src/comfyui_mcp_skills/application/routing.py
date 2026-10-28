@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from collections.abc import Callable, Mapping
@@ -341,13 +340,15 @@ def _identity(value: object, field: str) -> str:
 
 
 def _digest(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode()).hexdigest()
+    from comfyui_mcp_skills.application.json_codec import digest
+
+    return digest(value)
 
 
 def _canonical_json(value: object) -> str:
-    return json.dumps(
-        value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
-    )
+    from comfyui_mcp_skills.application.json_codec import canonical_json
+
+    return canonical_json(value)
 
 
 def _json_copy(value: Any) -> Any:

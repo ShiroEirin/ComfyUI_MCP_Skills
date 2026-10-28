@@ -530,12 +530,11 @@ class SQLiteWorkflowChangeRepository:
         }
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA synchronous = FULL")
-        connection.execute("PRAGMA trusted_schema = OFF")
-        return connection
+        from comfyui_mcp_skills.infrastructure.persistence.sqlite_connection import (
+            connect_control_plane,
+        )
+
+        return connect_control_plane(self._store.path)
 
 
 def _canonical_json(value: object) -> str:
@@ -553,17 +552,11 @@ def _revision_digest(
     parameter_schema: dict[str, Any],
     dependency_contract: dict[str, Any],
 ) -> str:
-    value: dict[str, Any] = {
-        "identity_version": 2,
-        "graph": graph,
-        "parameters": parameter_schema.get("parameters", {}),
-        "dependencies": dependency_contract,
-        "output_contract": parameter_schema.get("_output_contract"),
-    }
-    metadata = parameter_schema.get("_revision")
-    if isinstance(metadata, dict) and metadata:
-        value["revision_metadata"] = metadata
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+    from comfyui_mcp_skills.application.revision_identity import (
+        revision_digest_from_schema,
+    )
+
+    return revision_digest_from_schema(graph, parameter_schema, dependency_contract)
 
 
 def _sha256(value: object) -> str:
@@ -571,6 +564,10 @@ def _sha256(value: object) -> str:
 
 
 def _stored_revision_digest(graph_json: str, schema_json: str, dependency_json: str) -> str:
+    from comfyui_mcp_skills.application.revision_identity import (
+        revision_digest_from_schema,
+    )
+
     graph = json.loads(graph_json)
     schema = json.loads(schema_json)
     dependencies = json.loads(dependency_json)
@@ -580,17 +577,4 @@ def _stored_revision_digest(graph_json: str, schema_json: str, dependency_json: 
         or not isinstance(dependencies, dict)
     ):
         raise ValueError("Workflow change plan payload is invalid")
-    value = {
-        "identity_version": 2,
-        "graph": graph,
-        "parameters": schema.get("parameters", {}),
-        "dependencies": dependencies,
-        "output_contract": schema.get("_output_contract"),
-    }
-    metadata = schema.get("_revision")
-    if isinstance(metadata, dict) and metadata:
-        value["revision_metadata"] = metadata
-    encoded = json.dumps(
-        value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return revision_digest_from_schema(graph, schema, dependencies)

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -49,10 +48,9 @@ def _json_copy(value: object, field: str) -> Any:
 
 
 def _digest(value: object) -> str:
-    encoded = json.dumps(
-        value, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    from comfyui_mcp_skills.application.json_codec import digest
+
+    return digest(value)
 
 
 def _json_equal(left: object, right: object) -> bool:

@@ -160,8 +160,7 @@ from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
 )
-from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
-from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
+from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_client, create_gateway
 from comfyui_mcp_skills.infrastructure.persistence.orchestration import (
     SQLiteOrchestrationRepository,
 )
@@ -2118,12 +2117,9 @@ def create_server(
                     if not server_id:
                         raise ValueError("server_id is required when source is 'server'")
                     connection = servers.connection(server_id)
-                    userdata = ComfyUIClient(
-                        server_url=str(connection.get("url", "")),
-                        auth=str(connection.get("auth", "")),
-                        comfy_api_key=str(connection.get("comfy_api_key", "")),
-                        timeout=float(connection.get("timeout", 30.0)),
-                    )
+                    # Route through the shared factory so ``secret_refs`` is
+                    # resolved on this path too.
+                    userdata = create_client(connection)
                     paths = await anyio.to_thread.run_sync(
                         userdata.list_userdata_workflows
                     )

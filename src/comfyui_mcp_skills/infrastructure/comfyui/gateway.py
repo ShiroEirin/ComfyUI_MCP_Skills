@@ -57,15 +57,25 @@ def _resolve_secret_refs(config: dict[str, Any]) -> dict[str, str]:
     return resolved
 
 
+def create_client(config: dict[str, Any]) -> ComfyUIClient:
+    """Build one client from a server config, resolving ``secret_refs``.
+
+    Every MCP surface must go through this factory: constructing
+    ``ComfyUIClient`` directly skips ``secret_refs`` and silently connects
+    without the configured credential.
+    """
+    secrets = _resolve_secret_refs(config)
+    return ComfyUIClient(
+        server_url=str(config.get("url", "http://127.0.0.1:8188")),
+        auth=secrets.get("auth", str(config.get("auth", ""))),
+        comfy_api_key=secrets.get("comfy_api_key", str(config.get("comfy_api_key", ""))),
+        timeout=float(config.get("timeout", 30.0)),
+    )
+
+
 class ComfyUIGatewayAdapter:
     def __init__(self, config: dict[str, Any]) -> None:
-        secrets = _resolve_secret_refs(config)
-        self._client = ComfyUIClient(
-            server_url=str(config.get("url", "http://127.0.0.1:8188")),
-            auth=secrets.get("auth", str(config.get("auth", ""))),
-            comfy_api_key=secrets.get("comfy_api_key", str(config.get("comfy_api_key", ""))),
-            timeout=float(config.get("timeout", 30.0)),
-        )
+        self._client = create_client(config)
 
     def queue_prompt(self, workflow: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         try:

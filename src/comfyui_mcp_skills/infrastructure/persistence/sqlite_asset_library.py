@@ -1731,13 +1731,11 @@ class SQLiteAssetLibraryRepository:
             raise ValueError("invalid collection")
 
     def _connect(self) -> sqlite3.Connection:
-        c = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)
-        c.row_factory = sqlite3.Row
-        c.execute("PRAGMA foreign_keys=ON")
-        c.execute("PRAGMA busy_timeout=5000")
-        c.execute("PRAGMA synchronous=FULL")
-        c.execute("PRAGMA trusted_schema=OFF")
-        return c
+        from comfyui_mcp_skills.infrastructure.persistence.sqlite_connection import (
+            connect_control_plane,
+        )
+
+        return connect_control_plane(self._store.path)
 
 
 def _inject(injector: Callable[[str], None] | None, phase: str) -> None:

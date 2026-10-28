@@ -78,8 +78,7 @@ from comfyui_mcp_skills.domain.workflow_semantics import (
     DependencyExtractorRegistry,
     ParameterRoleRegistry,
 )
-from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
-from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_gateway
+from comfyui_mcp_skills.infrastructure.comfyui.gateway import create_client, create_gateway
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import (
     RepositoryBundle,
     create_repository_bundle,
@@ -608,6 +607,13 @@ def create_admin_server(
             if is_authorized(authorization.scopes, scopes_for_tool(tool.name))
         ]
         projected_tools, _canonical_by_external = _project_tools(tools)
+        from comfyui_mcp_skills.application.capabilities import ToolInventory
+
+        if len(projected_tools) > ToolInventory.HARD_FIXED_LIMIT:
+            raise RuntimeError(
+                "admin tool surface exceeds the fixed limit of "
+                f"{ToolInventory.HARD_FIXED_LIMIT}; split or aggregate before exposing it"
+            )
         return ListToolsResult(tools=projected_tools, cache_scope="private")
 
     async def call_tool(
@@ -764,12 +770,9 @@ def create_admin_server(
                             "characters and URL prefixes are rejected)"
                         )
                     config = servers.connection(server_id)
-                    userdata_client = ComfyUIClient(
-                        server_url=str(config.get("url", "http://127.0.0.1:8188")),
-                        auth=str(config.get("auth", "")),
-                        comfy_api_key=str(config.get("comfy_api_key", "")),
-                        timeout=float(config.get("timeout", 30.0)),
-                    )
+                    # Route through the shared factory so ``secret_refs`` is
+                    # resolved on this path too.
+                    userdata_client = create_client(config)
                     fetched = await anyio.to_thread.run_sync(
                         lambda: userdata_client.read_userdata_workflow(workflow_path)
                     )
@@ -1480,12 +1483,19 @@ def _missing_models(
 
 
 def _required_string(arguments: dict[str, Any], name: str) -> str:
-    value = arguments.get(name)
-    if not isinstance(value, str) or not value:
-        raise TypeError(f"{name} must be a non-empty string")
-    if name == "request_id" and len(value) > MAX_ADMIN_REQUEST_ID_LENGTH:
-        raise TypeError(f"request_id must be at most {MAX_ADMIN_REQUEST_ID_LENGTH} characters")
-    return value
+    from comfyui_mcp_skills.adapters.mcp.tooling import required_string
+
+    if name == "request_id":
+        # Admin keeps its own bound and message for the idempotency key.
+        value = arguments.get(name)
+        if not isinstance(value, str) or not value:
+            raise TypeError(f"{name} must be a non-empty string")
+        if len(value) > MAX_ADMIN_REQUEST_ID_LENGTH:
+            raise TypeError(
+                f"request_id must be at most {MAX_ADMIN_REQUEST_ID_LENGTH} characters"
+            )
+        return value
+    return required_string(arguments, name)
 
 
 def _optional_request_id(arguments: dict[str, Any], fallback: str) -> str:
@@ -1495,27 +1505,23 @@ def _optional_request_id(arguments: dict[str, Any], fallback: str) -> str:
 
 
 def _optional_string(arguments: dict[str, Any], name: str, default: str) -> str:
-    value = arguments.get(name, default)
-    if not isinstance(value, str):
-        raise TypeError(f"{name} must be a string")
-    return value
+    from comfyui_mcp_skills.adapters.mcp.tooling import optional_string
+
+    return optional_string(arguments, name, default)
 
 
 def _bounded_integer(
     arguments: dict[str, Any], name: str, default: int, *, minimum: int, maximum: int
 ) -> int:
-    value = arguments.get(name, default)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise TypeError(f"{name} must be an integer")
-    if not minimum <= value <= maximum:
-        raise ValueError(f"{name} must be between {minimum} and {maximum}")
-    return value
+    from comfyui_mcp_skills.adapters.mcp.tooling import bounded_integer
+
+    return bounded_integer(arguments, name, default, minimum=minimum, maximum=maximum)
 
 
 def _validate_keys(arguments: dict[str, Any], allowed: set[str]) -> None:
-    unexpected = set(arguments) - allowed
-    if unexpected:
-        raise ValueError(f"Unexpected arguments: {', '.join(sorted(unexpected))}")
+    from comfyui_mcp_skills.adapters.mcp.tooling import validate_fixed_arguments
+
+    validate_fixed_arguments(arguments, allowed)
 
 
 def _result(value: dict[str, Any], *, error: bool = False) -> CallToolResult:

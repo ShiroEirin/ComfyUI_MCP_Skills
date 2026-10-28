@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from comfyui_mcp_skills.domain.errors import SchemaMigrationError
 from comfyui_mcp_skills.infrastructure.persistence.authoring_hardening_schema import (
     PHASE_J_HARDENING_UP,
 )
@@ -27,10 +28,6 @@ if TYPE_CHECKING:
     from comfyui_mcp_skills.application.control_plane_ports import (
         ControlPlaneUnitOfWork,
     )
-
-
-class SchemaMigrationError(RuntimeError):
-    """Raised when an applied schema migration differs from local code."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -2428,29 +2425,11 @@ class SQLiteControlPlaneStore:
             connection.close()
 
     def _connect(self, *, require_wal: bool = True) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, isolation_level=None, timeout=5.0)
-        try:
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON")
-            connection.execute("PRAGMA busy_timeout = 5000")
-            connection.execute("PRAGMA synchronous = FULL")
-            connection.execute("PRAGMA trusted_schema = OFF")
-            settings = (
-                int(connection.execute("PRAGMA foreign_keys").fetchone()[0]),
-                int(connection.execute("PRAGMA busy_timeout").fetchone()[0]),
-                int(connection.execute("PRAGMA synchronous").fetchone()[0]),
-                int(connection.execute("PRAGMA trusted_schema").fetchone()[0]),
-            )
-            if settings != (1, 5000, 2, 0):
-                raise SchemaMigrationError("SQLite connection safety settings are unavailable")
-            if require_wal:
-                journal_mode = str(connection.execute("PRAGMA journal_mode").fetchone()[0]).lower()
-                if journal_mode != "wal":
-                    raise SchemaMigrationError("SQLite WAL journal mode is required")
-            return connection
-        except BaseException as exc:
-            _close_preserving_error(connection, exc)
-            raise
+        from comfyui_mcp_skills.infrastructure.persistence.sqlite_connection import (
+            connect_control_plane,
+        )
+
+        return connect_control_plane(self.path, require_wal=require_wal)
 
 
 def _migration_map() -> dict[int, SchemaMigration]:

@@ -601,12 +601,11 @@ class SQLiteRunRepository:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self._store.path, isolation_level=None, timeout=5.0)
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
-        connection.execute("PRAGMA synchronous = FULL")
-        connection.execute("PRAGMA trusted_schema = OFF")
-        return connection
+        from comfyui_mcp_skills.infrastructure.persistence.sqlite_connection import (
+            connect_control_plane,
+        )
+
+        return connect_control_plane(self._store.path)
 
 
 def terminalize_job_snapshot(

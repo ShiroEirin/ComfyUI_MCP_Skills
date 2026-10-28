@@ -25,6 +25,10 @@ class ComfyUISkillsError(Exception):
         }
 
 
+class SchemaMigrationError(RuntimeError):
+    """Raised when an applied schema migration or connection policy differs."""
+
+
 class AuditIdempotencyConflict(ComfyUISkillsError):
     """A caller-supplied request_id was already used for the same operation."""
 

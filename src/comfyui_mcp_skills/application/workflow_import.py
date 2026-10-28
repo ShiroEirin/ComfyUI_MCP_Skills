@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import math
 from collections.abc import Callable
@@ -262,24 +261,14 @@ def _content_digest(
     dependencies: dict[str, Any],
     outputs: list[dict[str, Any]],
 ) -> str:
-    payload = json.dumps(
-        {
-            "identity_version": 2,
-            "graph": graph,
-            "parameters": parameters,
-            "dependencies": dependencies,
-            "output_contract": {
-                "version": 1,
-                "coverage": "complete",
-                "outputs": outputs,
-            },
-        },
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
+    from comfyui_mcp_skills.application.revision_identity import revision_digest
+
+    return revision_digest(
+        graph,
+        parameters,
+        dependencies,
+        {"version": 1, "coverage": "complete", "outputs": outputs},
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _node_sort_key(value: object) -> tuple[int, int | str]:
