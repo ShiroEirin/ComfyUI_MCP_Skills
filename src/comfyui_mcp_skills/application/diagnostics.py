@@ -323,14 +323,19 @@ class DiagnosticService:
             if not any(
                 action["tool"] == "comfyui.job.retry.plan" for action in safe_actions
             ):
-                retry = _action_dict(
-                    next(
+                retry_rule_action = next(
+                    (
                         action
                         for rule in self._registry.rules
                         for action in rule.safe_actions
                         if action.tool == "comfyui.job.retry.plan"
                     ),
-                    action_context,
+                    None,
+                )
+                retry = (
+                    _action_dict(retry_rule_action, action_context)
+                    if retry_rule_action is not None
+                    else None
                 )
                 if retry is not None:
                     safe_actions.append(retry)

@@ -157,7 +157,13 @@ def test_phase_n_tools_use_strict_canonical_schemas_and_allowlisted_outputs() ->
         "evidence",
         "safe_actions",
         "approval_actions",
+        "next_actions",
         "created_at",
+    }
+    assert tools["comfyui.job.diagnose"].output_schema["properties"]["next_actions"] == {
+        "type": "array",
+        "maxItems": 16,
+        "items": {"type": "object"},
     }
     assert set(report["evidence"]) == {"status", "failed_node", "events", "log_window"}
     assert set(report["safe_actions"][0]["required_arguments"]) == {"job_id", "changes"}

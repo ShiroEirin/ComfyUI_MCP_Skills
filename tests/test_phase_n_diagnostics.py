@@ -380,6 +380,8 @@ def test_failed_job_diagnostic_has_evidence_based_executable_next_actions() -> N
     projected = diagnostic_report_dict(report)
     jsonschema.validate(projected, schema)
     assert projected["safe_actions"] == report["safe_actions"]
+    assert projected["next_actions"] == report["next_actions"]
+    assert schema["properties"]["next_actions"]["maxItems"] == 16
 
 
 def test_missing_evidence_does_not_invent_node_or_model_actions() -> None:

@@ -573,7 +573,9 @@ def diagnostic_report_dict(value: dict[str, Any]) -> dict[str, Any]:
     """Project one bounded Diagnostic Report without raw errors or commands."""
     result = {name: value[name] for name in _DIAGNOSTIC_PUBLIC_FIELDS if name in value}
     result["evidence"] = _diagnostic_evidence(value.get("evidence", {}))
-    for key in ("safe_actions", "approval_actions"):
+    # ``next_actions`` is the agent-facing executable subset; projecting it here
+    # keeps it reachable through MCP instead of stranding it on the service report.
+    for key in ("safe_actions", "approval_actions", "next_actions"):
         actions = value.get(key, [])
         result[key] = (
             [_diagnostic_action(item) for item in actions[:16] if isinstance(item, dict)]
@@ -3025,6 +3027,7 @@ def phase_n_tools() -> list[Tool]:
             },
             "safe_actions": {"type": "array", "maxItems": 16, "items": {"type": "object"}},
             "approval_actions": {"type": "array", "maxItems": 16, "items": {"type": "object"}},
+            "next_actions": {"type": "array", "maxItems": 16, "items": {"type": "object"}},
             "created_at": {"type": "string", "maxLength": 64},
         },
         "required": [
@@ -3036,6 +3039,7 @@ def phase_n_tools() -> list[Tool]:
             "evidence",
             "safe_actions",
             "approval_actions",
+            "next_actions",
             "created_at",
         ],
         "additionalProperties": False,

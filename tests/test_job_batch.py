@@ -277,3 +277,20 @@ def test_wait_validates_timeout_and_unknown_batch_before_calling_jobs() -> None:
         with pytest.raises(WorkflowArgumentsError):
             service.wait(batch_id, timeout_seconds=timeout)
     assert jobs.wait_calls == []
+
+
+def test_retained_handles_are_capped_so_a_long_lived_server_stays_bounded() -> None:
+    service = BatchService(_Execution(), _Jobs(), max_batches=2)
+
+    handles = [service.submit([_descriptor(number)])["batch_id"] for number in (1, 2, 3)]
+
+    with pytest.raises(WorkflowArgumentsError, match="Batch not found"):
+        service.cancel(handles[0])
+    assert service.cancel(handles[1])["batch_id"] == handles[1]
+    assert service.cancel(handles[2])["batch_id"] == handles[2]
+
+
+def test_max_batches_must_be_a_positive_integer() -> None:
+    for invalid in (0, -1, True):
+        with pytest.raises(ValueError, match="max_batches"):
+            BatchService(_Execution(), _Jobs(), max_batches=invalid)  # type: ignore[arg-type]

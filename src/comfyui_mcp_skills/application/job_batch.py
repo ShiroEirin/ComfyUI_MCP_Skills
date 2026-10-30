@@ -16,6 +16,7 @@ from comfyui_mcp_skills.domain.models import Job
 
 DEFAULT_MAX_BATCH_ITEMS = 100
 DEFAULT_MAX_ARGUMENT_BYTES = 1024 * 1024
+DEFAULT_MAX_BATCHES = 128
 _MAX_ERROR_MESSAGE_LENGTH = 2048
 _MAX_WAIT_SECONDS = 24 * 60 * 60
 _FAILED_STATUSES = frozenset({"error", "interrupted", "cancelled", "lost"})
@@ -73,6 +74,7 @@ class BatchService:
         *,
         max_items: int = DEFAULT_MAX_BATCH_ITEMS,
         max_argument_bytes: int = DEFAULT_MAX_ARGUMENT_BYTES,
+        max_batches: int = DEFAULT_MAX_BATCHES,
     ) -> None:
         if isinstance(max_items, bool) or not isinstance(max_items, int) or max_items < 1:
             raise ValueError("max_items must be a positive integer")
@@ -82,10 +84,15 @@ class BatchService:
             or max_argument_bytes < 1
         ):
             raise ValueError("max_argument_bytes must be a positive integer")
+        if isinstance(max_batches, bool) or not isinstance(max_batches, int) or max_batches < 1:
+            raise ValueError("max_batches must be a positive integer")
         self._execution = execution
         self._jobs = jobs
         self._max_items = max_items
         self._max_argument_bytes = max_argument_bytes
+        self._max_batches = max_batches
+        # Handles are process-local by design; the cap keeps a long-lived server
+        # from accumulating every batch it has ever seen.
         self._batches: dict[str, list[dict[str, Any]]] = {}
 
     def submit(
@@ -128,6 +135,8 @@ class BatchService:
                 item.update(status="failed", error=_structured_error(exc))
 
         self._batches[batch_id] = items
+        while len(self._batches) > self._max_batches:
+            self._batches.pop(next(iter(self._batches)))
         return _result(batch_id, items)
 
     def wait(
