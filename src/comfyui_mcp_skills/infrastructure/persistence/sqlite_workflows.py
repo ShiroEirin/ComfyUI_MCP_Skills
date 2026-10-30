@@ -482,6 +482,9 @@ def _advance_config_state(connection: sqlite3.Connection, owner_id: str, updated
         "SELECT current_revision FROM config_state WHERE owner_id=?", (owner_id,)
     ).fetchone()
     revision = 1 if row is None else int(row[0]) + 1
+    default_row = connection.execute(
+        "SELECT server_id FROM server_defaults WHERE owner_id=?", (owner_id,)
+    ).fetchone()
     facts = {
         "servers": [
             tuple(item)
@@ -492,9 +495,10 @@ def _advance_config_state(connection: sqlite3.Connection, owner_id: str, updated
                 (owner_id,),
             ).fetchall()
         ],
-        "default_server": connection.execute(
-            "SELECT server_id FROM server_defaults WHERE owner_id=?", (owner_id,)
-        ).fetchone(),
+        # ``row_factory = sqlite3.Row`` makes a bare ``fetchone()`` a Row
+        # object, not a tuple, and a Row is not JSON serializable. Missing
+        # default stays ``None`` so the digest keeps its old meaning.
+        "default_server": tuple(default_row) if default_row is not None else None,
         "workflows": [
             tuple(item)
             for item in connection.execute(

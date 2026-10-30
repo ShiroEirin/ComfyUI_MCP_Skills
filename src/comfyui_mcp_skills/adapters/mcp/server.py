@@ -51,8 +51,8 @@ from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     EXECUTION_PROPERTY,
-    JOB_SCHEMA,
     OVERRIDES_PROPERTY,
+    RUN_JOB_SCHEMA,
     UI_EXTENSION_ID,
     bounded_integer,
     client_supports_apps,
@@ -103,6 +103,7 @@ from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
 from comfyui_mcp_skills.application.experiment_orchestration import ExperimentAdvanceHandler
 from comfyui_mcp_skills.application.experiments import ExperimentService, get_experiment_variant
+from comfyui_mcp_skills.application.job_batch import BatchService
 from comfyui_mcp_skills.application.jobs import JobService, JobWaitTimeout
 from comfyui_mcp_skills.application.model_guidance import guidance as model_guidance
 from comfyui_mcp_skills.application.observability import ObservationService
@@ -116,6 +117,7 @@ from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.ports import ComfyUIGateway
 from comfyui_mcp_skills.application.provisioning import ProvisioningWorkHandler
 from comfyui_mcp_skills.application.provisioning_ports import ManagerGateway
+from comfyui_mcp_skills.application.regeneration import RegenerationService
 from comfyui_mcp_skills.application.routing import RoutingRepository, RoutingService
 from comfyui_mcp_skills.application.runtime_control import (
     RuntimeController,
@@ -225,7 +227,10 @@ PHASE_M_TOOL_NAMES = frozenset(
 )
 PHASE_N_DIAGNOSTIC_TOOL_NAMES = frozenset({"comfyui.job.diagnose", "comfyui.server.diagnose"})
 PHASE_N_RETRY_TOOL_NAMES = frozenset({"comfyui.job.retry.plan", "comfyui.job.retry.commit"})
-PHASE_N_TOOL_NAMES = PHASE_N_DIAGNOSTIC_TOOL_NAMES | PHASE_N_RETRY_TOOL_NAMES
+PHASE_N_AGENT_TOOL_NAMES = frozenset({"comfyui.job.regenerate", "comfyui.job.batch"})
+PHASE_N_TOOL_NAMES = (
+    PHASE_N_DIAGNOSTIC_TOOL_NAMES | PHASE_N_RETRY_TOOL_NAMES | PHASE_N_AGENT_TOOL_NAMES
+)
 PHASE_K_TOOL_NAMES = frozenset(
     {
         "comfyui.execution.plan",
@@ -237,6 +242,7 @@ PHASE_K_TOOL_NAMES = frozenset(
 
 
 GatewayFactory = Callable[[dict[str, Any]], ComfyUIGateway]
+
 
 def _free_locked(
     audit_log: JsonlAuditLog,
@@ -309,9 +315,7 @@ def _free_locked(
             raise
         try:
             audit_log.append(
-                _audit_event(
-                    actor, "server.free", target, "success", request_id=request_id
-                )
+                _audit_event(actor, "server.free", target, "success", request_id=request_id)
             )
         except Exception as exc:
             raise RuntimeError(
@@ -354,9 +358,7 @@ def _portable_tool_name(name: str) -> str:
 def _required_revision_id(deployment: dict[str, Any], workflow_id: str, server_id: str) -> str:
     revision_id = deployment.get("revision_id")
     if not isinstance(revision_id, str) or not revision_id:
-        raise WorkflowNotFound(
-            f"Workflow not found: {server_id}/{workflow_id}"
-        )
+        raise WorkflowNotFound(f"Workflow not found: {server_id}/{workflow_id}")
     return revision_id
 
 
@@ -391,16 +393,12 @@ class _PinnedRoutingRepository:
     def claim_routing_commit(
         self, plan_id: str, plan_digest: str, owner_id: str, idempotency_digest: str
     ) -> None:
-        self._repository.claim_routing_commit(
-            plan_id, plan_digest, owner_id, idempotency_digest
-        )
+        self._repository.claim_routing_commit(plan_id, plan_digest, owner_id, idempotency_digest)
 
     def mark_routing_plan_committed(
         self, plan_id: str, plan_digest: str, owner_id: str, job_id: str
     ) -> dict[str, Any]:
-        return self._repository.mark_routing_plan_committed(
-            plan_id, plan_digest, owner_id, job_id
-        )
+        return self._repository.mark_routing_plan_committed(plan_id, plan_digest, owner_id, job_id)
 
 
 def _pinned_routing_context(
@@ -630,6 +628,8 @@ def create_server(
     diagnostic_service: Any | None = None,
     subscription_bus: SubscriptionBus | None = None,
     retry_service: Any | None = None,
+    regeneration_service: Any | None = None,
+    batch_service: Any | None = None,
     owner_provider: Callable[[], str] | None = None,
     portable_tool_names: bool = False,
     max_dynamic_tools: int = ToolInventory.DYNAMIC_LIMIT,
@@ -641,9 +641,7 @@ def create_server(
     base_dir = base_dir.resolve()
     tracer = tracer or tracer_from_env()
     meter = meter or meter_from_env()
-    tool_calls = meter.counter(
-        "mcp.tool.calls", unit="{call}", description="MCP tool invocations"
-    )
+    tool_calls = meter.counter("mcp.tool.calls", unit="{call}", description="MCP tool invocations")
     tool_errors = meter.counter(
         "mcp.tool.errors", unit="{error}", description="MCP tool invocation failures"
     )
@@ -859,6 +857,10 @@ def create_server(
         from comfyui_mcp_skills.application.diagnostics import RetryService
 
         retry_service = RetryService(retry_repository, execution)
+    if regeneration_service is None and retry_repository is not None:
+        regeneration_service = RegenerationService(retry_repository, execution)
+    if batch_service is None:
+        batch_service = BatchService(execution, jobs)
     restart_execution_available = repositories.run_store == "sqlite"
     fixed_surface = [
         *fixed_tools(),
@@ -875,11 +877,15 @@ def create_server(
             for tool in phase_n_tools()
             if (diagnostic_service is not None and tool.name in PHASE_N_DIAGNOSTIC_TOOL_NAMES)
             or (retry_service is not None and tool.name in PHASE_N_RETRY_TOOL_NAMES)
+            or (regeneration_service is not None and tool.name == "comfyui.job.regenerate")
+            or (batch_service is not None and tool.name == "comfyui.job.batch")
         ],
     ]
     available_phase_n = {
         *(PHASE_N_DIAGNOSTIC_TOOL_NAMES if diagnostic_service is not None else frozenset()),
         *(PHASE_N_RETRY_TOOL_NAMES if retry_service is not None else frozenset()),
+        *({"comfyui.job.regenerate"} if regeneration_service is not None else frozenset()),
+        *({"comfyui.job.batch"} if batch_service is not None else frozenset()),
     }
     capability_catalog = CapabilityCatalog(
         (
@@ -890,21 +896,15 @@ def create_server(
                 and (asset_library is not None or spec.name not in PHASE_L_TOOL_NAMES)
                 and (experiment_service is not None or spec.name not in PHASE_M_TOOL_NAMES)
                 and (routing is not None or spec.name not in PHASE_K_TOOL_NAMES)
+                and (repositories.run_store == "sqlite" or spec.name != "comfyui.job.list")
                 and (
-                    repositories.run_store == "sqlite" or spec.name != "comfyui.job.list"
-                )
-                and (
-                    repositories.run_store == "sqlite"
-                    or spec.name != "comfyui.job.history.suggest"
+                    repositories.run_store == "sqlite" or spec.name != "comfyui.job.history.suggest"
                 )
                 and (
                     repositories.run_store == "sqlite"
                     or spec.name not in RESTART_EXECUTION_TOOL_NAMES
                 )
-                and (
-                    spec.name not in PHASE_N_TOOL_NAMES
-                    or spec.name in available_phase_n
-                )
+                and (spec.name not in PHASE_N_TOOL_NAMES or spec.name in available_phase_n)
             ),
         )
     )
@@ -1103,7 +1103,7 @@ def create_server(
                             or f"Run ComfyUI workflow {workflow.server_id}/{workflow.workflow_id}"
                         ),
                         input_schema=schema,
-                        output_schema=JOB_SCHEMA,
+                        output_schema=RUN_JOB_SCHEMA,
                         annotations=ToolAnnotations(
                             read_only_hint=False,
                             destructive_hint=False,
@@ -1122,8 +1122,7 @@ def create_server(
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
                 and (
-                    repositories.run_store == "sqlite"
-                    or tool.name != "comfyui.job.history.suggest"
+                    repositories.run_store == "sqlite" or tool.name != "comfyui.job.history.suggest"
                 )
                 and (
                     repositories.run_store == "sqlite"
@@ -1140,8 +1139,7 @@ def create_server(
                 if (g3_tools_enabled or tool.name not in G3_AUTHORING_TOOLS)
                 and (repositories.run_store == "sqlite" or tool.name != "comfyui.job.list")
                 and (
-                    repositories.run_store == "sqlite"
-                    or tool.name != "comfyui.job.history.suggest"
+                    repositories.run_store == "sqlite" or tool.name != "comfyui.job.history.suggest"
                 )
                 and (
                     repositories.run_store == "sqlite"
@@ -1174,8 +1172,7 @@ def create_server(
             canonical_by_external[external_name] = tool.name
             tools.append(tool.model_copy(update={"name": external_name}))
         workflow_map = {
-            _portable_tool_name(name): workflow
-            for name, workflow in canonical_workflow_map.items()
+            _portable_tool_name(name): workflow for name, workflow in canonical_workflow_map.items()
         }
         return tools, workflow_map, canonical_by_external
 
@@ -1183,9 +1180,7 @@ def create_server(
         ctx: ServerRequestContext[dict[str, object]],
         _params: PaginatedRequestParams | None,
     ) -> ListToolsResult:
-        tools, _mapping, _canonical_names = current_tools(
-            apps_supported=client_supports_apps(ctx)
-        )
+        tools, _mapping, _canonical_names = current_tools(apps_supported=client_supports_apps(ctx))
         return ListToolsResult(tools=tools, ttl_ms=5_000, cache_scope="private")
 
     async def complete_reference(
@@ -1229,9 +1224,7 @@ def create_server(
         )
         started = time.perf_counter()
         failed = False
-        with tracer.span(
-            "tool.call", {"tool": params.name, "owner": owner_id}
-        ) as span:
+        with tracer.span("tool.call", {"tool": params.name, "owner": owner_id}) as span:
             try:
                 result = await _dispatch_tool_call(ctx, params)
                 failed = bool(result.is_error)
@@ -1304,9 +1297,7 @@ def create_server(
                 priority_raw = execution_options.get("priority")
                 priority: float | None = None
                 if priority_raw is not None:
-                    if isinstance(priority_raw, bool) or not isinstance(
-                        priority_raw, (int, float)
-                    ):
+                    if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float)):
                         raise TypeError("priority must be a number")
                     priority = float(priority_raw)
                     if not math.isfinite(priority) or not -1000 <= priority <= 1000:
@@ -1315,13 +1306,9 @@ def create_server(
                 targets: tuple[str, ...] = ()
                 if targets_raw is not None:
                     if not isinstance(targets_raw, list) or not targets_raw:
-                        raise TypeError(
-                            "partial_execution_targets must be a non-empty array"
-                        )
+                        raise TypeError("partial_execution_targets must be a non-empty array")
                     if len(targets_raw) > 100:
-                        raise ValueError(
-                            "partial_execution_targets must not exceed 100 entries"
-                        )
+                        raise ValueError("partial_execution_targets must not exceed 100 entries")
                     for item in targets_raw:
                         if (
                             not isinstance(item, str)
@@ -1405,9 +1392,142 @@ def create_server(
                 authorization.toolset,
             )
             external_by_canonical = {
-                canonical: external
-                for external, canonical in canonical_by_external.items()
+                canonical: external for external, canonical in canonical_by_external.items()
             }
+            if params.name == "comfyui.workflow.run":
+                # Generic execution entry for workflows whose dynamic tool was
+                # truncated by the dynamic-tool budget. Resolve the workflow by
+                # id instead of relying on the visible dynamic-tool map.
+                validate_fixed_arguments(
+                    arguments,
+                    {
+                        "server_id",
+                        "workflow_id",
+                        "arguments",
+                        "_execution",
+                        "_overrides",
+                        "revision_id",
+                        "deployment_id",
+                        "content_digest",
+                    },
+                )
+                server_id = required_string(arguments, "server_id")
+                workflow_id = required_string(arguments, "workflow_id")
+                workflow_arguments = required_object(
+                    arguments, "arguments", max_properties=256, max_bytes=1024 * 1024
+                )
+                workflow = catalog.get(server_id, workflow_id)
+                execution_options = arguments.pop("_execution", {})
+                overrides_options = arguments.pop("_overrides", {})
+                if not isinstance(execution_options, dict):
+                    raise TypeError("_execution must be an object")
+                if not isinstance(overrides_options, dict):
+                    raise TypeError("_overrides must be an object")
+                revision_id = optional_string(arguments, "revision_id", "")
+                deployment_id = optional_string(arguments, "deployment_id", "")
+                content_digest = optional_string(arguments, "content_digest", "")
+                if any((revision_id, deployment_id, content_digest)) and not all(
+                    (revision_id, deployment_id, content_digest)
+                ):
+                    raise ValueError("execution pin is incomplete")
+                idempotency_key = execution_options.get("idempotency_key", "")
+                unexpected_options = set(execution_options) - {
+                    "idempotency_key",
+                    "wait",
+                    "wait_timeout_seconds",
+                    "priority",
+                    "partial_execution_targets",
+                    "allow_risky_nodes",
+                }
+                if unexpected_options:
+                    raise ValueError(
+                        "Unexpected _execution fields: " + ", ".join(sorted(unexpected_options))
+                    )
+                if not isinstance(idempotency_key, str):
+                    raise TypeError("idempotency_key must be a string")
+                wait = execution_options.get("wait", False)
+                if len(idempotency_key) > 256:
+                    raise ValueError("idempotency_key exceeds 256 characters")
+                if not isinstance(wait, bool):
+                    raise TypeError("wait must be a boolean")
+                timeout_raw = execution_options.get("wait_timeout_seconds", 120)
+                if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, (int, float)):
+                    raise TypeError("wait_timeout_seconds must be a number")
+                timeout_seconds = float(timeout_raw)
+                if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 300:
+                    raise ValueError("wait_timeout_seconds must be between 0 and 300")
+                priority_raw = execution_options.get("priority")
+                run_priority: float | None = None
+                if priority_raw is not None:
+                    if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float)):
+                        raise TypeError("priority must be a number")
+                    run_priority = float(priority_raw)
+                    if not math.isfinite(run_priority) or not -1000 <= run_priority <= 1000:
+                        raise ValueError("priority must be between -1000 and 1000")
+                targets_raw = execution_options.get("partial_execution_targets")
+                run_targets: tuple[str, ...] = ()
+                if targets_raw is not None:
+                    if not isinstance(targets_raw, list) or not targets_raw:
+                        raise TypeError("partial_execution_targets must be a non-empty array")
+                    if len(targets_raw) > 100:
+                        raise ValueError("partial_execution_targets must not exceed 100 entries")
+                    for item in targets_raw:
+                        if (
+                            not isinstance(item, str)
+                            or not item
+                            or len(item) > 128
+                            or "\r" in item
+                            or "\n" in item
+                        ):
+                            raise TypeError(
+                                "partial_execution_targets entries must be node IDs "
+                                "without line breaks"
+                            )
+                    run_targets = tuple(dict.fromkeys(targets_raw))
+                allow_risky_nodes = execution_options.get("allow_risky_nodes", False)
+                if not isinstance(allow_risky_nodes, bool):
+                    raise TypeError("allow_risky_nodes must be a boolean")
+                workflow_arguments = apply_defaults(workflow_arguments, workflow.parameters)
+                job = await anyio.to_thread.run_sync(
+                    lambda: execution.submit(
+                        workflow.server_id,
+                        workflow.workflow_id,
+                        workflow_arguments,
+                        idempotency_key=idempotency_key,
+                        owner_id=owner_id,
+                        server_connection=owner_server_connection(owner_id, workflow.server_id),
+                        priority=run_priority,
+                        targets=run_targets,
+                        overrides=overrides_options,
+                        allow_risky_nodes=allow_risky_nodes,
+                        revision_id=revision_id,
+                        deployment_id=deployment_id,
+                        content_digest=content_digest,
+                    )
+                )
+                if wait:
+                    try:
+                        job = await anyio.to_thread.run_sync(
+                            lambda: jobs.wait(
+                                workflow.server_id,
+                                job.prompt_id,
+                                timeout_seconds=timeout_seconds,
+                                cancel_check=anyio.from_thread.check_cancelled,
+                                owner_id=owner_id,
+                            ),
+                            abandon_on_cancel=True,
+                        )
+                    except JobWaitTimeout as exc:
+                        document = job_dict(exc.job)
+                        document.update(
+                            {
+                                "timed_out": True,
+                                "waited_seconds": round(exc.waited_seconds, 3),
+                                "last_status": exc.last_status,
+                            }
+                        )
+                        return tool_result(document)
+                return tool_result(job_dict(job))
             if params.name == "comfyui.capability.search":
                 validate_fixed_arguments(arguments, {"query", "limit"})
                 query = optional_string(arguments, "query", "")
@@ -1436,11 +1556,7 @@ def create_server(
                     result["name"] = external_by_canonical[capability_name]
 
                 described_tool = next(
-                    (
-                        tool
-                        for tool in tools
-                        if canonical_by_external[tool.name] == capability_name
-                    ),
+                    (tool for tool in tools if canonical_by_external[tool.name] == capability_name),
                     None,
                 )
                 if described_tool is None:
@@ -1470,9 +1586,7 @@ def create_server(
                         required_string(arguments, "workflow_id", max_length=128),
                         field="workflow_id",
                     )
-                    planning_server_id = optional_string(
-                        arguments, "server_id", "", max_length=128
-                    )
+                    planning_server_id = optional_string(arguments, "server_id", "", max_length=128)
                     pinned_revision_id = optional_string(
                         arguments, "revision_id", "", max_length=128
                     )
@@ -1591,6 +1705,65 @@ def create_server(
                         diagnostic_service.diagnose_server, server_id, owner_id
                     )
                 return tool_result(diagnostic_report_dict(result))
+            if params.name == "comfyui.job.regenerate":
+                if regeneration_service is None:
+                    raise ValueError("Regeneration service is unavailable")
+                validate_fixed_arguments(arguments, {"job_id", "changes", "_overrides"})
+                job_id = validate_control_plane_id(
+                    "job", required_string(arguments, "job_id", max_length=128)
+                )
+                changes = required_object(
+                    {"changes": arguments.get("changes", {})},
+                    "changes",
+                    max_properties=64,
+                    max_bytes=256 * 1024,
+                )
+                overrides = arguments.pop("_overrides", None)
+                if overrides is not None and not isinstance(overrides, dict):
+                    raise TypeError("_overrides must be an object")
+                result = await anyio.to_thread.run_sync(
+                    lambda: regeneration_service.plan(
+                        job_id,
+                        owner_id,
+                        changes,
+                        _overrides=overrides,
+                    )
+                )
+                return tool_result(result)
+            if params.name == "comfyui.job.batch":
+                validate_fixed_arguments(
+                    arguments, {"action", "jobs", "batch_id", "timeout_seconds"}
+                )
+                action = optional_string(arguments, "action", "submit")
+                if action not in {"submit", "wait", "cancel"}:
+                    raise ValueError("action must be submit, wait, or cancel")
+                if action == "submit":
+                    jobs_raw = arguments.get("jobs")
+                    if not isinstance(jobs_raw, list):
+                        raise TypeError("jobs must be an array for submit")
+                    result = await anyio.to_thread.run_sync(
+                        lambda: batch_service.submit(jobs_raw, owner_id=owner_id)
+                    )
+                elif action == "wait":
+                    batch_id = required_string(arguments, "batch_id")
+                    timeout_seconds = arguments.get("timeout_seconds", 60.0)
+                    if isinstance(timeout_seconds, bool) or not isinstance(
+                        timeout_seconds, (int, float)
+                    ):
+                        raise TypeError("timeout_seconds must be a number")
+                    result = await anyio.to_thread.run_sync(
+                        lambda: batch_service.wait(
+                            batch_id,
+                            timeout_seconds=float(timeout_seconds),
+                            owner_id=owner_id,
+                        )
+                    )
+                else:
+                    batch_id = required_string(arguments, "batch_id")
+                    result = await anyio.to_thread.run_sync(
+                        lambda: batch_service.cancel(batch_id, owner_id=owner_id)
+                    )
+                return tool_result(result)
             if params.name in PHASE_N_RETRY_TOOL_NAMES:
                 if retry_service is None:
                     raise ValueError("Retry service is unavailable")
@@ -1877,13 +2050,9 @@ def create_server(
                 )
                 return tool_result(result)
             if params.name == "comfyui.admin.workflow.change.plan":
-                validate_fixed_arguments(
-                    arguments, {"server_id", "workflow_id", "operations"}
-                )
+                validate_fixed_arguments(arguments, {"server_id", "workflow_id", "operations"})
                 if workflow_changes is None:
-                    raise ValueError(
-                        "Workflow change planning requires the SQLite Workflow store"
-                    )
+                    raise ValueError("Workflow change planning requires the SQLite Workflow store")
                 server_id = required_string(arguments, "server_id")
                 workflow_id = required_string(arguments, "workflow_id")
                 raw_operations = arguments.get("operations")
@@ -1891,9 +2060,7 @@ def create_server(
                     isinstance(operation, dict) for operation in raw_operations
                 ):
                     raise TypeError("operations must be an array of objects")
-                operations: list[dict[str, Any]] = [
-                    dict(operation) for operation in raw_operations
-                ]
+                operations: list[dict[str, Any]] = [dict(operation) for operation in raw_operations]
                 gateway = gateway_factory(servers.connection(server_id))
                 object_info = await anyio.to_thread.run_sync(gateway.get_object_info)
                 result = await anyio.to_thread.run_sync(
@@ -1918,15 +2085,11 @@ def create_server(
                     },
                 )
                 if workflow_changes is None:
-                    raise ValueError(
-                        "Workflow change commit requires the SQLite Workflow store"
-                    )
+                    raise ValueError("Workflow change commit requires the SQLite Workflow store")
                 raw_inline_operations = arguments.get("operations")
                 if raw_inline_operations is not None:
                     if "plan_id" in arguments or "plan_digest" in arguments:
-                        raise ValueError(
-                            "operations cannot be combined with plan_id/plan_digest"
-                        )
+                        raise ValueError("operations cannot be combined with plan_id/plan_digest")
                     dry_run = arguments.get("dry_run", False)
                     if not isinstance(dry_run, bool):
                         raise TypeError("dry_run must be a boolean")
@@ -1972,9 +2135,7 @@ def create_server(
                 workflow_id = required_string(arguments, "workflow_id")
                 server_id = required_string(arguments, "server_id")
                 if not isinstance(workflow_repository, SQLiteWorkflowRepository):
-                    raise ValueError(
-                        "Workflow visualization requires the SQLite Workflow store"
-                    )
+                    raise ValueError("Workflow visualization requires the SQLite Workflow store")
                 try:
                     deployment = workflow_repository.describe(workflow_id, server_id)
                     revision = workflow_repository.get_revision(
@@ -2008,9 +2169,7 @@ def create_server(
                 if not isinstance(suggest, bool):
                     raise TypeError("suggest_parameters must be a boolean")
                 if suggest and params.name != "comfyui.workflow.describe":
-                    raise ValueError(
-                        "suggest_parameters only applies to comfyui.workflow.describe"
-                    )
+                    raise ValueError("suggest_parameters only applies to comfyui.workflow.describe")
                 gateway = gateway_factory(servers.connection(server_id))
                 if workflow_inspection is None:
                     raise ValueError("Workflow inspection requires the SQLite Workflow store")
@@ -2024,9 +2183,7 @@ def create_server(
                 )
                 if suggest:
                     if not isinstance(workflow_repository, SQLiteWorkflowRepository):
-                        raise ValueError(
-                            "Parameter suggestions require the SQLite Workflow store"
-                        )
+                        raise ValueError("Parameter suggestions require the SQLite Workflow store")
                     try:
                         deployment = workflow_repository.describe(workflow_id, server_id)
                         revision = workflow_repository.get_revision(
@@ -2052,9 +2209,7 @@ def create_server(
                         **result,
                         "parameter_suggestions": suggest_parameters(
                             graph,
-                            stored_parameters
-                            if isinstance(stored_parameters, dict)
-                            else {},
+                            stored_parameters if isinstance(stored_parameters, dict) else {},
                         ),
                     }
                 return tool_result(result)
@@ -2120,9 +2275,7 @@ def create_server(
                     # Route through the shared factory so ``secret_refs`` is
                     # resolved on this path too.
                     userdata = create_client(connection)
-                    paths = await anyio.to_thread.run_sync(
-                        userdata.list_userdata_workflows
-                    )
+                    paths = await anyio.to_thread.run_sync(userdata.list_userdata_workflows)
                     needle = query.casefold()
                     entries: list[dict[str, Any]] = [
                         {
@@ -2199,9 +2352,7 @@ def create_server(
                 validate_fixed_arguments(arguments, {"workflow_id"})
                 workflow_id = optional_string(arguments, "workflow_id", "")
                 if suggestion_service is None:
-                    raise ValueError(
-                        "Run-history suggestions require the SQLite run store"
-                    )
+                    raise ValueError("Run-history suggestions require the SQLite run store")
                 result = await anyio.to_thread.run_sync(
                     lambda: suggestion_service.suggest(owner_id, workflow_id=workflow_id)
                 )
@@ -2209,9 +2360,7 @@ def create_server(
             if params.name == "comfyui.local.plugins":
                 validate_fixed_arguments(arguments, {"server_id"})
                 server_id = required_string(arguments, "server_id", max_length=128)
-                result = await anyio.to_thread.run_sync(
-                    lambda: discovery.plugins(server_id)
-                )
+                result = await anyio.to_thread.run_sync(lambda: discovery.plugins(server_id))
                 return tool_result(result)
             if params.name == "comfyui.node.blueprint":
                 validate_fixed_arguments(arguments, {"server_id", "query", "limit"})
@@ -2229,9 +2378,7 @@ def create_server(
                 limit = bounded_integer(arguments, "limit", 10, minimum=1, maximum=50)
                 gateway = gateway_factory(servers.connection(server_id))
                 result = await anyio.to_thread.run_sync(
-                    lambda: _engine_history_projection(
-                        gateway, prompt_id=prompt_id, limit=limit
-                    )
+                    lambda: _engine_history_projection(gateway, prompt_id=prompt_id, limit=limit)
                 )
                 return tool_result(result)
             if params.name == "comfyui.queue.remove":
@@ -2389,8 +2536,7 @@ def create_server(
                     raise ValueError("at least one memory action must be selected")
                 audit_log = JsonlAuditLog(base_dir / "data" / "admin-audit.jsonl")
                 request_id = (
-                    optional_string(arguments, "request_id", "", max_length=128)
-                    or uuid.uuid4().hex
+                    optional_string(arguments, "request_id", "", max_length=128) or uuid.uuid4().hex
                 )
                 result = await anyio.to_thread.run_sync(
                     lambda: _free_locked(
@@ -2464,8 +2610,7 @@ def create_server(
                         raise MCPError(
                             code=INVALID_PARAMS,
                             message=(
-                                "job_id ownership verification requires the SQLite "
-                                "asset store"
+                                "job_id ownership verification requires the SQLite asset store"
                             ),
                         )
                     ownership = OutputOwnership(

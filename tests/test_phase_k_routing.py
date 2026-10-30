@@ -9,6 +9,7 @@ import pytest
 from mcp import Client
 
 from comfyui_mcp_skills.adapters.mcp.server import create_server
+from comfyui_mcp_skills.application.authorization import AuthorizationContext, Scope, Toolset
 from comfyui_mcp_skills.application.planning import ExecutionPlanningService
 from comfyui_mcp_skills.application.routing import RoutingService
 from comfyui_mcp_skills.application.server_control import ServerControlService
@@ -347,28 +348,39 @@ async def test_mcp_plan_explain_policy_and_commit_route_to_pinned_job(tmp_path: 
         gateway_factory=lambda _config: gateway,
         repositories=repositories,
     )
+    operations_server = create_server(
+        tmp_path,
+        gateway_factory=lambda _config: gateway,
+        repositories=repositories,
+        authorization=AuthorizationContext(
+            "local-stdio",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
 
     async with Client(server) as client:
         names = {tool.name for tool in (await client.list_tools()).tools}
-        assert {
-            "comfyui.execution.plan",
-            "comfyui.execution.commit",
-            "comfyui.route.explain",
-            "comfyui.policy.evaluate",
-        } <= names
-        denied = await client.call_tool(
-            "comfyui.policy.evaluate",
-            {"arguments": {"steps": 31}, "policy": {"max_steps": 30}},
-        )
-        assert denied.structured_content["allowed"] is False
+        assert {"comfyui.execution.plan", "comfyui.execution.commit"} <= names
+        assert "comfyui.route.explain" not in names
+        assert "comfyui.policy.evaluate" not in names
         planned = await client.call_tool(
             "comfyui.execution.plan",
             {"workflow_id": "txt2img", "arguments": {"prompt": "a blue cat"}},
         )
         plan = planned.structured_content
         assert plan["selected_server_id"] == "local"
+
+    async with Client(operations_server) as client:
+        denied = await client.call_tool(
+            "comfyui.policy.evaluate",
+            {"arguments": {"steps": 31}, "policy": {"max_steps": 30}},
+        )
+        assert denied.structured_content["allowed"] is False
         explained = await client.call_tool("comfyui.route.explain", {"plan_id": plan["plan_id"]})
         assert explained.structured_content["plan_digest"] == plan["plan_digest"]
+
+    async with Client(server) as client:
         committed = await client.call_tool(
             "comfyui.execution.commit",
             {

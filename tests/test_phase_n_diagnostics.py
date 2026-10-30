@@ -6,8 +6,10 @@ import copy
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import jsonschema
 import pytest
 
+from comfyui_mcp_skills.adapters.mcp.tooling import diagnostic_report_dict, phase_n_tools
 from comfyui_mcp_skills.application.diagnostics import DiagnosticService, RetryService
 from comfyui_mcp_skills.domain.diagnostics import DiagnosticRuleRegistry
 from comfyui_mcp_skills.domain.errors import (
@@ -330,11 +332,114 @@ def test_job_diagnostic_is_owner_bound_structured_bounded_and_redacted() -> None
         "evidence",
         "safe_actions",
         "approval_actions",
+        "next_actions",
         "created_at",
         "resource_uri",
     }
     assert all(action["risk"] == "safe" for action in report["safe_actions"])
     assert all(action["risk"] == "approval_required" for action in report["approval_actions"])
+
+
+def test_failed_job_diagnostic_has_evidence_based_executable_next_actions() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.job_context = _job_context(
+        error="LoRA detail_tweaker.safetensors not found",
+        missing_models=[
+            {"folder": "loras", "filename": "detail_tweaker.safetensors"},
+            {"folder": "loras", "filename": "detail_tweaker.safetensors"},
+        ],
+    )
+
+    report = DiagnosticService(repository, clock=lambda: _NOW).diagnose_job(_JOB_ID, "owner-a")
+
+    actions = {action["tool"]: action for action in report["next_actions"]}
+    assert actions["comfyui.node.ports"]["required_arguments"] == {
+        "server_id": "local",
+        "node_class": "LoadImage",
+    }
+    assert actions["comfyui.model.list"]["required_arguments"] == {
+        "server_id": "local",
+        "kind": "loras",
+        "query": "detail_tweaker.safetensors",
+    }
+    assert actions["comfyui.job.retry.plan"]["required_arguments"] == {
+        "job_id": _JOB_ID,
+        "changes": {},
+    }
+    assert report["next_actions"] == report["safe_actions"]
+    next_actions = report["next_actions"]
+    model_actions = [
+        action for action in next_actions if action["tool"] == "comfyui.model.list"
+    ]
+    assert len(model_actions) == 1
+    schema = next(
+        tool.output_schema
+        for tool in phase_n_tools()
+        if tool.name == "comfyui.job.diagnose"
+    )
+    projected = diagnostic_report_dict(report)
+    jsonschema.validate(projected, schema)
+    assert projected["safe_actions"] == report["safe_actions"]
+
+
+def test_missing_evidence_does_not_invent_node_or_model_actions() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.job_context = _job_context(
+        error="LoRA detail_tweaker.safetensors not found",
+        failed_node={},
+        missing_models=[],
+    )
+
+    report = DiagnosticService(repository, clock=lambda: _NOW).diagnose_job(_JOB_ID, "owner-a")
+
+    assert report["evidence"]["failed_node"] == {}
+    tools = {action["tool"] for action in report["next_actions"]}
+    assert "comfyui.node.ports" not in tools
+    assert "comfyui.model.list" not in tools
+    assert "comfyui.job.retry.plan" in tools
+
+
+def test_successful_job_has_no_failure_actions_even_with_stale_context() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.job_context = _job_context(
+        status="completed",
+        missing_models=[{"folder": "loras", "filename": "stale.safetensors"}],
+    )
+
+    report = DiagnosticService(repository, clock=lambda: _NOW).diagnose_job(_JOB_ID, "owner-a")
+
+    assert report["next_actions"] == []
+    assert all(action["tool"] != "comfyui.node.ports" for action in report["safe_actions"])
+    assert all(action["tool"] != "comfyui.model.list" for action in report["safe_actions"])
+
+
+def test_next_actions_are_bounded_redacted_and_survive_persistence() -> None:
+    repository = MemoryDiagnosticRetryRepository()
+    repository.job_context = _job_context(
+        error="LoRA missing.safetensors not found",
+        failed_node={
+            "node_id": "12",
+            "class_type": "LoadImage",
+            "message": "Authorization: Bearer class-secret",
+        },
+        missing_models=[
+            {"folder": "loras", "filename": f"token=model-secret-{index}.safetensors"}
+            for index in range(12)
+        ],
+    )
+    service = DiagnosticService(repository, clock=lambda: _NOW)
+
+    report = service.diagnose_job(_JOB_ID, "owner-a")
+    restored = service.get(report["diagnostic_id"], "owner-a")
+
+    assert restored == report
+    assert len(report["next_actions"]) == 4
+    serialized = repr(report)
+    assert "class-secret" not in serialized and "model-secret" not in serialized
+    for action in report["next_actions"]:
+        assert set(action) == {"tool", "name", "required_arguments", "risk"}
+        assert action["risk"] == "safe"
+        assert all(len(str(value)) <= 512 for value in action["required_arguments"].values())
 
 
 def test_diagnostic_redacts_json_and_authorization_credentials() -> None:

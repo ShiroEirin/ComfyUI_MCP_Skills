@@ -81,6 +81,7 @@ def test_initialize_creates_versioned_control_plane_schema(tmp_path: Path) -> No
         (11, "phase-j-workflow-change-hardening", 64, 1, 0, 1),
         (12, "phase-q-routing-commit-idempotency", 64, 1, 0, 1),
         (13, "g2-runtime-restart-execution", 64, 1, 0, 1),
+        (14, "recovery-plan-operation", 64, 1, 0, 1),
     ]
     assert switched_count == 0
 
@@ -92,7 +93,7 @@ def test_initialize_is_idempotent_and_detects_checksum_drift(tmp_path: Path) -> 
     store.initialize()
 
     with sqlite3.connect(database) as connection:
-        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone() == (13,)
+        assert connection.execute("SELECT count(*) FROM schema_migrations").fetchone() == (14,)
         connection.execute(
             "UPDATE schema_migrations SET checksum = ? WHERE version = 1", ("0" * 64,)
         )
@@ -748,8 +749,8 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
     database = tmp_path / "control-plane.sqlite3"
     store = SQLiteControlPlaneStore(database)
     store.initialize()
-    migration_v14 = SchemaMigration(
-        14,
+    migration_v15 = SchemaMigration(
+        15,
         "add-probe-table",
         ("CREATE TABLE migration_probe (value TEXT NOT NULL)",),
         ("DROP TABLE migration_probe",),
@@ -757,7 +758,7 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
     monkeypatch.setattr(
         control_plane_module,
         "_MIGRATIONS",
-        (*control_plane_module._MIGRATIONS, migration_v14),
+        (*control_plane_module._MIGRATIONS, migration_v15),
     )
     store.initialize()
 
@@ -766,7 +767,7 @@ def test_forward_migration_refreshes_fingerprints_and_multilevel_rollback(
             "SELECT version, schema_fingerprint FROM schema_migrations ORDER BY version"
         ).fetchall()
         assert [row[0] for row in rows] == [
-            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
         ]
         assert len({row[1] for row in rows}) == 1
         assert "migration_probe" in _table_names(database)
@@ -834,6 +835,7 @@ def test_g1_schema_preserves_runtime_and_migration_facts(tmp_path: Path) -> None
         (11,),
         (12,),
         (13,),
+        (14,),
     ]
     assert job_columns["execution_origin"][3] == 1
     assert "lease_token" in idempotency_columns

@@ -68,6 +68,7 @@ def _public_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "pinned_plan_id",
         "pinned_revision_id",
         "pinned_deployment_id",
+        "pinned_content_digest",
         "normalized_changes",
         "diff",
         "original_arguments_digest",
@@ -84,6 +85,9 @@ def _public_plan(plan: dict[str, Any]) -> dict[str, Any]:
 
 
 class RetryService:
+    _idempotency_prefix = "repair"
+    _operation = "retry"
+
     def __init__(
         self,
         repository: RetryRepository,
@@ -96,12 +100,22 @@ class RetryService:
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     def plan(self, job_id: str, owner_id: str, changes: dict[str, Any]) -> dict[str, Any]:
+        return self._plan(job_id, owner_id, changes, require_failure=True)
+
+    def _plan(
+        self,
+        job_id: str,
+        owner_id: str,
+        changes: dict[str, Any],
+        *,
+        require_failure: bool,
+    ) -> dict[str, Any]:
         job_id = validate_control_plane_id("job", job_id)
         owner_id = _owner(owner_id)
         context = self._repository.get_retry_context(job_id, owner_id)
         if context is None:
             raise RepairPlanNotFound("Retry subject was not found", details={"job_id": job_id})
-        if context.get("status") not in _FAILURE_STATUSES:
+        if require_failure and context.get("status") not in _FAILURE_STATUSES:
             raise RetryNotAllowed("Only failed or interrupted Jobs can be retried")
         if context.get("legacy_migrated"):
             raise RetryNotAllowed("Legacy Jobs without execution pins cannot be retried")
@@ -158,6 +172,7 @@ class RetryService:
         expires_at = _time(now + _PLAN_TTL)
         immutable = {
             "owner_id": owner_id,
+            "operation": self._operation,
             "original_job_id": job_id,
             "workflow_id": str(context["workflow_id"]),
             "server_id": str(context["server_id"]),
@@ -223,6 +238,9 @@ class RetryService:
             )
         except (LookupError, ValueError) as exc:
             raise RepairPlanConflict("Repair plan is expired or conflicts") from exc
+        operation = plan.get("operation", self._operation)
+        if operation not in {"retry", "regenerate"}:
+            raise RetryNotAllowed("Repair plan operation is unsupported")
         submitted_arguments = _json_copy(plan["resulting_arguments"], "resulting_arguments")
         overrides = normalize_overrides(submitted_arguments.pop("_overrides", None))
         submit_options: dict[str, Any] = {"overrides": overrides} if overrides else {}
@@ -231,7 +249,11 @@ class RetryService:
                 str(plan["server_id"]),
                 str(plan["workflow_id"]),
                 submitted_arguments,
-                idempotency_key=f"repair:{repair_plan_id}",
+                idempotency_key=(
+                    f"{self._idempotency_prefix}:{repair_plan_id}"
+                    if operation == self._operation
+                    else f"{operation}:{repair_plan_id}"
+                ),
                 owner_id=owner_id,
                 client_id=repair_plan_id,
                 revision_id=str(plan["pinned_revision_id"]),

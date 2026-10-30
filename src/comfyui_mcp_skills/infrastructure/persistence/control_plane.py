@@ -2104,6 +2104,38 @@ _PHASE_M_EXPERIMENTS_UP = (
 )
 
 
+_PHASE_R_RECOVERY_OPERATION_UP = (
+    """
+    ALTER TABLE repair_plans ADD COLUMN operation TEXT NOT NULL DEFAULT 'retry'
+    CHECK(operation IN ('retry', 'regenerate'))
+    """,
+    """
+    DROP TRIGGER tr_repair_plan_commits_binding_insert
+    """,
+    """
+    CREATE TRIGGER tr_repair_plan_commits_binding_insert BEFORE INSERT ON repair_plan_commits
+    WHEN NOT EXISTS(
+        SELECT 1 FROM repair_plans AS repair
+        JOIN repair_plan_commit_intents AS intent
+          ON intent.repair_plan_id=repair.repair_plan_id AND intent.owner_id=repair.owner_id
+         AND intent.plan_digest=repair.plan_digest
+        JOIN jobs AS retry ON retry.job_id=NEW.retry_job_id AND retry.owner_id=NEW.owner_id
+        JOIN execution_plans AS result_plan ON result_plan.plan_id=retry.plan_id
+        WHERE repair.repair_plan_id=NEW.repair_plan_id AND repair.owner_id=NEW.owner_id
+          AND repair.plan_digest=NEW.plan_digest AND repair.original_job_id=NEW.original_job_id
+          AND julianday(intent.reserved_at)<julianday(repair.expires_at)
+          AND retry.job_id!=repair.original_job_id AND retry.workflow_id=repair.workflow_id
+          AND retry.server_id=repair.server_id AND retry.revision_id=repair.pinned_revision_id
+          AND retry.deployment_id=repair.pinned_deployment_id
+          AND (retry.retry_of IS NULL OR retry.retry_of=repair.original_job_id)
+          AND json(json_extract(result_plan.resolved_inputs_json,'$.arguments'))
+              =json_remove(repair.resulting_arguments_json,'$._overrides')
+    )
+    BEGIN SELECT RAISE(ABORT,'repair plan commit aggregate binding is invalid or expired'); END
+    """,
+)
+
+
 _MIGRATIONS = (
     SchemaMigration(
         1,
@@ -2198,6 +2230,13 @@ _MIGRATIONS = (
             "forward-only owner-bound restart plans, normalized impact rows, and "
             "admission gates for approved drain/fence restart execution"
         ),
+    ),
+    SchemaMigration(
+        14,
+        "recovery-plan-operation",
+        _PHASE_R_RECOVERY_OPERATION_UP,
+        (),
+        feasibility_note="forward-only persisted retry/regenerate operation identity",
     ),
 )
 

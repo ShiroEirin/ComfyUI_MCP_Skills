@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -560,7 +559,9 @@ def _revision_digest(
 
 
 def _sha256(value: object) -> str:
-    return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+    from comfyui_mcp_skills.application.json_codec import digest
+
+    return digest(value)
 
 
 def _stored_revision_digest(graph_json: str, schema_json: str, dependency_json: str) -> str:

@@ -55,10 +55,12 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.job.get": frozenset({Scope.EXECUTE}),
     "comfyui.job.cancel": frozenset({Scope.EXECUTE}),
     "comfyui.job.list": frozenset({Scope.EXECUTE}),
-    "comfyui.job.diagnose": frozenset({Scope.EXECUTE}),
+    "comfyui.job.diagnose": frozenset({Scope.OBSERVE}),
     "comfyui.job.retry.plan": frozenset({Scope.EXECUTE}),
     "comfyui.job.retry.commit": frozenset({Scope.EXECUTE}),
-    "comfyui.server.diagnose": frozenset({Scope.OBSERVE}),
+    "comfyui.job.regenerate": frozenset({Scope.EXECUTE}),
+    "comfyui.job.batch": frozenset({Scope.EXECUTE}),
+    "comfyui.server.diagnose": frozenset({Scope.OPERATE}),
     "comfyui.experiment.plan": frozenset({Scope.EXECUTE}),
     "comfyui.experiment.commit": frozenset({Scope.EXECUTE}),
     "comfyui.experiment.get": frozenset({Scope.EXECUTE}),
@@ -68,8 +70,8 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.experiment.variant.promote": frozenset({Scope.EXECUTE}),
     "comfyui.execution.plan": frozenset({Scope.EXECUTE}),
     "comfyui.execution.commit": frozenset({Scope.EXECUTE}),
-    "comfyui.route.explain": frozenset({Scope.EXECUTE}),
-    "comfyui.policy.evaluate": frozenset({Scope.EXECUTE}),
+    "comfyui.route.explain": frozenset({Scope.OBSERVE}),
+    "comfyui.policy.evaluate": frozenset({Scope.OBSERVE}),
     "comfyui.admin.workflow.import": frozenset({Scope.CONFIGURE}),
     "comfyui.admin.workflow.change.plan": frozenset({Scope.AUTHOR}),
     "comfyui.admin.workflow.change.commit": frozenset({Scope.AUTHOR}),
@@ -126,9 +128,12 @@ _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.node.ports": frozenset({Scope.OBSERVE}),
     # AUTHOR keeps this export on the AUTHORING surface only, so the fixed
     # Tool budgets of the operations and execution surfaces stay untouched.
-    "comfyui.output.image": frozenset({Scope.AUTHOR}),
+    "comfyui.output.image": frozenset({Scope.AUTHOR, Scope.EXECUTE}),
     # EXECUTE keeps generation defaults on the execution surface only, where the
     # fixed Tool budget still has headroom.
+    # Stable generic execution entry: unlike the per-workflow dynamic tools it
+    # never disappears when the dynamic tool budget truncates the list.
+    "comfyui.workflow.run": frozenset({Scope.EXECUTE}),
     "comfyui.defaults": frozenset({Scope.EXECUTE}),
     "comfyui.model.list": frozenset({Scope.OBSERVE}),
     # G3 authoring-only surface: AUTHOR keeps these off the operations and

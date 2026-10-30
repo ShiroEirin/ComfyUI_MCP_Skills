@@ -28,6 +28,14 @@ _PHASE_N_NAMES = {
     "comfyui.server.diagnose",
     "comfyui.job.retry.plan",
     "comfyui.job.retry.commit",
+    "comfyui.job.regenerate",
+    "comfyui.job.batch",
+}
+_PHASE_N_EXECUTION_NAMES = {
+    "comfyui.job.retry.plan",
+    "comfyui.job.retry.commit",
+    "comfyui.job.regenerate",
+    "comfyui.job.batch",
 }
 
 
@@ -120,6 +128,21 @@ def test_phase_n_tools_use_strict_canonical_schemas_and_allowlisted_outputs() ->
         "type": "object",
     }
     assert tools["comfyui.job.retry.commit"].annotations.destructive_hint is False
+    assert tools["comfyui.job.diagnose"].meta["comfyui/toolsets"] == ["operations"]
+    regeneration_output = tools["comfyui.job.regenerate"].output_schema
+    assert regeneration_output["additionalProperties"] is False
+    assert {
+        "operation",
+        "source_job_id",
+        "revision_id",
+        "deployment_id",
+        "content_digest",
+        "original_arguments",
+        "resulting_arguments",
+        "overrides",
+        "pinned_content_digest",
+    } <= set(regeneration_output["properties"])
+    assert "result_job_id" not in regeneration_output["properties"]
 
     report = diagnostic_report_dict(_diagnostic())
     plan = repair_plan_dict(_repair_plan())
@@ -239,11 +262,21 @@ async def test_phase_n_tools_dispatch_authenticated_owner_and_resources_are_priv
         diagnostic_service=diagnostics,
         retry_service=retries,
     )
+    operations_server = create_server(
+        tmp_path,
+        authorization=AuthorizationContext(
+            "owner-a",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+        diagnostic_service=diagnostics,
+        retry_service=retries,
+    )
 
     async with Client(server) as client:
         first_names = [tool.name for tool in (await client.list_tools()).tools]
         second_names = [tool.name for tool in (await client.list_tools()).tools]
-        report = await client.call_tool("comfyui.job.diagnose", {"job_id": _JOB_ID})
+        assert "comfyui.job.diagnose" not in first_names
         plan = await client.call_tool(
             "comfyui.job.retry.plan", {"job_id": _JOB_ID, "changes": {"steps": 24}}
         )
@@ -251,18 +284,23 @@ async def test_phase_n_tools_dispatch_authenticated_owner_and_resources_are_priv
             "comfyui.job.retry.commit",
             {"repair_plan_id": _REPAIR_PLAN_ID, "plan_digest": _PLAN_DIGEST},
         )
+
+    async with Client(operations_server) as client:
+        report = await client.call_tool("comfyui.job.diagnose", {"job_id": _JOB_ID})
         invalid = await client.call_tool(
             "comfyui.job.diagnose", {"job_id": _JOB_ID, "raw_error": "secret"}
         )
         diagnostic_resource = await client.read_resource(f"comfyui://diagnostics/{_DIAGNOSTIC_ID}")
-        plan_resource = await client.read_resource(f"comfyui://plans/{_REPAIR_PLAN_ID}")
         capabilities = await client.call_tool(
             "comfyui.capability.search", {"query": "diagnose retry", "limit": 50}
         )
 
+    async with Client(server) as client:
+        plan_resource = await client.read_resource(f"comfyui://plans/{_REPAIR_PLAN_ID}")
+
     assert first_names == second_names
     assert len(first_names) <= 64
-    assert _PHASE_N_NAMES - {"comfyui.server.diagnose"} <= set(first_names)
+    assert _PHASE_N_EXECUTION_NAMES - {"comfyui.job.regenerate"} <= set(first_names)
     assert "comfyui.server.diagnose" not in first_names
     assert diagnostics.calls[:2] == [
         ("job", _JOB_ID, "owner-a"),
@@ -283,7 +321,8 @@ async def test_phase_n_tools_dispatch_authenticated_owner_and_resources_are_priv
     assert json.loads(diagnostic_resource.contents[0].text) == report.structured_content
     assert json.loads(plan_resource.contents[0].text) == plan.structured_content
     discovered = {item["name"] for item in capabilities.structured_content["items"]}
-    assert {"comfyui.job.diagnose", "comfyui.job.retry.plan"} <= discovered
+    assert {"comfyui.job.diagnose", "comfyui.server.diagnose"} <= discovered
+    assert "comfyui.job.retry.plan" not in discovered
     assert "private" not in json.dumps(
         {
             "report": report.structured_content,
@@ -344,12 +383,13 @@ async def test_phase_n_surface_is_hidden_without_services_and_prompt_is_bounded(
         )
 
     text = rendered.messages[0].content.text
-    assert not (_PHASE_N_NAMES & names)
+    assert not ((_PHASE_N_NAMES - {"comfyui.job.batch"}) & names)
     assert "comfyui://diagnostics/{diagnostic_id}" not in templates
     assert "comfyui://plans/{repair_plan_id}" not in templates
     assert "diagnose-failure" not in prompt_names
     assert not (
-        _PHASE_N_NAMES & {item["name"] for item in capabilities.structured_content.get("items", [])}
+        (_PHASE_N_NAMES - {"comfyui.job.batch"})
+        & {item["name"] for item in capabilities.structured_content.get("items", [])}
     )
     assert text.count("comfyui.job.diagnose") == 1
     assert text.count(f"comfyui://diagnostics/{_DIAGNOSTIC_ID}") == 0

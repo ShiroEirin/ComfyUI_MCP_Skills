@@ -146,6 +146,7 @@ def _repair_plan(
     diff = [{"path": "/arguments/steps", "operation": "replace", "before": 20, "after": 16}]
     immutable = {
         "owner_id": job["owner_id"],
+        "operation": "retry",
         "original_job_id": job["job_id"],
         "workflow_id": job["workflow_id"],
         "server_id": "local",
@@ -186,7 +187,7 @@ def test_phase_n_migration_upgrades_populated_v7_without_mutating_history(
     store.initialize()
 
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (13,)
+        assert connection.execute("SELECT max(version) FROM schema_migrations").fetchone() == (14,)
         assert connection.execute("SELECT job_id FROM jobs").fetchone() == (original["job_id"],)
         tables = {
             row[0]
@@ -407,7 +408,7 @@ def test_direct_sql_rejects_fractionally_inexact_hour_lifetime(tmp_path: Path) -
                    SELECT ?,?,owner_id,?,original_job_id,workflow_id,server_id,pinned_plan_id,
                           pinned_revision_id,pinned_deployment_id,pinned_content_digest,
                           original_arguments_json,original_arguments_digest,normalized_changes_json,
-                          resulting_arguments_json,resulting_arguments_digest,diff_json,status,?,?
+                          resulting_arguments_json,resulting_arguments_digest,diff_json,status,?,?,'retry'
                    FROM repair_plans WHERE repair_plan_id=?""",
                 (
                     "repair_plan_" + "9" * 64,

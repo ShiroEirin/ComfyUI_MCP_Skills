@@ -297,7 +297,7 @@ class SQLiteDiagnosticRetryRepository:
         try:
             connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
-                "SELECT repair_plan_id,plan_digest,owner_id,resource_uri,original_job_id,workflow_id,server_id,pinned_plan_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest,original_arguments_json,original_arguments_digest,normalized_changes_json,resulting_arguments_json,resulting_arguments_digest,diff_json,status,created_at,expires_at FROM repair_plans WHERE repair_plan_id=?",
+                "SELECT repair_plan_id,plan_digest,owner_id,resource_uri,original_job_id,workflow_id,server_id,pinned_plan_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest,original_arguments_json,original_arguments_digest,normalized_changes_json,resulting_arguments_json,resulting_arguments_digest,diff_json,status,created_at,expires_at,operation FROM repair_plans WHERE repair_plan_id=?",
                 (value["repair_plan_id"],),
             ).fetchone()
             if existing is not None:
@@ -308,7 +308,7 @@ class SQLiteDiagnosticRetryRepository:
                     connection, value["repair_plan_id"], value["owner_id"]
                 ) or copy.deepcopy(value)
             connection.execute(
-                "INSERT INTO repair_plans(repair_plan_id,plan_digest,owner_id,resource_uri,original_job_id,workflow_id,server_id,pinned_plan_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest,original_arguments_json,original_arguments_digest,normalized_changes_json,resulting_arguments_json,resulting_arguments_digest,diff_json,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO repair_plans(repair_plan_id,plan_digest,owner_id,resource_uri,original_job_id,workflow_id,server_id,pinned_plan_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest,original_arguments_json,original_arguments_digest,normalized_changes_json,resulting_arguments_json,resulting_arguments_digest,diff_json,status,created_at,expires_at,operation) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 row,
             )
             connection.commit()
@@ -332,7 +332,7 @@ class SQLiteDiagnosticRetryRepository:
         self, connection: sqlite3.Connection, repair_plan_id: str, owner_id: str
     ) -> dict[str, Any] | None:
         row = connection.execute(
-            "SELECT repair_plans.repair_plan_id,repair_plans.plan_digest,repair_plans.owner_id,resource_uri,repair_plans.original_job_id,workflow_id,server_id,pinned_plan_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest,original_arguments_json,original_arguments_digest,normalized_changes_json,resulting_arguments_json,resulting_arguments_digest,diff_json,status,created_at,expires_at,commits.retry_job_id,commits.result_job_uri,commits.committed_at FROM repair_plans LEFT JOIN repair_plan_commits AS commits ON commits.repair_plan_id=repair_plans.repair_plan_id AND commits.owner_id=repair_plans.owner_id WHERE repair_plans.repair_plan_id=? AND repair_plans.owner_id=?",
+            "SELECT repair_plans.repair_plan_id,repair_plans.plan_digest,repair_plans.owner_id,resource_uri,repair_plans.original_job_id,workflow_id,server_id,pinned_plan_id,pinned_revision_id,pinned_deployment_id,pinned_content_digest,original_arguments_json,original_arguments_digest,normalized_changes_json,resulting_arguments_json,resulting_arguments_digest,diff_json,status,created_at,expires_at,repair_plans.operation,commits.retry_job_id,commits.result_job_uri,commits.committed_at FROM repair_plans LEFT JOIN repair_plan_commits AS commits ON commits.repair_plan_id=repair_plans.repair_plan_id AND commits.owner_id=repair_plans.owner_id WHERE repair_plans.repair_plan_id=? AND repair_plans.owner_id=?",
             (repair_plan_id, owner_id),
         ).fetchone()
         if row is None:
@@ -355,17 +355,18 @@ class SQLiteDiagnosticRetryRepository:
             "resulting_arguments": json.loads(str(row[14])),
             "resulting_arguments_digest": str(row[15]),
             "diff": json.loads(str(row[16])),
-            "status": "committed" if row[20] is not None else str(row[17]),
+            "status": "committed" if row[21] is not None else str(row[17]),
             "created_at": str(row[18]),
             "expires_at": str(row[19]),
+            "operation": str(row[20]),
         }
-        if row[20] is not None:
+        if row[21] is not None:
             result.update(
                 {
-                    "result_job_id": str(row[20]),
-                    "result_job_uri": str(row[21]),
+                    "result_job_id": str(row[21]),
+                    "result_job_uri": str(row[22]),
                     "retry_of": str(result["original_job_id"]),
-                    "committed_at": str(row[22]),
+                    "committed_at": str(row[23]),
                 }
             )
         return result
@@ -460,8 +461,11 @@ class SQLiteDiagnosticRetryRepository:
             result_plan = connection.execute(
                 "SELECT resolved_inputs_json FROM execution_plans WHERE plan_id=?", (retry[3],)
             ).fetchone()
-            if result_plan is None or _arguments_from_snapshot(str(result_plan[0])) != json.loads(
-                str(plan[8])
+            expected_arguments = json.loads(str(plan[8]))
+            expected_arguments.pop("_overrides", None)
+            if (
+                result_plan is None
+                or _arguments_from_snapshot(str(result_plan[0])) != expected_arguments
             ):
                 raise ValueError("Retry Job arguments do not match repair plan")
             connection.execute(
@@ -601,6 +605,7 @@ def _validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "repair_plan_id",
         "plan_digest",
         "owner_id",
+        "operation",
         "resource_uri",
         "original_job_id",
         "workflow_id",
@@ -621,6 +626,8 @@ def _validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(plan, dict) or any(key not in plan for key in required):
         raise ValueError("repair plan shape is invalid")
     value = copy.deepcopy(plan)
+    if value.get("operation") not in {"retry", "regenerate"}:
+        raise ValueError("repair plan operation is invalid")
     if any(
         not isinstance(value[field], dict)
         for field in ("original_arguments_snapshot", "normalized_changes", "resulting_arguments")
@@ -664,6 +671,7 @@ def _validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
         key: value[key]
         for key in (
             "owner_id",
+            "operation",
             "original_job_id",
             "workflow_id",
             "server_id",
@@ -757,6 +765,7 @@ def _plan_row(value: dict[str, Any]) -> tuple[object, ...]:
         "planned",
         value["created_at"],
         value["expires_at"],
+        value["operation"],
     )
 
 

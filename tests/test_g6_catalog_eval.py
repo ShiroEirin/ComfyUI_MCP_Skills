@@ -83,7 +83,7 @@ def test_each_authorized_fixed_toolset_stays_within_default_budget() -> None:
         visible = [tool for tool in tools if tool_visible(tool.name, toolset, granted)]
         assert len(visible) <= ToolInventory.DEFAULT_FIXED_LIMIT
 
-    with pytest.raises(ValueError, match="limit of 24"):
+    with pytest.raises(ValueError, match="limit of 32"):
         ToolInventory(
             SimpleNamespace(name=str(index))
             for index in range(ToolInventory.DEFAULT_FIXED_LIMIT + 1)

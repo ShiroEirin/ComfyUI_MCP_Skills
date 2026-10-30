@@ -23,6 +23,16 @@ _MAX_EVENTS = 8
 _MAX_LOG_LINES = 8
 _MAX_EVIDENCE_TEXT = 32_768
 _MAX_FIELD = 512
+_MAX_SAFE_ACTIONS = 32
+_MAX_NEXT_ACTIONS = 16
+_MAX_MODEL_ACTIONS = 4
+_FAILED_JOB_STATUSES = frozenset({"error", "interrupted", "cancelled", "lost"})
+_MODEL_KIND_BY_CLASSIFICATION = {
+    "missing_model": "",
+    "missing_vae_model": "vae",
+    "missing_clip_model": "clip",
+    "missing_lora_model": "loras",
+}
 _AUTHORIZATION = re.compile(
     r"""(?ix)(["']?authorization["']?\s*[:=]\s*["']?)(?:basic|bearer)\s+[A-Za-z0-9._~+/=-]+["']?"""
 )
@@ -82,6 +92,102 @@ def _action_dict(action: DiagnosticAction, context: Mapping[str, Any]) -> dict[s
     }
 
 
+def _bounded_public_value(value: object, *, allow_empty: bool = False) -> str | None:
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_FIELD
+        or (not allow_empty and not value)
+    ):
+        return None
+    redacted = _redact(value)
+    return redacted if allow_empty or redacted else None
+
+
+def _is_model_classification(classification: object) -> bool:
+    return classification in _MODEL_KIND_BY_CLASSIFICATION
+
+
+def _action_key(action: Mapping[str, Any]) -> str:
+    return _digest([action.get("tool"), action.get("required_arguments")])
+
+
+def _missing_model_facts(context: Mapping[str, Any]) -> list[dict[str, str]]:
+    """Read structured dependency facts; never infer model names from error text."""
+    raw_models = context.get("missing_models", [])
+    if not isinstance(raw_models, (list, tuple)):
+        return []
+    facts: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in raw_models:
+        if isinstance(item, Mapping):
+            kind = item.get("kind", item.get("folder", ""))
+            query = item.get("query", item.get("filename", item.get("name", "")))
+        else:
+            kind, query = "", item
+        kind = _bounded_public_value(kind, allow_empty=True)
+        query = _bounded_public_value(query, allow_empty=True)
+        if kind is None or query is None or (kind, query) in seen:
+            continue
+        seen.add((kind, query))
+        facts.append({"kind": kind, "query": query})
+        if len(facts) == _MAX_MODEL_ACTIONS:
+            break
+    return facts
+
+
+def _dependency_actions(
+    context: Mapping[str, Any], classification: object
+) -> list[dict[str, Any]]:
+    server_id = _bounded_public_value(context.get("server_id"))
+    if server_id is None:
+        return []
+    actions: list[dict[str, Any]] = []
+    failed_node = context.get("failed_node", {})
+    if isinstance(failed_node, Mapping):
+        node_class = _bounded_public_value(failed_node.get("class_type"))
+        if node_class is not None:
+            actions.append(
+                {
+                    "tool": "comfyui.node.ports",
+                    "name": "inspect_failed_node_ports",
+                    "required_arguments": {"server_id": server_id, "node_class": node_class},
+                    "risk": "safe",
+                }
+            )
+    if _is_model_classification(classification):
+        missing_models = _missing_model_facts(context)
+        if missing_models:
+            models = missing_models
+        elif context.get("missing_models_available") is True:
+            models = [
+                {
+                    "kind": _MODEL_KIND_BY_CLASSIFICATION[str(classification)],
+                    "query": "",
+                }
+            ]
+        else:
+            models = []
+        for model in models:
+            arguments = {"server_id": server_id, **model}
+            actions.append(
+                {
+                    "tool": "comfyui.model.list",
+                    "name": "inspect_missing_model_inventory",
+                    "required_arguments": arguments,
+                    "risk": "safe",
+                }
+            )
+    return actions
+
+
+def _next_actions(
+    actions: list[dict[str, Any]], context: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    if str(context.get("status", "")).lower() not in _FAILED_JOB_STATUSES:
+        return []
+    return actions[:_MAX_NEXT_ACTIONS]
+
+
 def _public_report(report: Mapping[str, Any]) -> dict[str, Any]:
     keys = (
         "diagnostic_id",
@@ -96,7 +202,12 @@ def _public_report(report: Mapping[str, Any]) -> dict[str, Any]:
         "created_at",
         "resource_uri",
     )
-    return {key: copy.deepcopy(report[key]) for key in keys}
+    result = {key: copy.deepcopy(report[key]) for key in keys}
+    stored = report.get("next_actions", [])
+    result["next_actions"] = (
+        copy.deepcopy(stored[:_MAX_NEXT_ACTIONS]) if isinstance(stored, list) else []
+    )
+    return result
 
 
 class DiagnosticService:
@@ -207,6 +318,31 @@ class DiagnosticService:
             for action in match.safe_actions
             if (hydrated := _action_dict(action, action_context)) is not None
         ]
+        if str(context.get("status", "")).lower() in _FAILED_JOB_STATUSES:
+            safe_actions.extend(_dependency_actions(context, match.classification))
+            if not any(
+                action["tool"] == "comfyui.job.retry.plan" for action in safe_actions
+            ):
+                retry = _action_dict(
+                    next(
+                        action
+                        for rule in self._registry.rules
+                        for action in rule.safe_actions
+                        if action.tool == "comfyui.job.retry.plan"
+                    ),
+                    action_context,
+                )
+                if retry is not None:
+                    safe_actions.append(retry)
+        unique_safe_actions: list[dict[str, Any]] = []
+        seen_actions: set[str] = set()
+        for action in safe_actions:
+            key = _action_key(action)
+            if key not in seen_actions:
+                seen_actions.add(key)
+                unique_safe_actions.append(action)
+        safe_actions = unique_safe_actions[:_MAX_SAFE_ACTIONS]
+        next_actions = _next_actions(copy.deepcopy(safe_actions), context)
         approval_actions = [
             hydrated
             for action in match.approval_actions
@@ -227,6 +363,7 @@ class DiagnosticService:
             "evidence": evidence,
             "safe_actions": safe_actions,
             "approval_actions": approval_actions,
+            "next_actions": next_actions,
             "created_at": created_at,
             "resource_uri": f"comfyui://diagnostics/{report_id}",
         }

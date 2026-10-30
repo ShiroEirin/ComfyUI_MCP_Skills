@@ -17,12 +17,17 @@ from comfyui_mcp_skills.domain.errors import SchemaMigrationError
 def _close_preserving_error(
     connection: sqlite3.Connection, error: BaseException
 ) -> None:
-    del error
     try:
         connection.close()
-    except Exception:
-        # Closing must never mask the original failure.
-        pass
+    except BaseException as cleanup_error:
+        # Keep the original exception on top while retaining the close failure
+        # for diagnosis, matching the store's existing cleanup contract.
+        add_note = getattr(error, "add_note", None)
+        if add_note is not None:
+            add_note(f"connection close also failed: {cleanup_error!r}")
+            return
+        cleanup_error.__context__ = error.__context__
+        error.__context__ = cleanup_error
 
 
 def connect_control_plane(

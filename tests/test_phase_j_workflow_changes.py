@@ -332,6 +332,37 @@ def test_expose_parameter_uses_declared_object_info_type_and_constraints(
     }
 
 
+def test_add_node_allocates_deterministic_ids_without_changing_explicit_ids(
+    tmp_path: Path,
+) -> None:
+    changes, _workflows = _services(tmp_path)
+    operations = [
+        {"op": "add_node", "class_type": "Text", "inputs": {"text": "first"}},
+        {"op": "add_node", "node_id": "", "class_type": "Text", "inputs": {"text": "second"}},
+        {"op": "add_node", "node_id": "9", "class_type": "Text", "inputs": {"text": "explicit"}},
+    ]
+
+    first = changes.plan("portrait", "local", operations, object_info=OBJECT_INFO)
+    second = changes.plan("portrait", "local", operations, object_info=OBJECT_INFO)
+
+    assert [operation["node_id"] for operation in first["operations"]] == ["5", "6", "9"]
+    assert first["diff"]["nodes_added"] == ["5", "6", "9"]
+    assert second["operations"] == first["operations"]
+    assert second["diff"]["nodes_added"] == first["diff"]["nodes_added"]
+
+
+def test_add_node_keeps_explicit_id_collision_behavior(tmp_path: Path) -> None:
+    changes, _workflows = _services(tmp_path)
+
+    with pytest.raises(ValueError, match="node 1 already exists"):
+        changes.plan(
+            "portrait",
+            "local",
+            [{"op": "add_node", "node_id": "1", "class_type": "Text", "inputs": {}}],
+            object_info=OBJECT_INFO,
+        )
+
+
 def test_change_plan_rejects_illegal_connection_with_port_types(tmp_path: Path) -> None:
     changes, _workflows = _services(tmp_path)
 
@@ -354,10 +385,54 @@ def test_change_plan_rejects_illegal_connection_with_port_types(tmp_path: Path) 
         )
 
     details = excinfo.value.details
+    assert details["expected"] == "IMAGE"
+    assert details["actual"] == "STRING"
+    assert details["source"] == {"node_id": "1", "output": 0}
+    assert details["target"] == {"node_id": "3", "field": "images"}
+    assert details["available_outputs"] == [{"index": 0, "type": "STRING"}]
+    assert details["candidates"] == [
+        {
+            "source_node_id": "2",
+            "source_output": 0,
+            "target_node_id": "3",
+            "target_input": "images",
+            "type": "IMAGE",
+        }
+    ]
     assert details["suggested_queries"] == [
         {
             "tool": "comfyui.node.describe",
             "arguments": {"server_id": "local", "node_class": "SaveImage"},
+        }
+    ]
+
+
+def test_change_plan_accepts_compatible_connection(tmp_path: Path) -> None:
+    changes, _workflows = _services(tmp_path)
+
+    plan = changes.plan(
+        "portrait",
+        "local",
+        [
+            {"op": "add_node", "node_id": "5", "class_type": "Image", "inputs": {}},
+            {
+                "op": "connect",
+                "source_node_id": "5",
+                "source_output": 0,
+                "target_node_id": "3",
+                "target_input": "images",
+            },
+        ],
+        object_info=OBJECT_INFO,
+    )
+
+    assert plan["diff"]["nodes_added"] == ["5"]
+    assert plan["diff"]["input_changes"] == [
+        {
+            "node_id": "3",
+            "field": "images",
+            "before": ["2", 0],
+            "after": ["5", 0],
         }
     ]
 

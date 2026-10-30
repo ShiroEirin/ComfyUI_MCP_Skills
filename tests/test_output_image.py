@@ -276,12 +276,11 @@ def test_tool_is_registered_and_scoped_to_authoring() -> None:
     assert tool_visible(
         "comfyui.output.image", Toolset.AUTHORING, admitted_scopes(Toolset.AUTHORING)
     )
-    # The export stays off the operations and execution surfaces so their
-    # fixed Tool budgets are unchanged.
+    # Execution can fetch its own Job's image; operations stays out of scope.
     assert not tool_visible(
         "comfyui.output.image", Toolset.OPERATIONS, admitted_scopes(Toolset.OPERATIONS)
     )
-    assert not tool_visible(
+    assert tool_visible(
         "comfyui.output.image", Toolset.EXECUTION, admitted_scopes(Toolset.EXECUTION)
     )
 

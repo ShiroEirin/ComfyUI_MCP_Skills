@@ -197,11 +197,29 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(
         "comfyui.job.diagnose",
         "Diagnose a failed Job",
-        "Generate one owner-bound structured Diagnostic Report.",
-        frozenset({Toolset.EXECUTION}),
-        frozenset({Scope.EXECUTE}),
+        "Generate one owner-bound structured Diagnostic Report with executable next actions.",
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OBSERVE}),
         RiskLevel.LOW,
         ("diagnose", "failure", "evidence"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.regenerate",
+        "Regenerate a Job",
+        "Replay any owned Job from persisted lineage, including successful Jobs.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("regenerate", "replay", "lineage", "rerun"),
+    ),
+    CapabilitySpec(
+        "comfyui.job.batch",
+        "Manage a Job batch",
+        "Submit, wait for, or cancel a bounded batch with per-item failure isolation.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("batch", "submit", "wait", "cancel"),
     ),
     CapabilitySpec(
         "comfyui.job.retry.plan",
@@ -225,8 +243,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "comfyui.server.diagnose",
         "Diagnose a server",
         "Generate one bounded structured server Diagnostic Report.",
-        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING}),
-        frozenset({Scope.OBSERVE}),
+        frozenset({Toolset.OPERATIONS}),
+        frozenset({Scope.OPERATE}),
         RiskLevel.LOW,
         ("diagnose", "server", "health"),
     ),
@@ -403,10 +421,19 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "comfyui.output.image",
         "Export a ComfyUI output image",
         "Fetch one ComfyUI output image and optionally return a host-renderable image tag.",
-        frozenset({Toolset.AUTHORING}),
-        frozenset({Scope.AUTHOR}),
+        frozenset({Toolset.AUTHORING, Toolset.EXECUTION}),
+        frozenset({Scope.AUTHOR, Scope.EXECUTE}),
         RiskLevel.LOW,
         ("output", "image", "download", "export"),
+    ),
+    CapabilitySpec(
+        "comfyui.workflow.run",
+        "Run a workflow by id",
+        "Run any enabled workflow, including those truncated from the dynamic tool list.",
+        frozenset({Toolset.EXECUTION}),
+        frozenset({Scope.EXECUTE}),
+        RiskLevel.MEDIUM,
+        ("run", "workflow", "execute", "generic"),
     ),
     CapabilitySpec(
         "comfyui.defaults",
@@ -715,8 +742,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "comfyui.route.explain",
         "Explain a routing plan",
         "Read the owner-bound candidate set, exclusions, score, and selection reason.",
-        frozenset({Toolset.EXECUTION}),
-        frozenset({Scope.EXECUTE}),
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
         RiskLevel.LOW,
         ("route", "explain", "candidate", "score"),
     ),
@@ -724,8 +751,8 @@ CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
         "comfyui.policy.evaluate",
         "Evaluate execution policy",
         "Evaluate arguments against bounded execution policy without submitting work.",
-        frozenset({Toolset.EXECUTION}),
-        frozenset({Scope.EXECUTE}),
+        frozenset({Toolset.OPERATIONS, Toolset.AUTHORING, Toolset.ADMIN}),
+        frozenset({Scope.OBSERVE}),
         RiskLevel.LOW,
         ("policy", "evaluate", "allow", "deny"),
     ),
@@ -805,8 +832,8 @@ class ToolInventory:
     """Validate and bound one endpoint's stable active Tool surface."""
 
     # Grows with the fixed_tools() surface (product tools); the main server
-    # uses HARD_FIXED_LIMIT, this default bounds the standalone catalog eval.
-    DEFAULT_FIXED_LIMIT = 24
+    # and the standalone catalog both enforce the same hard fixed budget.
+    DEFAULT_FIXED_LIMIT = 32
     HARD_FIXED_LIMIT = 32
     DYNAMIC_LIMIT = 8
     HARD_DYNAMIC_LIMIT = 128

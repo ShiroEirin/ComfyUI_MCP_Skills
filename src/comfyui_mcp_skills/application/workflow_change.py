@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -153,7 +152,12 @@ class WorkflowChangeService:
         parameter_schema = _json_copy(base_schema, "parameter schema")
         normalized_operations = tuple(
             _apply_operation(
-                graph, parameter_schema, operation, object_info=object_info, index=index
+                graph,
+                parameter_schema,
+                operation,
+                object_info=object_info,
+                server_id=server_id,
+                index=index,
             )
             for index, operation in enumerate(operations)
         )
@@ -508,6 +512,7 @@ def _apply_operation(
     operation: dict[str, Any],
     *,
     object_info: dict[str, Any] | None = None,
+    server_id: str = "",
     index: int,
 ) -> dict[str, Any]:
     if not isinstance(operation, dict):
@@ -534,7 +539,12 @@ def _apply_operation(
             f"operations[{index}] has unexpected fields: {', '.join(sorted(unexpected))}"
         )
     if kind == "add_node":
-        node_id = _operation_string(copied, "node_id", index)
+        raw_node_id = copied.get("node_id")
+        if raw_node_id is None or raw_node_id == "":
+            node_id = _next_numeric_node_id(graph)
+            copied["node_id"] = node_id
+        else:
+            node_id = _operation_string(copied, "node_id", index)
         if node_id in graph:
             raise ValueError(f"operations[{index}] node {node_id} already exists")
         graph[node_id] = _operation_node(copied, index)
@@ -594,7 +604,17 @@ def _apply_operation(
         ):
             raise TypeError(f"operations[{index}].source_output must be a non-negative integer")
         _inputs(graph, source_id, index)
-        _inputs(graph, target_id, index)[target_field] = [source_id, source_output]
+        _inputs(graph, target_id, index)
+        _validate_connection_types(
+            graph,
+            object_info,
+            source_id=source_id,
+            source_output=source_output,
+            target_id=target_id,
+            target_field=target_field,
+            server_id=server_id,
+        )
+        graph[target_id]["inputs"][target_field] = [source_id, source_output]
         _remove_parameter_target(parameter_schema, target_id, target_field)
     else:
         node_id = _operation_string(copied, "node_id", index)
@@ -619,6 +639,110 @@ def _apply_operation(
             if not isinstance(required, bool):
                 raise TypeError(f"operations[{index}].required must be a boolean")
     return copied
+
+
+def _next_numeric_node_id(graph: dict[str, Any]) -> str:
+    candidate = 1
+    while str(candidate) in graph:
+        candidate += 1
+    return str(candidate)
+
+
+def _validate_connection_types(
+    graph: dict[str, Any],
+    object_info: dict[str, Any] | None,
+    *,
+    source_id: str,
+    source_output: int,
+    target_id: str,
+    target_field: str,
+    server_id: str,
+) -> None:
+    """Reject known port mismatches before mutating the graph.
+
+    Missing metadata and out-of-range outputs remain the graph validator's
+    responsibility, preserving its existing errors and repair suggestions.
+    """
+    source = graph[source_id]
+    target = graph[target_id]
+    source_class = str(source.get("class_type", ""))
+    target_class = str(target.get("class_type", ""))
+    source_info = object_info.get(source_class) if object_info is not None else None
+    target_info = object_info.get(target_class) if object_info is not None else None
+    outputs = source_info.get("output") if isinstance(source_info, dict) else None
+    if not isinstance(outputs, list) or source_output >= len(outputs):
+        return
+    actual = outputs[source_output]
+    expected = _connection_input_type(target_info, target_field)
+    if (
+        not isinstance(actual, str)
+        or expected is None
+        or actual == expected
+        or expected == "*"
+    ):
+        return
+
+    issue = {
+        "code": "port_type_mismatch",
+        "message": f"Connection type {actual} is incompatible with {expected}",
+        "node_id": target_id,
+        "field": target_field,
+    }
+    candidates: list[dict[str, Any]] = []
+    for candidate_id in sorted(graph, key=_node_sort_key):
+        candidate = graph[candidate_id]
+        candidate_class = str(candidate.get("class_type", ""))
+        candidate_info = object_info.get(candidate_class) if object_info is not None else None
+        candidate_outputs = (
+            candidate_info.get("output") if isinstance(candidate_info, dict) else None
+        )
+        if not isinstance(candidate_outputs, list):
+            continue
+        for output_index, output_type in enumerate(candidate_outputs):
+            if output_type == expected:
+                candidates.append(
+                    {
+                        "source_node_id": candidate_id,
+                        "source_output": output_index,
+                        "target_node_id": target_id,
+                        "target_input": target_field,
+                        "type": expected,
+                    }
+                )
+                if len(candidates) == 50:
+                    break
+        if len(candidates) == 50:
+            break
+
+    raise WorkflowChangeValidationError(
+        _change_validation_error([issue], graph),
+        details={
+            "issues": _issue_summaries([issue]),
+            "expected": expected,
+            "actual": actual,
+            "source": {"node_id": source_id, "output": source_output},
+            "target": {"node_id": target_id, "field": target_field},
+            "available_outputs": [
+                {"index": output_index, "type": str(output_type)}
+                for output_index, output_type in enumerate(outputs)
+            ],
+            "candidates": candidates,
+            "suggested_queries": _suggested_queries([issue], graph, server_id),
+        },
+    )
+
+
+def _connection_input_type(info: object, field: str) -> str | None:
+    if not isinstance(info, dict) or not isinstance(info.get("input"), dict):
+        return None
+    for section in ("required", "optional"):
+        definitions = info["input"].get(section)
+        if not isinstance(definitions, dict):
+            continue
+        definition = definitions.get(field)
+        if isinstance(definition, list) and definition and isinstance(definition[0], str):
+            return definition[0]
+    return None
 
 
 def _operation_node(operation: dict[str, Any], index: int) -> dict[str, Any]:
@@ -1211,14 +1335,9 @@ def _revision_digest(
 
 
 def _sha256(value: object) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    from comfyui_mcp_skills.application.json_codec import digest
+
+    return digest(value)
 
 
 def _type_guess(value: object) -> str:

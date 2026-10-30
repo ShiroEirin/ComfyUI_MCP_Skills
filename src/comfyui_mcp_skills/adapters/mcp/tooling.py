@@ -52,9 +52,7 @@ def client_supports_apps(ctx: Any) -> bool:
 
 def with_ui_metadata(tool: Tool, *, uri: str = JOB_VIEWER_URI) -> Tool:
     """Attach an app reference to a tool's metadata (default Job viewer)."""
-    return tool.model_copy(
-        update={"meta": {**(tool.meta or {}), "ui": {"resourceUri": uri}}}
-    )
+    return tool.model_copy(update={"meta": {**(tool.meta or {}), "ui": {"resourceUri": uri}}})
 
 
 def job_viewer_html() -> str:
@@ -144,6 +142,16 @@ JOB_SCHEMA: dict[str, Any] = {
         "job_uri",
     ],
     "additionalProperties": False,
+}
+
+RUN_JOB_SCHEMA: dict[str, Any] = {
+    **JOB_SCHEMA,
+    "properties": {
+        **JOB_SCHEMA["properties"],
+        "timed_out": {"type": "boolean"},
+        "waited_seconds": {"type": "number", "minimum": 0},
+        "last_status": {"type": "string"},
+    },
 }
 
 EXECUTION_PROPERTY: dict[str, Any] = {
@@ -959,8 +967,7 @@ def workflow_operations_schema() -> dict[str, Any]:
         operation(
             "extract_subgraph",
             description=(
-                "Snapshot selected nodes with their boundary contract for reuse "
-                "by insert_subgraph."
+                "Snapshot selected nodes with their boundary contract for reuse by insert_subgraph."
             ),
             properties={
                 "name": {"type": "string", "minLength": 1, "maxLength": 128},
@@ -1364,6 +1371,44 @@ def fixed_tools() -> list[Tool]:
                 "additionalProperties": False,
             },
             output_schema={"type": "object"},
+            annotations=ToolAnnotations(
+                read_only_hint=False,
+                destructive_hint=False,
+                idempotent_hint=False,
+                open_world_hint=True,
+            ),
+        ),
+        Tool(
+            name="comfyui.workflow.run",
+            description=(
+                "Run any enabled workflow by id, even when its dynamic run.* tool "
+                "was truncated from the visible dynamic-tool list. Use this as the "
+                "stable fallback for workflows beyond the dynamic tool budget."
+            ),
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "server_id": {"type": "string", "minLength": 1},
+                    "workflow_id": {"type": "string", "minLength": 1},
+                    "arguments": {
+                        "type": "object",
+                        "description": "Workflow parameters; use _overrides for one-run changes",
+                    },
+                    "_execution": EXECUTION_PROPERTY,
+                    "_overrides": OVERRIDES_PROPERTY,
+                    "revision_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional pinned revision; requires deployment_id/content_digest"
+                        ),
+                    },
+                    "deployment_id": {"type": "string"},
+                    "content_digest": {"type": "string"},
+                },
+                "required": ["server_id", "workflow_id", "arguments"],
+                "additionalProperties": False,
+            },
+            output_schema=RUN_JOB_SCHEMA,
             annotations=ToolAnnotations(
                 read_only_hint=False,
                 destructive_hint=False,
@@ -1791,7 +1836,6 @@ def phase_k_tools() -> list[Tool]:
             output_schema={"type": "object"},
             annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False),
         ),
-
     ]
     return [decorate_tool(tool) for tool in tools]
 
@@ -3035,6 +3079,34 @@ def phase_n_tools() -> list[Tool]:
             "committed_at",
         ],
     }
+    regeneration_output: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            **{name: plan_properties[name] for name in planned_fields},
+            "pinned_content_digest": digest,
+            "operation": {"type": "string", "const": "regenerate"},
+            "source_job_id": job_id,
+            "revision_id": {"type": "string"},
+            "deployment_id": {"type": "string"},
+            "content_digest": digest,
+            "original_arguments": {"type": "object"},
+            "resulting_arguments": {"type": "object"},
+            "overrides": {"type": "object"},
+        },
+        "required": [
+            *planned_fields,
+            "pinned_content_digest",
+            "operation",
+            "source_job_id",
+            "revision_id",
+            "deployment_id",
+            "content_digest",
+            "original_arguments",
+            "resulting_arguments",
+            "overrides",
+        ],
+        "additionalProperties": False,
+    }
     return [
         decorate_tool(
             Tool(
@@ -3091,6 +3163,77 @@ def phase_n_tools() -> list[Tool]:
                 output_schema=plan_output,
                 annotations=ToolAnnotations(
                     read_only_hint=False, destructive_hint=False, open_world_hint=False
+                ),
+            ),
+            risk="medium",
+            toolset="execution",
+        ),
+        decorate_tool(
+            Tool(
+                name="comfyui.job.regenerate",
+                description=(
+                    "Regenerate any owned Job from its persisted execution identity and lineage. "
+                    "Unlike retry, this also works for successful Jobs."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "job_id": job_id,
+                        "changes": {
+                            "type": "object",
+                            "description": "Optional workflow-parameter changes",
+                        },
+                        "_overrides": OVERRIDES_PROPERTY,
+                    },
+                    "required": ["job_id"],
+                    "additionalProperties": False,
+                },
+                output_schema=regeneration_output,
+                annotations=ToolAnnotations(
+                    read_only_hint=False, destructive_hint=False, open_world_hint=False
+                ),
+            ),
+            risk="medium",
+            toolset="execution",
+        ),
+        decorate_tool(
+            Tool(
+                name="comfyui.job.batch",
+                description=(
+                    "Submit, wait for, or cancel a bounded batch of Jobs with per-item "
+                    "failure isolation."
+                ),
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["submit", "wait", "cancel"],
+                            "default": "submit",
+                        },
+                        "jobs": {
+                            "type": "array",
+                            "description": "For submit: server_id/workflow_id/arguments per item",
+                            "maxItems": 100,
+                            "items": {"type": "object"},
+                        },
+                        "batch_id": {
+                            "type": "string",
+                            "description": "For wait/cancel: the batch returned by submit",
+                        },
+                        "timeout_seconds": {
+                            "type": "number",
+                            "default": 60,
+                            "minimum": 0,
+                            "maximum": 86400,
+                        },
+                    },
+                    "required": [],
+                    "additionalProperties": False,
+                },
+                output_schema={"type": "object"},
+                annotations=ToolAnnotations(
+                    read_only_hint=False, destructive_hint=False, open_world_hint=True
                 ),
             ),
             risk="medium",

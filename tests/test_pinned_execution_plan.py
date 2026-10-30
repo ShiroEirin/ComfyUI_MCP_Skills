@@ -10,6 +10,7 @@ import pytest
 from mcp import Client
 
 from comfyui_mcp_skills.adapters.mcp.server import create_server
+from comfyui_mcp_skills.application.authorization import AuthorizationContext, Scope, Toolset
 from comfyui_mcp_skills.application.workflow_change import WorkflowChangeService
 from comfyui_mcp_skills.application.workflow_graph import (
     WorkflowGraphService,
@@ -23,6 +24,9 @@ from comfyui_mcp_skills.domain.workflow_semantics import (
 from comfyui_mcp_skills.infrastructure.persistence.assets import FileAssetRepository
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 from comfyui_mcp_skills.infrastructure.persistence.repository_factory import RepositoryBundle
+from comfyui_mcp_skills.infrastructure.persistence.sqlite_diagnostics import (
+    SQLiteDiagnosticRetryRepository,
+)
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_runs import SQLiteRunRepository
 from comfyui_mcp_skills.infrastructure.persistence.sqlite_workflows import SQLiteWorkflowRepository
 from comfyui_mcp_skills.infrastructure.persistence.workflow_changes import (
@@ -60,6 +64,10 @@ GRAPH: dict[str, Any] = {
 
 
 class _Gateway:
+    def __init__(self) -> None:
+        self.histories: dict[str, dict[str, Any]] = {}
+        self.submissions = 0
+
     def get_object_info(self) -> dict[str, Any]:
         return OBJECT_INFO
 
@@ -72,11 +80,20 @@ class _Gateway:
     def get_system_stats(self) -> dict[str, Any]:
         return {"system": {"os": "test"}, "devices": [{"name": "GPU"}]}
 
+    def get_history(
+        self, prompt_id: str, timeout_seconds: float | None = None
+    ) -> dict[str, Any] | None:
+        return self.histories.get(prompt_id)
+
     def queue_prompt(self, workflow: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        return {"prompt_id": "prompt-pinned", "client_id": "client-pinned"}
+        self.submissions += 1
+        prompt_id = f"prompt-pinned-{self.submissions}"
+        return {"prompt_id": prompt_id, "client_id": "client-pinned"}
 
 
-def _setup(tmp_path: Path) -> tuple[SQLiteControlPlaneStore, SQLiteWorkflowRepository, Any]:
+def _setup(
+    tmp_path: Path, gateway: _Gateway | None = None
+) -> tuple[SQLiteControlPlaneStore, SQLiteWorkflowRepository, Any]:
     (tmp_path / "config.json").write_text(
         json.dumps(
             {
@@ -112,11 +129,12 @@ def _setup(tmp_path: Path) -> tuple[SQLiteControlPlaneStore, SQLiteWorkflowRepos
         run_store="sqlite",
         asset_store="file",
         store=store,
+        retries=SQLiteDiagnosticRetryRepository(store),
     )
     server = create_server(
         tmp_path,
         repositories=repositories,
-        gateway_factory=lambda _config: _Gateway(),
+        gateway_factory=lambda _config: gateway or _Gateway(),
     )
     return store, workflows, server
 
@@ -150,6 +168,24 @@ def anyio_backend() -> str:
 @pytest.mark.anyio
 async def test_plan_uses_a_pinned_unpublished_revision(tmp_path: Path) -> None:
     store, workflows, server = _setup(tmp_path)
+    operations_server = create_server(
+        tmp_path,
+        repositories=RepositoryBundle(
+            workflows=workflows,
+            runs=SQLiteRunRepository(store),
+            assets=FileAssetRepository(tmp_path),
+            workflow_store="sqlite",
+            run_store="sqlite",
+            asset_store="file",
+            store=store,
+        ),
+        gateway_factory=lambda _config: _Gateway(),
+        authorization=AuthorizationContext(
+            "local-stdio",
+            frozenset({Scope.OBSERVE, Scope.OPERATE}),
+            Toolset.OPERATIONS,
+        ),
+    )
     pinned = _unpublished_revision(store)
     published = workflows.describe("portrait", "local")
     assert pinned["published"] is False
@@ -168,7 +204,6 @@ async def test_plan_uses_a_pinned_unpublished_revision(tmp_path: Path) -> None:
             },
         )
         plan = planned.structured_content
-        explained = await client.call_tool("comfyui.route.explain", {"plan_id": plan["plan_id"]})
         committed = await client.call_tool(
             "comfyui.execution.commit",
             {
@@ -177,6 +212,9 @@ async def test_plan_uses_a_pinned_unpublished_revision(tmp_path: Path) -> None:
                 "idempotency_key": "pinned-trial-1",
             },
         )
+
+    async with Client(operations_server) as client:
+        explained = await client.call_tool("comfyui.route.explain", {"plan_id": plan["plan_id"]})
 
     assert plan["revision_id"] == pinned["revision_id"]
     assert plan["deployment_id"] == pinned["deployment_id"]
@@ -334,3 +372,88 @@ async def test_plan_without_pin_keeps_the_published_revision(tmp_path: Path) -> 
     plan = planned.structured_content
     assert plan["revision_id"] == published["revision_id"]
     assert plan["deployment_id"] == published["deployment_id"]
+
+
+@pytest.mark.anyio
+async def test_generic_run_uses_a_pinned_revision(tmp_path: Path) -> None:
+    store, _workflows, server = _setup(tmp_path)
+    pinned = _unpublished_revision(store, value="generic-run-pin")
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "comfyui.workflow.run",
+            {
+                "server_id": "local",
+                "workflow_id": "portrait",
+                "arguments": {"prompt": "a blue cat"},
+                "revision_id": pinned["revision_id"],
+                "deployment_id": pinned["deployment_id"],
+                "content_digest": pinned["content_digest"],
+            },
+        )
+
+    assert result.is_error is False
+    assert result.structured_content["prompt_id"] == "prompt-pinned-1"
+    assert result.structured_content["revision_id"] == pinned["revision_id"]
+    assert result.structured_content["deployment_id"] == pinned["deployment_id"]
+
+
+@pytest.mark.anyio
+async def test_successful_job_regenerates_through_real_sqlite_and_mcp(tmp_path: Path) -> None:
+    gateway = _Gateway()
+    _store, _workflows, server = _setup(tmp_path, gateway)
+    gateway.histories["prompt-pinned-1"] = {
+        "status": {"completed": True, "status_str": "success"},
+        "outputs": {
+            "3": {"images": [{"filename": "out.png", "subfolder": "", "type": "output"}]}
+        },
+    }
+
+    async with Client(server) as client:
+        original = await client.call_tool(
+            "comfyui.workflow.run",
+            {
+                "server_id": "local",
+                "workflow_id": "portrait",
+                "arguments": {"prompt": "original"},
+                "_overrides": {"1.text": "recorded override"},
+                "_execution": {"idempotency_key": "successful-original"},
+            },
+        )
+        fetched = await client.call_tool(
+            "comfyui.job.get",
+            {"server_id": "local", "prompt_id": "prompt-pinned-1"},
+        )
+        planned = await client.call_tool(
+            "comfyui.job.regenerate",
+            {
+                "job_id": original.structured_content["job_id"],
+                "changes": {"prompt": "regenerated"},
+            },
+        )
+        plan = planned.structured_content
+        committed = await client.call_tool(
+            "comfyui.job.retry.commit",
+            {"repair_plan_id": plan["repair_plan_id"], "plan_digest": plan["plan_digest"]},
+        )
+        repeated = await client.call_tool(
+            "comfyui.job.retry.commit",
+            {"repair_plan_id": plan["repair_plan_id"], "plan_digest": plan["plan_digest"]},
+        )
+
+    assert original.is_error is False
+    assert fetched.structured_content["status"] == "completed"
+    assert planned.is_error is False, planned.content
+    assert plan["operation"] == "regenerate"
+    assert plan["original_arguments"] == {"prompt": "original"}
+    assert plan["resulting_arguments"] == {
+        "prompt": "regenerated",
+        "_overrides": {"1.text": "recorded override"},
+    }
+    assert plan["overrides"] == {"1.text": "recorded override"}
+    assert committed.is_error is False, committed.content
+    assert committed.structured_content["status"] == "committed"
+    assert committed.structured_content["retry_of"] == original.structured_content["job_id"]
+    assert committed.structured_content["result_job_id"] != original.structured_content["job_id"]
+    assert repeated.structured_content == committed.structured_content
+    assert gateway.submissions == 2
