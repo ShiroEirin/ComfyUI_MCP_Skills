@@ -29,6 +29,10 @@ from comfyui_mcp_skills.domain.workflow_schema import (
 
 _MAX_OPERATIONS = 100
 _PLAN_TTL_SECONDS = 900
+# Conservative per-run estimate used when a base Revision carries no recorded
+# runtime evidence (legacy cutover imports). Matches the admin surface default
+# for provisioned experiments so both paths agree on the same assumption.
+_DEFAULT_TRUSTED_SECONDS_PER_RUN = 300.0
 
 
 class WorkflowChangeRepository(Protocol):
@@ -201,7 +205,11 @@ class WorkflowChangeService:
             or not isinstance(trusted_seconds, (int, float))
             or float(trusted_seconds) <= 0
         ):
-            raise ValueError("Published Workflow has no trusted runtime estimate")
+            # Revisions written before runtime estimates were recorded (for
+            # example file-store cutover imports) must stay editable. Fall back
+            # to the same conservative default the admin surface uses for
+            # provisioned experiments instead of blocking every change.
+            trusted_seconds = _DEFAULT_TRUSTED_SECONDS_PER_RUN
         dependencies = dict(after_semantic["dependencies"])
         dependencies["output_cardinality"] = len(after_semantic["outputs"])
         dependencies["trusted_seconds_per_run"] = float(trusted_seconds)
