@@ -16,6 +16,12 @@ _MAX_SEMANTIC_BYTES = 1024 * 1024
 _MAX_LABEL_LENGTH = 256
 _MAX_INPUT_STRING_LENGTH = 65_536
 
+# ComfyUI's dynamic combo widget keeps its option selection in the node input
+# itself and carries the selected option's inputs as ``<field>.<sub>`` keys.
+# Treating it as a link type would make every graph containing such a node
+# uneditable, so the validator has to understand the convention.
+_DYNAMIC_COMBO_TYPES = frozenset({"COMFY_DYNAMICCOMBO_V3"})
+
 
 class WorkflowGraphService:
     def __init__(
@@ -224,7 +230,10 @@ class WorkflowValidationService:
                         )
                     )
                 if not isinstance(value, list):
-                    scalar_issue = _validate_scalar_input(value, _input_definition(info, field))
+                    definition = _input_definition(info, field)
+                    if definition is None and "." in field:
+                        definition = _dynamic_sub_definition(info, inputs, field)
+                    scalar_issue = _validate_scalar_input(value, definition)
                     if scalar_issue is not None:
                         code, message = scalar_issue
                         issues.append(_issue(code, message, node_id, field))
@@ -311,11 +320,62 @@ def _input_definition(info: object, field: str) -> list[Any] | None:
     return None
 
 
+def _dynamic_combo_options(definition: object) -> dict[str, dict[str, Any]]:
+    """Map each advertised option key to its declared sub-input definitions."""
+    if not isinstance(definition, list) or not definition:
+        return {}
+    declared = definition[0]
+    if not isinstance(declared, str) or declared not in _DYNAMIC_COMBO_TYPES:
+        return {}
+    meta = definition[1] if len(definition) > 1 and isinstance(definition[1], dict) else {}
+    options = meta.get("options")
+    if not isinstance(options, list):
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        key = option.get("key")
+        if not isinstance(key, str) or not key:
+            continue
+        declared_inputs = option.get("inputs")
+        required = declared_inputs.get("required") if isinstance(declared_inputs, dict) else None
+        result[key] = required if isinstance(required, dict) else {}
+    return result
+
+
+def _dynamic_sub_definition(
+    info: object, inputs: dict[Any, Any], field: str
+) -> list[Any] | None:
+    """Resolve ``<combo>.<sub>`` inputs against the selected (or any) option."""
+    parent, _, child = field.partition(".")
+    if not child:
+        return None
+    options = _dynamic_combo_options(_input_definition(info, parent))
+    if not options:
+        return None
+    selected = inputs.get(parent)
+    ordered: list[dict[str, Any]] = []
+    if isinstance(selected, str) and selected in options:
+        ordered.append(options[selected])
+    ordered.extend(option for key, option in options.items() if key != selected)
+    for declared in ordered:
+        definition = declared.get(child)
+        if isinstance(definition, list) and definition:
+            return definition
+    return None
+
+
 def _validate_scalar_input(value: object, definition: list[Any] | None) -> tuple[str, str] | None:
     if definition is None:
         return None
     declared = definition[0]
     options = definition[1] if len(definition) > 1 else None
+    dynamic_options = _dynamic_combo_options(definition)
+    if dynamic_options:
+        if isinstance(value, str) and value in dynamic_options:
+            return None
+        return "invalid_enum_value", "Input value is not an advertised dynamic option"
     if isinstance(declared, list):
         choices = declared
     elif declared == "COMBO" and isinstance(options, dict):
@@ -357,7 +417,10 @@ def _known_inputs(info: object) -> set[str] | None:
     for section in ("required", "optional"):
         values = inputs.get(section)
         if isinstance(values, dict):
-            result.update(str(value) for value in values)
+            for name, definition in values.items():
+                result.add(str(name))
+                for sub_inputs in _dynamic_combo_options(definition).values():
+                    result.update(f"{name}.{sub}" for sub in sub_inputs)
     return result
 
 
