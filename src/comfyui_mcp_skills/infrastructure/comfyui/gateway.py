@@ -17,6 +17,101 @@ from comfyui_mcp_skills.infrastructure.comfyui.client import ComfyUIClient
 _SECRET_SCHEMES = ("env:",)
 _KNOWN_SECRET_FIELDS = frozenset({"auth", "comfy_api_key"})
 
+# Upstream rejections must reach the agent without letting a hostile or broken
+# server inflate the MCP error payload, so every field is bounded.
+_MAX_REJECTED_NODES = 32
+_MAX_ERRORS_PER_NODE = 8
+_MAX_UPSTREAM_TEXT = 300
+
+
+def _bounded_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    return text.strip()[:_MAX_UPSTREAM_TEXT]
+
+
+def _upstream_rejection_details(exc: requests.HTTPError) -> dict[str, Any]:
+    """Project ComfyUI's validation rejection into bounded, agent-usable details.
+
+    ComfyUI answers a bad /prompt with ``{"error": {...}, "node_errors": {...}}``
+    listing the exact node and input that failed. Dropping that payload left
+    agents with a bare "rejected" message and no way to fix their graph.
+    """
+    response = exc.response
+    if response is None:
+        return {}
+    details: dict[str, Any] = {"http_status": response.status_code}
+    try:
+        payload = response.json()
+    except ValueError:
+        body = _bounded_text(getattr(response, "text", ""))
+        if body:
+            details["upstream_body"] = body
+        return details
+    if not isinstance(payload, dict):
+        return details
+    error = payload.get("error")
+    if isinstance(error, dict):
+        for key in ("type", "message", "details"):
+            text = _bounded_text(error.get(key))
+            if text:
+                details[f"upstream_{key}"] = text
+    elif isinstance(error, str):
+        text = _bounded_text(error)
+        if text:
+            details["upstream_error"] = text
+    node_errors = payload.get("node_errors")
+    if isinstance(node_errors, dict) and node_errors:
+        ordered = sorted(node_errors.items(), key=lambda item: str(item[0]))
+        normalized: dict[str, list[dict[str, str]]] = {}
+        for node_id, entry in ordered[:_MAX_REJECTED_NODES]:
+            if not isinstance(entry, dict):
+                continue
+            errors = entry.get("errors")
+            if not isinstance(errors, list) or not errors:
+                continue
+            normalized[str(node_id)] = [
+                {
+                    "type": _bounded_text(item.get("type")),
+                    "message": _bounded_text(item.get("message")),
+                    "details": _bounded_text(item.get("details")),
+                }
+                for item in errors[:_MAX_ERRORS_PER_NODE]
+                if isinstance(item, dict)
+            ]
+        if normalized:
+            details["node_errors"] = normalized
+            details["rejected_nodes"] = sorted(normalized)
+    return details
+
+
+def _rejection_summary(details: dict[str, Any]) -> str:
+    """Name the first few offending nodes so the message alone is actionable."""
+    parts: list[str] = []
+    node_errors = details.get("node_errors")
+    if isinstance(node_errors, dict):
+        for node_id in details.get("rejected_nodes") or sorted(node_errors):
+            for item in (node_errors.get(node_id) or [])[:2]:
+                text = ": ".join(
+                    part for part in (item.get("message"), item.get("details")) if part
+                )
+                if text:
+                    parts.append(f"node {node_id} {text}")
+                if len(parts) >= 3:
+                    break
+            if len(parts) >= 3:
+                break
+    if not parts:
+        for key in ("upstream_message", "upstream_error", "upstream_body"):
+            upstream = details.get(key)
+            if isinstance(upstream, str) and upstream:
+                parts.append(upstream)
+                break
+    message = "ComfyUI rejected workflow submission"
+    return f"{message}: {'; '.join(parts)}" if parts else message
+
+
 
 def _resolve_secret_refs(config: dict[str, Any]) -> dict[str, str]:
     """Resolve ``secret_refs`` to concrete values without persisting secrets.
@@ -83,7 +178,8 @@ class ComfyUIGatewayAdapter:
         except requests.HTTPError as exc:
             status = exc.response.status_code if exc.response is not None else 0
             if 400 <= status < 500:
-                raise ExecutionFailed("ComfyUI rejected workflow submission") from exc
+                details = _upstream_rejection_details(exc)
+                raise ExecutionFailed(_rejection_summary(details), details=details) from exc
             raise ServerOffline("ComfyUI submission outcome is unknown") from exc
         except (requests.RequestException, ValueError, OSError) as exc:
             raise ServerOffline("ComfyUI submission outcome is unknown") from exc

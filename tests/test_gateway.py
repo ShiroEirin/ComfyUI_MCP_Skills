@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -102,3 +103,81 @@ def test_download_output_to_forwards_bounded_streaming_contract(tmp_path: Path) 
         "output",
         max_bytes=1024,
     )
+
+
+def _http_error_with_payload(status: int, payload: object) -> requests.HTTPError:
+    response = requests.Response()
+    response.status_code = status
+    response._content = (
+        payload.encode("utf-8")
+        if isinstance(payload, str)
+        else json.dumps(payload).encode("utf-8")
+    )
+    return requests.HTTPError(response=response)
+
+
+def test_queue_prompt_surfaces_upstream_node_errors() -> None:
+    gateway = ComfyUIGatewayAdapter({"url": "http://127.0.0.1:8188"})
+    gateway._client = MagicMock()
+    gateway._client.queue_prompt.side_effect = _http_error_with_payload(
+        400,
+        {
+            "error": {
+                "type": "prompt_outputs_failed_validation",
+                "message": "Prompt outputs failed validation",
+            },
+            "node_errors": {
+                "60": {
+                    "errors": [
+                        {
+                            "type": "required_input_missing",
+                            "message": "Required input is missing",
+                            "details": "image_encoding",
+                        }
+                    ],
+                    "class_type": "RTXVideoSuperResolution",
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ExecutionFailed) as raised:
+        gateway.queue_prompt({})
+
+    details = raised.value.details
+    assert details["http_status"] == 400
+    assert details["rejected_nodes"] == ["60"]
+    assert details["node_errors"]["60"][0]["details"] == "image_encoding"
+    assert "image_encoding" in str(raised.value)
+    assert "node 60" in str(raised.value)
+
+
+def test_queue_prompt_bounds_upstream_rejection_payload() -> None:
+    node_errors = {
+        str(node): {"errors": [{"type": "t", "message": "m", "details": "d"}] * 12}
+        for node in range(40)
+    }
+    gateway = ComfyUIGatewayAdapter({"url": "http://127.0.0.1:8188"})
+    gateway._client = MagicMock()
+    gateway._client.queue_prompt.side_effect = _http_error_with_payload(
+        400, {"node_errors": node_errors}
+    )
+
+    with pytest.raises(ExecutionFailed) as raised:
+        gateway.queue_prompt({})
+
+    details = raised.value.details
+    assert len(details["rejected_nodes"]) == 32
+    assert all(len(items) == 8 for items in details["node_errors"].values())
+
+
+def test_queue_prompt_surfaces_plain_text_rejection() -> None:
+    gateway = ComfyUIGatewayAdapter({"url": "http://127.0.0.1:8188"})
+    gateway._client = MagicMock()
+    gateway._client.queue_prompt.side_effect = _http_error_with_payload(400, "bad prompt body")
+
+    with pytest.raises(ExecutionFailed) as raised:
+        gateway.queue_prompt({})
+
+    assert raised.value.details["upstream_body"] == "bad prompt body"
+    assert "bad prompt body" in str(raised.value)
