@@ -12,13 +12,13 @@
 |---|---|---|
 | ComfyUI | 本地运行，默认 `http://127.0.0.1:8188` | 先确认浏览器能打开 ComfyUI |
 | server 条目 | 配置 `url`；**可选** `local_root` | `local_root` 缺失只影响 `model.list(include_metadata)` 与 `local.plugins`，其余功能不受影响 |
-| Toolset/Scope | `COMFYUI_MCP_TOOLSET=authoring` + `COMFYUI_MCP_SCOPES=comfyui:observe,comfyui:author` | 只有 authoring 面能做工作流变更（`change.plan/commit`、`output.image`） |
+| Toolset/Scope | `COMFYUI_MCP_TOOLSET=authoring` + `COMFYUI_MCP_SCOPES=comfyui:observe,comfyui:author` | 工作流变更（`change.plan/commit`）只在 authoring 面；`output.image` 的 scope 是 `{author, execute}` 任一，authoring 与 execution 两面都可调用 |
 | 数据目录 | `COMFYUI_MCP_DIR` | 默认值文件 `defaults.json` 落在这里（也可用 `COMFYUI_MCP_DEFAULTS_PATH` 指定） |
 | 工作流 | 至少 1 个已发布 Revision + Deployment | 动态执行工具由发布状态生成 |
 
 > 提示：`comfyui.capability.search` / `capability.describe` 可在任何面使用，用来确认某个工具在你当前权限下是否可见。
 >
-> **跨面说明（重要）**：Toolset 是**互斥的授权面**，一个 MCP 条目只暴露一个面的工具。authoring 面（`comfyui:observe,comfyui:author`）不暴露动态 `comfyui.run.*`，execution 面（默认 `local-stdio` + `comfyui:execute`）不暴露 `change.plan/commit`、`workflow.describe/visualize`、`output.image`。所以本清单要按顺序跑完，需要**两条指向同一数据目录的 MCP 条目**（一条 authoring、一条 execution），在对应步骤切换到相应条目；不要在单个条目里找齐全部工具，那是设计如此而不是配置失败。
+> **跨面说明（重要）**：Toolset 是**互斥的授权面**，一个 MCP 条目只暴露一个面的工具。authoring 面（`comfyui:observe,comfyui:author`）不暴露动态 `comfyui.run.*`，execution 面（默认 `local-stdio` + `comfyui:execute`）不暴露 `change.plan/commit`、`workflow.describe/visualize`。`output.image` 是例外：它的 scope 是 `{author, execute}` 任一，两面都能调用。所以本清单要按顺序跑完，需要**两条指向同一数据目录的 MCP 条目**（一条 authoring、一条 execution），在对应步骤切换到相应条目；不要在单个条目里找齐全部工具，那是设计如此而不是配置失败。
 
 ---
 
@@ -110,7 +110,7 @@
 | 步骤 | 调用 | 预期 |
 |---|---|---|
 | 7.1 | `comfyui.job.get(server_id="local", prompt_id="<id>")` | Job 状态 + 输出资源链接（execution 面） |
-| 7.2 | `comfyui.output.image(server_id="local", filename="<输出文件名>")` | 默认返回**标准 MCP 图片块**（宿主渲染/落盘/去重）；若设了 `COMFYUI_MCP_IMAGE_TAG_DIR`，改返回 `@@image:upload/<日期>/<名>@@` 路径标签（authoring 面）。MIME 由图片内容嗅探得出，扩展名写错也会返回真实类型；非图片内容会被拒绝 |
+| 7.2 | `comfyui.output.image(server_id="local", filename="<输出文件名>")` | 默认返回**标准 MCP 图片块**（宿主渲染/落盘/去重）；若设了 `COMFYUI_MCP_IMAGE_TAG_DIR`，改返回 `@@image:upload/<日期>/<名>@@` 路径标签。**authoring 与 execution 任一面均可调用**（scope `{author, execute}`）；标签模式要求 `COMFYUI_MCP_IMAGE_TAG_DIR` 指向宿主 upload 根（Snow App 为 `~/.snowapp/upload`），否则标签路径宿主解析不到。MIME 由图片内容嗅探得出，扩展名写错也会返回真实类型；非图片内容会被拒绝 |
 | 7.3 | `comfyui.asset.list(limit=5)` | 最近资产（用于串联复刻/元数据） |
 | 7.4 | `comfyui.asset.metadata.extract(asset_id="<id>")` | `recovered_parameters` + 可选匹配到的 `revision`（用于复刻） |
 
@@ -129,7 +129,8 @@
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 工具列表里没有 `change.plan/commit`、`output.image` | 当前不在 **authoring** 面或缺 `comfyui:author` | 设 `COMFYUI_MCP_TOOLSET=authoring` + `COMFYUI_MCP_SCOPES=comfyui:observe,comfyui:author` |
+| 工具列表里没有 `change.plan/commit` | 当前不在 **authoring** 面或缺 `comfyui:author` | 设 `COMFYUI_MCP_TOOLSET=authoring` + `COMFYUI_MCP_SCOPES=comfyui:observe,comfyui:author` |
+| `server.diagnose` / `job.diagnose` 返回 `DIAGNOSTIC_NOT_FOUND` | 诊断是**对象绑定**的结构化报告：没有可诊断的观测记录（server）或失败 Job（job）时直接拒绝，不会凭空生成 | 先用 `server.health` / `job.get` 确认对象存在；已成功完成的 Job、未落观测记录的 server 不产生报告。两者都在 **operations** 面，但 scope 不同：`job.diagnose` 需 `comfyui:observe`，`server.diagnose` 需 `comfyui:operate`；execution 面两个都调不到是正常的 |
 | 工具列表里没有 `defaults` | 不在 **execution** 面 | `defaults` 的 scope 是 `comfyui:execute` |
 | `model.list(include_metadata=true)` 返回 `no_local_root` | server 条目未配 `local_root` | 补上 ComfyUI 安装根目录 |
 | `change.commit` 报 `INVALID_ARGUMENTS` 且提示混用 | 同时传了 `operations` 与 `plan_id` | 二选一 |
