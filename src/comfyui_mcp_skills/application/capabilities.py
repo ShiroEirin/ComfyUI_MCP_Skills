@@ -49,6 +49,21 @@ class CapabilitySpec:
 _ALL_TOOLSETS = frozenset(Toolset)
 _ALL_SCOPES = frozenset(Scope)
 
+# Compact mode collapses the asset family into one action-parameterized tool.
+# The capability is advertised only when that tool is actually registered, so
+# the capability/tool bijection holds in both modes.
+COMPACT_ASSET_CAPABILITY = CapabilitySpec(
+    "comfyui.asset",
+    "Work with assets",
+    "One action-parameterized front door for upload, listing, metadata, "
+    "collections, import, delete and transfer (compact tool surface).",
+    frozenset({Toolset.EXECUTION}),
+    frozenset({Scope.EXECUTE}),
+    RiskLevel.MEDIUM,
+    ("asset", "upload", "list", "metadata", "transfer", "compact"),
+)
+
+
 CAPABILITY_SPECS: tuple[CapabilitySpec, ...] = (
     CapabilitySpec(
         "comfyui.capability.search",

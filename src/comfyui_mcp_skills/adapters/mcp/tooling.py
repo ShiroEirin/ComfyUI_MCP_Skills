@@ -2512,7 +2512,7 @@ def phase_h_tools(*, include_phase_p: bool = False) -> list[Tool]:
     return [decorate_tool(tool) for tool in tools]
 
 
-def phase_l_tools() -> list[Tool]:
+def _legacy_asset_tools() -> list[Tool]:
     """Return the stable Phase L asset, Artifact, and transfer Tool surface."""
     identifier = {
         "type": "string",
@@ -2741,6 +2741,86 @@ def phase_l_tools() -> list[Tool]:
         ),
     ]
     return [decorate_tool(tool) for tool in tools]
+
+
+# One front door per resource family keeps the fixed surface bounded. The
+# fine-grained tools stay dispatchable for existing callers, but compact mode
+# stops advertising them so an agent sees one name per family.
+ASSET_ACTIONS: dict[str, str] = {
+    "upload": "comfyui.asset.upload",
+    "list": "comfyui.asset.list",
+    "describe": "comfyui.asset.describe",
+    "collection.update": "comfyui.asset.collection.update",
+    "metadata.extract": "comfyui.asset.metadata.extract",
+    "import_output": "comfyui.asset.import_output",
+    "delete.plan": "comfyui.asset.delete.plan",
+    "delete.commit": "comfyui.asset.delete.commit",
+    "transfer.plan": "comfyui.asset.transfer.plan",
+    "transfer.commit": "comfyui.asset.transfer.commit",
+    "transfer.get": "comfyui.asset.transfer.get",
+}
+LEGACY_ASSET_TOOL_NAMES = frozenset(ASSET_ACTIONS.values())
+
+
+def _action_tool(
+    *,
+    name: str,
+    description: str,
+    actions: dict[str, str],
+    tools: list[Tool],
+) -> Tool:
+    """Merge a resource family into one action-parameterized Tool.
+
+    Every member's input properties are unioned so the agent can see all
+    accepted fields; per-action requirements are enforced by the handler the
+    action routes to.
+    """
+    properties: dict[str, Any] = {
+        "action": {
+            "type": "string",
+            "enum": sorted(actions),
+            "description": "Operation to run.",
+        },
+    }
+    for tool in tools:
+        schema = tool.input_schema or {}
+        for field, definition in (schema.get("properties") or {}).items():
+            properties.setdefault(field, definition)
+    return Tool(
+        name=name,
+        description=description,
+        input_schema={
+            "type": "object",
+            "properties": properties,
+            "required": ["action"],
+            "additionalProperties": False,
+        },
+        output_schema={"type": "object"},
+    )
+
+
+def phase_l_tools(*, compact: bool = False, extra: list[Tool] | None = None) -> list[Tool]:
+    """Return the Phase L asset Tool surface (one front door in compact mode).
+
+    ``comfyui.asset.upload`` lives on the fixed surface rather than here, so
+    compact mode passes it through ``extra`` to keep the family complete.
+    """
+    tools = _legacy_asset_tools()
+    if not compact:
+        return tools
+    members = [*(extra or []), *tools]
+    return [
+        _action_tool(
+            name="comfyui.asset",
+            description=(
+                "Work with owner-visible assets: upload, list, describe, collections, "
+                "metadata, import output, delete and transfer. Select `action` to choose "
+                "the operation."
+            ),
+            actions=ASSET_ACTIONS,
+            tools=members,
+        )
+    ]
 
 
 def phase_m_tools() -> list[Tool]:

@@ -22,6 +22,7 @@ from comfyui_mcp_skills.application.authorization import (
 from comfyui_mcp_skills.application.capabilities import (
     CAPABILITY_BY_NAME,
     CAPABILITY_SPECS,
+    COMPACT_ASSET_CAPABILITY,
     CapabilityCatalog,
 )
 
@@ -47,9 +48,19 @@ def test_every_capability_is_registered_for_authorization() -> None:
 
 
 def test_authorization_table_has_no_capability_orphans() -> None:
-    orphaned = sorted(name for name in _TOOL_SCOPES if name not in CAPABILITY_BY_NAME)
+    # Compact-only capabilities are registered for authorization without joining
+    # the default catalog, so they count as known names here too.
+    known = set(CAPABILITY_BY_NAME) | {COMPACT_ASSET_CAPABILITY.name}
+    orphaned = sorted(name for name in _TOOL_SCOPES if name not in known)
 
     assert orphaned == []
+
+
+def test_compact_capability_scope_matches_the_authorization_table() -> None:
+    assert (
+        _TOOL_SCOPES[COMPACT_ASSET_CAPABILITY.name]
+        == COMPACT_ASSET_CAPABILITY.required_scopes
+    )
 
 
 def test_catalog_never_advertises_an_unauthorized_capability() -> None:

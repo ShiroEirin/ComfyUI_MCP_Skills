@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
 import uuid
@@ -50,7 +51,9 @@ from comfyui_mcp_skills.adapters.mcp.prompts import create_prompt_handlers
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
 from comfyui_mcp_skills.adapters.mcp.tooling import (
+    ASSET_ACTIONS,
     EXECUTION_PROPERTY,
+    LEGACY_ASSET_TOOL_NAMES,
     OVERRIDES_PROPERTY,
     RUN_JOB_SCHEMA,
     UI_EXTENSION_ID,
@@ -95,6 +98,7 @@ from comfyui_mcp_skills.application.authorization import (
 )
 from comfyui_mcp_skills.application.capabilities import (
     CAPABILITY_SPECS,
+    COMPACT_ASSET_CAPABILITY,
     CapabilityCatalog,
     ToolInventory,
 )
@@ -862,14 +866,27 @@ def create_server(
     if batch_service is None:
         batch_service = BatchService(execution, jobs)
     restart_execution_available = repositories.run_store == "sqlite"
+    # Compact mode collapses each resource family into one action-parameterized
+    # tool. It is opt-in so existing hosts keep their current tool names.
+    compact_tools = os.environ.get("COMFYUI_MCP_COMPACT_TOOLS") == "1"
+    fixed_catalog = fixed_tools()
+    # `comfyui.asset.upload` sits on the fixed surface; compact mode moves it
+    # behind the aggregated asset front door.
+    compact_asset_upload = [
+        tool for tool in fixed_catalog if compact_tools and tool.name == "comfyui.asset.upload"
+    ]
     fixed_surface = [
-        *fixed_tools(),
+        *(tool for tool in fixed_catalog if tool not in compact_asset_upload),
         *(
             tool
             for tool in phase_h_tools(include_phase_p=True)
             if restart_execution_available or tool.name not in RESTART_EXECUTION_TOOL_NAMES
         ),
-        *(phase_l_tools() if asset_library is not None else []),
+        *(
+            phase_l_tools(compact=compact_tools, extra=compact_asset_upload)
+            if asset_library is not None
+            else []
+        ),
         *(phase_k_tools() if routing is not None else []),
         *(phase_m_tools() if experiment_service is not None else []),
         *[
@@ -905,6 +922,14 @@ def create_server(
                     or spec.name not in RESTART_EXECUTION_TOOL_NAMES
                 )
                 and (spec.name not in PHASE_N_TOOL_NAMES or spec.name in available_phase_n)
+                # Compact mode advertises one front door per family, so hide the
+                # members it collapses (they stay dispatchable).
+                and (not compact_tools or spec.name not in LEGACY_ASSET_TOOL_NAMES)
+            ),
+            *(
+                (COMPACT_ASSET_CAPABILITY,)
+                if compact_tools and asset_library is not None
+                else ()
             ),
         )
     )
@@ -1247,6 +1272,17 @@ def create_server(
         params: CallToolRequestParams,
     ) -> CallToolResult:
         arguments = dict(params.arguments or {})
+        # Compact mode lists one front door per resource family; route it back to
+        # the fine-grained handler that still owns the behaviour.
+        if params.name == "comfyui.asset":
+            action = arguments.pop("action", None)
+            mapped = ASSET_ACTIONS.get(str(action or ""))
+            if mapped is None:
+                raise MCPError(
+                    code=INVALID_PARAMS,
+                    message=f"Unknown comfyui.asset action: {action}",
+                )
+            params = params.model_copy(update={"name": mapped, "arguments": arguments})
         owner_id = (
             authorization.principal_id
             if enforce_authorization and current_scopes() is None
@@ -1257,7 +1293,12 @@ def create_server(
         )
         requested_name = params.name
         visible_names = {tool.name for tool in tools}
-        if requested_name not in visible_names:
+        # Legacy family members stay callable after compact mode stops listing
+        # them, so existing prompts and host configs keep working. Outside
+        # compact mode they were never hidden, and a hidden-by-backend tool must
+        # still be rejected as unknown.
+        legacy_alias = compact_tools and requested_name in LEGACY_ASSET_TOOL_NAMES
+        if requested_name not in visible_names and not legacy_alias:
             raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {requested_name}")
         try:
             if requested_name in workflow_map:

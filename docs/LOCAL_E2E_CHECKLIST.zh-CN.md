@@ -132,6 +132,7 @@
 | 工具列表里没有 `change.plan/commit` | 当前不在 **authoring** 面或缺 `comfyui:author` | 设 `COMFYUI_MCP_TOOLSET=authoring` + `COMFYUI_MCP_SCOPES=comfyui:observe,comfyui:author` |
 | `server.diagnose` / `job.diagnose` 返回 `DIAGNOSTIC_NOT_FOUND` | 诊断是**对象绑定**的结构化报告：没有可诊断的观测记录（server）或失败 Job（job）时直接拒绝，不会凭空生成 | 先用 `server.health` / `job.get` 确认对象存在；已成功完成的 Job、未落观测记录的 server 不产生报告。两者都在 **operations** 面，但 scope 不同：`job.diagnose` 需 `comfyui:observe`，`server.diagnose` 需 `comfyui:operate`；execution 面两个都调不到是正常的 |
 | 工具列表里没有 `defaults` | 不在 **execution** 面 | `defaults` 的 scope 是 `comfyui:execute` |
+| 工具列表里看不到 `comfyui.asset.*` 细分工具 | 已启用 compact 模式（`COMFYUI_MCP_COMPACT_TOOLS=1`），资产族收成一个 `comfyui.asset` 前端 | 用 `action` 选择操作：`upload` / `list` / `describe` / `collection.update` / `metadata.extract` / `import_output` / `delete.plan` / `delete.commit` / `transfer.plan` / `transfer.commit` / `transfer.get`；旧名仍可直接调用，只是不再列出 |
 | `model.list(include_metadata=true)` 返回 `no_local_root` | server 条目未配 `local_root` | 补上 ComfyUI 安装根目录 |
 | `change.commit` 报 `INVALID_ARGUMENTS` 且提示混用 | 同时传了 `operations` 与 `plan_id` | 二选一 |
 | `_overrides` 报「missing input」 | 字段名写错或该节点无此输入 | 用 `workflow.visualize` + `node.describe` 核对 |

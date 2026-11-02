@@ -1,0 +1,51 @@
+"""Compact tool surface: one action-parameterized front door per resource family."""
+
+from __future__ import annotations
+
+from comfyui_mcp_skills.adapters.mcp.tooling import (
+    ASSET_ACTIONS,
+    LEGACY_ASSET_TOOL_NAMES,
+    Tool,
+    fixed_tools,
+    phase_l_tools,
+)
+
+# `comfyui.asset.upload` lives on the fixed surface, not in phase_l_tools().
+PHASE_L_ASSET_NAMES = LEGACY_ASSET_TOOL_NAMES - {"comfyui.asset.upload"}
+
+
+def _asset_upload_tool() -> Tool:
+    return next(tool for tool in fixed_tools() if tool.name == "comfyui.asset.upload")
+
+
+def test_default_surface_keeps_the_legacy_asset_tools() -> None:
+    tools = phase_l_tools()
+
+    assert len(tools) == len(PHASE_L_ASSET_NAMES)
+    assert {tool.name for tool in tools} == set(PHASE_L_ASSET_NAMES)
+
+
+def test_compact_mode_exposes_exactly_one_asset_front_door() -> None:
+    tools = phase_l_tools(compact=True, extra=[_asset_upload_tool()])
+
+    assert [tool.name for tool in tools] == ["comfyui.asset"]
+    schema = tools[0].input_schema
+    assert schema["required"] == ["action"]
+    assert schema["additionalProperties"] is False
+    assert schema["properties"]["action"]["enum"] == sorted(ASSET_ACTIONS)
+
+
+def test_compact_front_door_unions_member_parameters() -> None:
+    properties = phase_l_tools(compact=True, extra=[_asset_upload_tool()])[0].input_schema[
+        "properties"
+    ]
+
+    for expected in ("server_id", "asset_id", "local_path", "limit", "collection", "cursor"):
+        assert expected in properties
+
+
+def test_every_action_maps_to_a_distinct_legacy_tool() -> None:
+    values = list(ASSET_ACTIONS.values())
+
+    assert len(values) == len(set(values))
+    assert set(values) == set(LEGACY_ASSET_TOOL_NAMES)

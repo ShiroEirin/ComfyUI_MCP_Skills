@@ -41,6 +41,8 @@ _TOOLSET_SCOPES: dict[Toolset, frozenset[Scope]] = {
 _TOOL_SCOPES: dict[str, frozenset[Scope]] = {
     "comfyui.capability.search": frozenset(Scope),
     "comfyui.capability.describe": frozenset(Scope),
+    # Compact-mode front door for the whole asset family.
+    "comfyui.asset": frozenset({Scope.EXECUTE}),
     "comfyui.asset.upload": frozenset({Scope.EXECUTE}),
     "comfyui.asset.list": frozenset({Scope.EXECUTE}),
     "comfyui.asset.describe": frozenset({Scope.EXECUTE}),
