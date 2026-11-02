@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from comfyui_mcp_skills.adapters.mcp.server import resolve_canonical_tool_name
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     ASSET_ACTIONS,
     LEGACY_ASSET_TOOL_NAMES,
@@ -49,3 +50,20 @@ def test_every_action_maps_to_a_distinct_legacy_tool() -> None:
 
     assert len(values) == len(set(values))
     assert set(values) == set(LEGACY_ASSET_TOOL_NAMES)
+
+
+def test_unlisted_compact_alias_keeps_its_own_name() -> None:
+    """Regression: a hidden family member has no portable-name entry.
+
+    Indexing the mapping directly raised KeyError, which the dispatch error
+    boundary reported as INVALID_ARGUMENTS instead of running the tool.
+    """
+    mapping = {"comfyui.asset": "comfyui.asset"}
+
+    assert resolve_canonical_tool_name("comfyui.asset.list", mapping) == "comfyui.asset.list"
+
+
+def test_portable_name_still_maps_to_its_canonical_name() -> None:
+    mapping = {"comfyui_run_local_x": "comfyui.run.local.x"}
+
+    assert resolve_canonical_tool_name("comfyui_run_local_x", mapping) == "comfyui.run.local.x"

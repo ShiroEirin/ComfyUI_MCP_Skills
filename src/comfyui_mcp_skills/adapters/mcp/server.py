@@ -620,6 +620,16 @@ def _engine_history_projection(
 logger = logging.getLogger(__name__)
 
 
+def resolve_canonical_tool_name(requested: str, canonical_by_external: dict[str, str]) -> str:
+    """Map a portable external Tool name to its canonical name.
+
+    The mapping only covers Tools that are currently listed. Compact mode hides
+    family members behind one front door while keeping them dispatchable, so an
+    unlisted alias must keep its own name instead of raising ``KeyError``.
+    """
+    return canonical_by_external.get(requested, requested)
+
+
 def create_server(
     base_dir: Path,
     *,
@@ -1426,7 +1436,12 @@ def create_server(
                         )
                         return tool_result(document)
                 return tool_result(job_dict(job))
-            params = params.model_copy(update={"name": canonical_by_external[requested_name]})
+            # Portable tool names map external -> canonical. Compact-mode legacy
+            # aliases are not listed, so they have no entry here and must keep
+            # their own name (the dispatch chain still owns their branch).
+            canonical_name = resolve_canonical_tool_name(requested_name, canonical_by_external)
+            if canonical_name != requested_name:
+                params = params.model_copy(update={"name": canonical_name})
             request_authorization = AuthorizationContext(
                 owner_id,
                 current_scopes() or authorization.scopes,
