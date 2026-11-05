@@ -174,7 +174,7 @@ class WorkflowValidationService:
                     _issue("unknown_node_type", f"Unknown node type: {class_type}", node_id)
                 )
             known_inputs = _known_inputs(info)
-            required_inputs = _required_inputs(info)
+            required_inputs = _required_inputs(info, inputs)
             for field in sorted(required_inputs - {str(key) for key in inputs}):
                 issues.append(
                     _issue(
@@ -295,14 +295,26 @@ class WorkflowValidationService:
         return _validation_result(issues, unsupported)
 
 
-def _required_inputs(info: object) -> set[str]:
+def _required_inputs(info: object, inputs: dict[Any, Any] | None = None) -> set[str]:
     if not isinstance(info, dict):
         return set()
-    inputs = info.get("input")
-    if not isinstance(inputs, dict):
+    inputs_spec = info.get("input")
+    if not isinstance(inputs_spec, dict):
         return set()
-    required = inputs.get("required")
-    return {str(field) for field in required} if isinstance(required, dict) else set()
+    required = inputs_spec.get("required")
+    if not isinstance(required, dict):
+        return set()
+    result = {str(field) for field in required}
+    # A dynamic combo unmasks only its selected option's inputs, so those count
+    # as required too (ComfyUI rejects a submission that omits them).
+    for field, definition in required.items():
+        options = _dynamic_combo_options(definition)
+        if not options:
+            continue
+        selected = (inputs or {}).get(field)
+        if isinstance(selected, str) and selected in options:
+            result.update(f"{field}.{sub}" for sub in options[selected])
+    return result
 
 
 def _input_definition(info: object, field: str) -> list[Any] | None:

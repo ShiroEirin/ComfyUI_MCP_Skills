@@ -210,11 +210,17 @@ def test_wait_aggregates_terminal_and_timeout_states_without_cancelling() -> Non
     assert result["items"][2]["prompt_id"] == "prompt-3"
     assert result["items"][1]["error"]["message"] == "execution failed"
     assert result["counts"] == {"completed": 1, "failed": 1, "timed_out": 1}
-    assert jobs.wait_calls == [
-        ("local", "prompt-1", 5.0, "owner"),
-        ("local", "prompt-2", 5.0, "owner"),
-        ("local", "prompt-3", 5.0, "owner"),
+    assert [call[:2] for call in jobs.wait_calls] == [
+        ("local", "prompt-1"),
+        ("local", "prompt-2"),
+        ("local", "prompt-3"),
     ]
+    assert all(call[3] == "owner" for call in jobs.wait_calls)
+    # The caller's timeout is a budget for the whole batch, so each item gets
+    # the remaining budget: never more than the original and non-increasing.
+    timeouts = [call[2] for call in jobs.wait_calls]
+    assert all(0.0 < value <= 5.0 for value in timeouts)
+    assert timeouts == sorted(timeouts, reverse=True)
     assert jobs.cancel_calls == []
 
 

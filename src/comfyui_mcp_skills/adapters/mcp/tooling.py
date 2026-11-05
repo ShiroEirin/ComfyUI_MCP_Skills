@@ -7,6 +7,7 @@ import hashlib
 import json
 import mimetypes
 import re
+from collections.abc import Sequence
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -151,6 +152,7 @@ RUN_JOB_SCHEMA: dict[str, Any] = {
         "timed_out": {"type": "boolean"},
         "waited_seconds": {"type": "number", "minimum": 0},
         "last_status": {"type": "string"},
+        "returned_images": {"type": "array", "items": {"type": "object"}},
     },
 }
 
@@ -190,6 +192,22 @@ EXECUTION_PROPERTY: dict[str, Any] = {
                 "Submit even when the graph contains code-execution, network, "
                 "or paid external-API nodes. Every allowance is audited."
             ),
+        },
+        "return_images": {
+            "type": "boolean",
+            "default": False,
+            "description": (
+                "Attach this Job's output images as native MCP image blocks so one "
+                "call can show the result. Only applies when wait=true and the Job "
+                "completes; a timeout or failure returns the document alone."
+            ),
+        },
+        "max_images": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4,
+            "default": 1,
+            "description": "Upper bound on attached image blocks when return_images is set",
         },
     },
     "additionalProperties": False,
@@ -681,24 +699,32 @@ def tool_result(data: dict[str, Any], *, error: bool = False) -> CallToolResult:
     )
 
 
-def tool_result_with_image(
-    data: dict[str, Any], *, payload: bytes, mime_type: str
+def tool_result_with_images(
+    data: dict[str, Any], *, images: Sequence[tuple[bytes, str]]
 ) -> CallToolResult:
-    """Attach one native MCP image block to a standard tool result.
+    """Attach native MCP image blocks to a standard tool result.
 
-    Hosts that understand image content (Snow App included) render it, persist
-    it to their own upload directory, and hand it to the model as multimodal
+    Hosts that understand image content (Snow App included) render them, persist
+    them to their own upload directory, and hand them to the model as multimodal
     input -- no host-specific tag convention required.
     """
     result = tool_result(data)
-    result.content.append(
-        ImageContent(
-            type="image",
-            data=base64.b64encode(payload).decode("ascii"),
-            mime_type=mime_type,
+    for payload, mime_type in images:
+        result.content.append(
+            ImageContent(
+                type="image",
+                data=base64.b64encode(payload).decode("ascii"),
+                mime_type=mime_type,
+            )
         )
-    )
     return result
+
+
+def tool_result_with_image(
+    data: dict[str, Any], *, payload: bytes, mime_type: str
+) -> CallToolResult:
+    """Single-image shorthand for :func:`tool_result_with_images`."""
+    return tool_result_with_images(data, images=[(payload, mime_type)])
 
 
 def current_owner() -> str:
@@ -2782,10 +2808,18 @@ def _action_tool(
             "description": "Operation to run.",
         },
     }
+    inverse = {legacy: key for key, legacy in actions.items()}
     for tool in tools:
         schema = tool.input_schema or {}
+        action_key = inverse.get(tool.name, "")
+        prefix = f"{action_key.replace('.', '_')}_action" if action_key else ""
         for field, definition in (schema.get("properties") or {}).items():
-            properties.setdefault(field, definition)
+            # `asset.collection.update` has its own `action` (add/remove). The
+            # aggregate already uses `action` as the operation selector, so the
+            # member field is exposed under a namespaced name instead of being
+            # silently dropped.
+            property_name = prefix if field == "action" and prefix else field
+            properties.setdefault(property_name, definition)
     return Tool(
         name=name,
         description=description,

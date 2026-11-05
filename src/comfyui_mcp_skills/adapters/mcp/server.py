@@ -10,6 +10,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,7 +47,11 @@ from comfyui_mcp_skills.adapters.mcp.defaults import (
 )
 from comfyui_mcp_skills.adapters.mcp.gallery_app import GALLERY_URI
 from comfyui_mcp_skills.adapters.mcp.orchestration import OrchestrationRuntime
-from comfyui_mcp_skills.adapters.mcp.output_image import OutputOwnership, export_output_image
+from comfyui_mcp_skills.adapters.mcp.output_image import (
+    OutputImageExport,
+    OutputOwnership,
+    export_output_image,
+)
 from comfyui_mcp_skills.adapters.mcp.prompts import create_prompt_handlers
 from comfyui_mcp_skills.adapters.mcp.resources import create_resource_handlers
 from comfyui_mcp_skills.adapters.mcp.subscriptions import WorkflowChangeMonitor
@@ -80,6 +85,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     required_string,
     tool_result,
     tool_result_with_image,
+    tool_result_with_images,
     validate_fixed_arguments,
     variant_page_dict,
     with_ui_metadata,
@@ -158,7 +164,7 @@ from comfyui_mcp_skills.domain.errors import (
     WorkflowNotFound,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
-from comfyui_mcp_skills.domain.models import Workflow
+from comfyui_mcp_skills.domain.models import Job, Workflow
 from comfyui_mcp_skills.domain.orchestration import PROVISIONING_WORK_TYPE
 from comfyui_mcp_skills.domain.parameter_suggestions import suggest_parameters
 from comfyui_mcp_skills.domain.workflow_schema import build_input_schema, normalize_parameters
@@ -630,6 +636,146 @@ def resolve_canonical_tool_name(requested: str, canonical_by_external: dict[str,
     return canonical_by_external.get(requested, requested)
 
 
+def legacy_asset_alias_allowed(
+    name: str,
+    *,
+    compact: bool,
+    toolset: Toolset,
+    scopes: frozenset[Scope],
+    asset_library_available: bool,
+) -> bool:
+    """Decide whether a hidden compact-mode asset alias may be dispatched.
+
+    Compatibility is a naming convenience, never a permission bypass: an alias
+    has to pass the same scope/Toolset and backend-availability checks as a
+    listed Tool, otherwise hiding a Tool would silently grant access to it.
+    """
+    if not compact or name not in LEGACY_ASSET_TOOL_NAMES:
+        return False
+    if name != "comfyui.asset.upload" and not asset_library_available:
+        return False
+    return tool_visible(name, toolset, scopes)
+
+
+_EXECUTION_FIELDS = frozenset(
+    {
+        "idempotency_key",
+        "wait",
+        "wait_timeout_seconds",
+        "priority",
+        "partial_execution_targets",
+        "allow_risky_nodes",
+        "return_images",
+        "max_images",
+    }
+)
+_MAX_RETURNED_IMAGES = 4
+_MAX_IMAGE_ERROR_CHARS = 200
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutionRequest:
+    """One validated ``_execution`` block.
+
+    Every submission entry point parses the block here, so a caller cannot get a
+    weaker check just by choosing a different tool that reaches the same queue.
+    """
+
+    idempotency_key: str = ""
+    wait: bool = False
+    timeout_seconds: float = 120.0
+    priority: float | None = None
+    targets: tuple[str, ...] = ()
+    allow_risky_nodes: bool = False
+    return_images: bool = False
+    max_images: int = 1
+
+
+def parse_execution_options(raw: object) -> ExecutionRequest:
+    """Validate the shared ``_execution`` block; unknown fields are refused."""
+    if not isinstance(raw, dict):
+        raise TypeError("_execution must be an object")
+    unexpected = set(raw) - _EXECUTION_FIELDS
+    if unexpected:
+        raise ValueError("Unexpected _execution fields: " + ", ".join(sorted(unexpected)))
+
+    idempotency_key = raw.get("idempotency_key", "")
+    if not isinstance(idempotency_key, str):
+        raise TypeError("idempotency_key must be a string")
+    if len(idempotency_key) > 256:
+        raise ValueError("idempotency_key exceeds 256 characters")
+
+    wait = raw.get("wait", False)
+    if not isinstance(wait, bool):
+        raise TypeError("wait must be a boolean")
+
+    timeout_raw = raw.get("wait_timeout_seconds", 120)
+    if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, (int, float)):
+        raise TypeError("wait_timeout_seconds must be a number")
+    timeout_seconds = float(timeout_raw)
+    if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 300:
+        raise ValueError("wait_timeout_seconds must be between 0 and 300")
+
+    priority_raw = raw.get("priority")
+    priority: float | None = None
+    if priority_raw is not None:
+        if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float)):
+            raise TypeError("priority must be a number")
+        priority = float(priority_raw)
+        if not math.isfinite(priority) or not -1000 <= priority <= 1000:
+            raise ValueError("priority must be between -1000 and 1000")
+
+    targets_raw = raw.get("partial_execution_targets")
+    targets: tuple[str, ...] = ()
+    if targets_raw is not None:
+        if not isinstance(targets_raw, list) or not targets_raw:
+            raise TypeError("partial_execution_targets must be a non-empty array")
+        if len(targets_raw) > 100:
+            raise ValueError("partial_execution_targets must not exceed 100 entries")
+        for item in targets_raw:
+            if (
+                not isinstance(item, str)
+                or not item
+                or len(item) > 128
+                or "\r" in item
+                or "\n" in item
+            ):
+                raise TypeError(
+                    "partial_execution_targets entries must be node IDs without line breaks"
+                )
+        targets = tuple(dict.fromkeys(targets_raw))
+
+    allow_risky_nodes = raw.get("allow_risky_nodes", False)
+    if not isinstance(allow_risky_nodes, bool):
+        raise TypeError("allow_risky_nodes must be a boolean")
+
+    return_images = raw.get("return_images", False)
+    if not isinstance(return_images, bool):
+        raise TypeError("return_images must be a boolean")
+
+    max_images = raw.get("max_images", 1)
+    if isinstance(max_images, bool) or not isinstance(max_images, int):
+        raise TypeError("max_images must be an integer")
+    if not 1 <= max_images <= _MAX_RETURNED_IMAGES:
+        raise ValueError(f"max_images must be between 1 and {_MAX_RETURNED_IMAGES}")
+
+    return ExecutionRequest(
+        idempotency_key=idempotency_key,
+        wait=wait,
+        timeout_seconds=timeout_seconds,
+        priority=priority,
+        targets=targets,
+        allow_risky_nodes=allow_risky_nodes,
+        return_images=return_images,
+        max_images=max_images,
+    )
+
+
+def _bounded_image_error(exc: BaseException) -> str:
+    text = str(exc).replace("\r", " ").replace("\n", " ").strip()
+    return (text or exc.__class__.__name__)[:_MAX_IMAGE_ERROR_CHARS]
+
+
 def create_server(
     base_dir: Path,
     *,
@@ -699,6 +845,73 @@ def create_server(
             else None
         )
         return global_servers.connection(server_id) if connection is None else connection
+
+    async def job_result(
+        job: Job, *, owner_id: str, options: ExecutionRequest
+    ) -> CallToolResult:
+        """Project a finished Job, attaching its own output images when asked.
+
+        Ownership comes from the Job this call created, so no asset store is
+        needed: the caller never supplies a filename, and only outputs the engine
+        reported for this very prompt are read back.
+        """
+        document = job_dict(job)
+        if not options.return_images:
+            return tool_result(document)
+        document["returned_images"] = []
+        if job.status != "completed":
+            return tool_result(document)
+        gateway = gateway_factory(owner_server_connection(owner_id, job.server_id))
+        seen: set[tuple[str, str]] = set()
+        attached: list[tuple[bytes, str]] = []
+
+        def export_one(filename: str, subfolder: str) -> OutputImageExport:
+            return export_output_image(
+                gateway=gateway,
+                server_id=job.server_id,
+                filename=filename,
+                subfolder=subfolder,
+            )
+
+        for output in document["outputs"]:
+            if len(attached) >= options.max_images:
+                break
+            if output.get("media_type") != "image":
+                continue
+            filename = str(output.get("filename", ""))
+            subfolder = str(output.get("subfolder", ""))
+            key = (filename.casefold(), subfolder.casefold())
+            if not filename or key in seen:
+                continue
+            seen.add(key)
+            try:
+                exported = await anyio.to_thread.run_sync(export_one, filename, subfolder)
+            except Exception as exc:  # one unreadable output must not lose the Job
+                document["returned_images"].append(
+                    {
+                        "filename": filename,
+                        "subfolder": subfolder,
+                        "error": _bounded_image_error(exc),
+                    }
+                )
+                continue
+            entry: dict[str, Any] = {
+                "filename": exported.document["filename"],
+                "subfolder": exported.document["subfolder"],
+                "mime_type": exported.document["mime_type"],
+                "size_bytes": exported.document["size_bytes"],
+            }
+            if exported.payload is None:
+                # Tag mode already stored the bytes and left a renderable tag.
+                entry["attached"] = False
+                document["returned_images"].append(entry)
+                continue
+            entry["attached"] = True
+            document["returned_images"].append(entry)
+            attached.append((exported.payload, str(exported.document["mime_type"])))
+        if not attached:
+            return tool_result(document)
+        return tool_result_with_images(document, images=attached)
 
     servers = (
         OwnerAwareServerRegistry(
@@ -1292,6 +1505,12 @@ def create_server(
                     code=INVALID_PARAMS,
                     message=f"Unknown comfyui.asset action: {action}",
                 )
+            # The aggregate namespaces member-level `action` fields so they do
+            # not collide with the operation selector; map them back here.
+            for field in [name for name in arguments if name.endswith("_action")]:
+                if field.replace("_action", "") in str(action).replace(".", "_"):
+                    arguments["action"] = arguments.pop(field)
+                    break
             params = params.model_copy(update={"name": mapped, "arguments": arguments})
         owner_id = (
             authorization.principal_id
@@ -1304,78 +1523,27 @@ def create_server(
         requested_name = params.name
         visible_names = {tool.name for tool in tools}
         # Legacy family members stay callable after compact mode stops listing
-        # them, so existing prompts and host configs keep working. Outside
-        # compact mode they were never hidden, and a hidden-by-backend tool must
-        # still be rejected as unknown.
-        legacy_alias = compact_tools and requested_name in LEGACY_ASSET_TOOL_NAMES
+        # them, so existing prompts and host configs keep working. The alias is
+        # only a naming convenience: it must still pass the same scope/Toolset
+        # and backend checks as any listed Tool.
+        granted_scopes = current_scopes() if enforce_authorization else None
+        active_scopes = granted_scopes or authorization.scopes
+        legacy_alias = legacy_asset_alias_allowed(
+            requested_name,
+            compact=compact_tools,
+            toolset=authorization.toolset,
+            scopes=active_scopes,
+            asset_library_available=asset_library is not None,
+        )
         if requested_name not in visible_names and not legacy_alias:
             raise MCPError(code=INVALID_PARAMS, message=f"Unknown tool: {requested_name}")
         try:
             if requested_name in workflow_map:
                 workflow = workflow_map[requested_name]
-                execution_options = arguments.pop("_execution", {})
                 overrides_options = arguments.pop("_overrides", {})
                 if not isinstance(overrides_options, dict):
                     raise TypeError("_overrides must be an object")
-                if not isinstance(execution_options, dict):
-                    raise TypeError("_execution must be an object")
-                idempotency_key = execution_options.get("idempotency_key", "")
-                unexpected_options = set(execution_options) - {
-                    "idempotency_key",
-                    "wait",
-                    "wait_timeout_seconds",
-                    "priority",
-                    "partial_execution_targets",
-                    "allow_risky_nodes",
-                }
-                if unexpected_options:
-                    raise ValueError(
-                        "Unexpected _execution fields: " + ", ".join(sorted(unexpected_options))
-                    )
-                if not isinstance(idempotency_key, str):
-                    raise TypeError("idempotency_key must be a string")
-                wait = execution_options.get("wait", False)
-                if len(idempotency_key) > 256:
-                    raise ValueError("idempotency_key exceeds 256 characters")
-                if not isinstance(wait, bool):
-                    raise TypeError("wait must be a boolean")
-                timeout_raw = execution_options.get("wait_timeout_seconds", 120)
-                if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, (int, float)):
-                    raise TypeError("wait_timeout_seconds must be a number")
-                timeout_seconds = float(timeout_raw)
-                if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 300:
-                    raise ValueError("wait_timeout_seconds must be between 0 and 300")
-                priority_raw = execution_options.get("priority")
-                priority: float | None = None
-                if priority_raw is not None:
-                    if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float)):
-                        raise TypeError("priority must be a number")
-                    priority = float(priority_raw)
-                    if not math.isfinite(priority) or not -1000 <= priority <= 1000:
-                        raise ValueError("priority must be between -1000 and 1000")
-                targets_raw = execution_options.get("partial_execution_targets")
-                targets: tuple[str, ...] = ()
-                if targets_raw is not None:
-                    if not isinstance(targets_raw, list) or not targets_raw:
-                        raise TypeError("partial_execution_targets must be a non-empty array")
-                    if len(targets_raw) > 100:
-                        raise ValueError("partial_execution_targets must not exceed 100 entries")
-                    for item in targets_raw:
-                        if (
-                            not isinstance(item, str)
-                            or not item
-                            or len(item) > 128
-                            or "\r" in item
-                            or "\n" in item
-                        ):
-                            raise TypeError(
-                                "partial_execution_targets entries must be node IDs "
-                                "without line breaks"
-                            )
-                    targets = tuple(dict.fromkeys(targets_raw))
-                allow_risky_nodes = execution_options.get("allow_risky_nodes", False)
-                if not isinstance(allow_risky_nodes, bool):
-                    raise TypeError("allow_risky_nodes must be a boolean")
+                options = parse_execution_options(arguments.pop("_execution", {}))
                 arguments = apply_defaults(arguments, workflow.parameters)
                 await ctx.session.report_progress(1, None, "Submitting ComfyUI workflow")
                 job = await anyio.to_thread.run_sync(
@@ -1383,17 +1551,17 @@ def create_server(
                         workflow.server_id,
                         workflow.workflow_id,
                         arguments,
-                        idempotency_key=idempotency_key,
+                        idempotency_key=options.idempotency_key,
                         owner_id=owner_id,
                         server_connection=owner_server_connection(owner_id, workflow.server_id),
-                        priority=priority,
-                        targets=targets,
+                        priority=options.priority,
+                        targets=options.targets,
                         overrides=overrides_options,
-                        allow_risky_nodes=allow_risky_nodes,
+                        allow_risky_nodes=options.allow_risky_nodes,
                     )
                 )
                 await ctx.session.report_progress(2, None, "Workflow submitted")
-                if wait:
+                if options.wait:
                     progress_value = 2
 
                     def report(event: dict[str, Any]) -> None:
@@ -1415,7 +1583,7 @@ def create_server(
                             lambda: jobs.wait(
                                 workflow.server_id,
                                 job.prompt_id,
-                                timeout_seconds=timeout_seconds,
+                                timeout_seconds=options.timeout_seconds,
                                 progress=report,
                                 cancel_check=anyio.from_thread.check_cancelled,
                                 owner_id=owner_id,
@@ -1434,8 +1602,10 @@ def create_server(
                                 "last_status": exc.last_status,
                             }
                         )
+                        if options.return_images:
+                            document["returned_images"] = []
                         return tool_result(document)
-                return tool_result(job_dict(job))
+                return await job_result(job, owner_id=owner_id, options=options)
             # Portable tool names map external -> canonical. Compact-mode legacy
             # aliases are not listed, so they have no entry here and must keep
             # their own name (the dispatch chain still owns their branch).
@@ -1473,12 +1643,10 @@ def create_server(
                     arguments, "arguments", max_properties=256, max_bytes=1024 * 1024
                 )
                 workflow = catalog.get(server_id, workflow_id)
-                execution_options = arguments.pop("_execution", {})
                 overrides_options = arguments.pop("_overrides", {})
-                if not isinstance(execution_options, dict):
-                    raise TypeError("_execution must be an object")
                 if not isinstance(overrides_options, dict):
                     raise TypeError("_overrides must be an object")
+                options = parse_execution_options(arguments.pop("_execution", {}))
                 revision_id = optional_string(arguments, "revision_id", "")
                 deployment_id = optional_string(arguments, "deployment_id", "")
                 content_digest = optional_string(arguments, "content_digest", "")
@@ -1486,88 +1654,31 @@ def create_server(
                     (revision_id, deployment_id, content_digest)
                 ):
                     raise ValueError("execution pin is incomplete")
-                idempotency_key = execution_options.get("idempotency_key", "")
-                unexpected_options = set(execution_options) - {
-                    "idempotency_key",
-                    "wait",
-                    "wait_timeout_seconds",
-                    "priority",
-                    "partial_execution_targets",
-                    "allow_risky_nodes",
-                }
-                if unexpected_options:
-                    raise ValueError(
-                        "Unexpected _execution fields: " + ", ".join(sorted(unexpected_options))
-                    )
-                if not isinstance(idempotency_key, str):
-                    raise TypeError("idempotency_key must be a string")
-                wait = execution_options.get("wait", False)
-                if len(idempotency_key) > 256:
-                    raise ValueError("idempotency_key exceeds 256 characters")
-                if not isinstance(wait, bool):
-                    raise TypeError("wait must be a boolean")
-                timeout_raw = execution_options.get("wait_timeout_seconds", 120)
-                if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, (int, float)):
-                    raise TypeError("wait_timeout_seconds must be a number")
-                timeout_seconds = float(timeout_raw)
-                if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 300:
-                    raise ValueError("wait_timeout_seconds must be between 0 and 300")
-                priority_raw = execution_options.get("priority")
-                run_priority: float | None = None
-                if priority_raw is not None:
-                    if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float)):
-                        raise TypeError("priority must be a number")
-                    run_priority = float(priority_raw)
-                    if not math.isfinite(run_priority) or not -1000 <= run_priority <= 1000:
-                        raise ValueError("priority must be between -1000 and 1000")
-                targets_raw = execution_options.get("partial_execution_targets")
-                run_targets: tuple[str, ...] = ()
-                if targets_raw is not None:
-                    if not isinstance(targets_raw, list) or not targets_raw:
-                        raise TypeError("partial_execution_targets must be a non-empty array")
-                    if len(targets_raw) > 100:
-                        raise ValueError("partial_execution_targets must not exceed 100 entries")
-                    for item in targets_raw:
-                        if (
-                            not isinstance(item, str)
-                            or not item
-                            or len(item) > 128
-                            or "\r" in item
-                            or "\n" in item
-                        ):
-                            raise TypeError(
-                                "partial_execution_targets entries must be node IDs "
-                                "without line breaks"
-                            )
-                    run_targets = tuple(dict.fromkeys(targets_raw))
-                allow_risky_nodes = execution_options.get("allow_risky_nodes", False)
-                if not isinstance(allow_risky_nodes, bool):
-                    raise TypeError("allow_risky_nodes must be a boolean")
                 workflow_arguments = apply_defaults(workflow_arguments, workflow.parameters)
                 job = await anyio.to_thread.run_sync(
                     lambda: execution.submit(
                         workflow.server_id,
                         workflow.workflow_id,
                         workflow_arguments,
-                        idempotency_key=idempotency_key,
+                        idempotency_key=options.idempotency_key,
                         owner_id=owner_id,
                         server_connection=owner_server_connection(owner_id, workflow.server_id),
-                        priority=run_priority,
-                        targets=run_targets,
+                        priority=options.priority,
+                        targets=options.targets,
                         overrides=overrides_options,
-                        allow_risky_nodes=allow_risky_nodes,
+                        allow_risky_nodes=options.allow_risky_nodes,
                         revision_id=revision_id,
                         deployment_id=deployment_id,
                         content_digest=content_digest,
                     )
                 )
-                if wait:
+                if options.wait:
                     try:
                         job = await anyio.to_thread.run_sync(
                             lambda: jobs.wait(
                                 workflow.server_id,
                                 job.prompt_id,
-                                timeout_seconds=timeout_seconds,
+                                timeout_seconds=options.timeout_seconds,
                                 cancel_check=anyio.from_thread.check_cancelled,
                                 owner_id=owner_id,
                             ),
@@ -1582,8 +1693,10 @@ def create_server(
                                 "last_status": exc.last_status,
                             }
                         )
+                        if options.return_images:
+                            document["returned_images"] = []
                         return tool_result(document)
-                return tool_result(job_dict(job))
+                return await job_result(job, owner_id=owner_id, options=options)
             if params.name == "comfyui.capability.search":
                 validate_fixed_arguments(arguments, {"query", "limit"})
                 query = optional_string(arguments, "query", "")
@@ -1760,7 +1873,28 @@ def create_server(
                     result = await anyio.to_thread.run_sync(
                         diagnostic_service.diagnose_server, server_id, owner_id
                     )
-                return tool_result(diagnostic_report_dict(result))
+                diagnostic_report = diagnostic_report_dict(result)
+                # Suggestions must be runnable from THIS surface: a diagnostic
+                # report that points at a tool the current face/scope cannot see
+                # is worse than no suggestion at all.
+                actions = diagnostic_report.get("next_actions")
+                if isinstance(actions, list):
+                    granted = current_scopes() if enforce_authorization else None
+                    active_scopes = granted or authorization.scopes
+                    diagnostic_report = {
+                        **diagnostic_report,
+                        "next_actions": [
+                            action
+                            for action in actions
+                            if isinstance(action, dict)
+                            and tool_visible(
+                                str(action.get("tool", "")),
+                                authorization.toolset,
+                                active_scopes,
+                            )
+                        ],
+                    }
+                return tool_result(diagnostic_report)
             if params.name == "comfyui.job.regenerate":
                 if regeneration_service is None:
                     raise ValueError("Regeneration service is unavailable")
@@ -2660,6 +2794,14 @@ def create_server(
                 subfolder = optional_string(arguments, "subfolder", "")
                 storage_type = optional_string(arguments, "storage_type", "output")
                 job_id = optional_string(arguments, "job_id", "")
+                if not job_id and enforce_authorization:
+                    raise MCPError(
+                        code=INVALID_PARAMS,
+                        message=(
+                            "job_id is required to verify artifact ownership before "
+                            "exporting an output image"
+                        ),
+                    )
                 ownership: OutputOwnership | None = None
                 if job_id:
                     if asset_library_repository is None:

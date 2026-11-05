@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import math
+import time
 import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
@@ -149,14 +150,18 @@ class BatchService:
         """Wait for each submitted item without cancelling any remaining work."""
         items = self._batch(batch_id)
         timeout = _validate_timeout(timeout_seconds)
+        # The caller's timeout is a budget for the whole batch, not per item:
+        # 100 items at 60s must not occupy the caller for 6000s.
+        deadline = time.monotonic() + timeout
         for item in items:
             if not item["prompt_id"]:
                 continue
+            remaining = max(0.0, deadline - time.monotonic())
             try:
                 job = self._jobs.wait(
                     item["server_id"],
                     item["prompt_id"],
-                    timeout_seconds=timeout,
+                    timeout_seconds=remaining,
                     owner_id=owner_id,
                 )
                 _apply_job(item, job)

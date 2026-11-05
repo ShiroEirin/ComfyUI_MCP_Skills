@@ -289,6 +289,16 @@ class ComfyUIGatewayAdapter:
             return function(*args, **kwargs)
         except (requests.ConnectionError, requests.Timeout, OSError) as exc:
             raise ServerOffline("ComfyUI server is unavailable") from exc
+        except requests.HTTPError as exc:
+            # Keep the status code and a bounded upstream summary so a caller can
+            # tell a bad request from a permission or server-side failure.
+            details = _upstream_rejection_details(exc)
+            status = details.get("http_status")
+            message = "ComfyUI request failed"
+            raise ExecutionFailed(
+                f"{message} (HTTP {status})" if status else message,
+                details=details,
+            ) from exc
         except requests.RequestException as exc:
             raise ExecutionFailed("ComfyUI request failed") from exc
 

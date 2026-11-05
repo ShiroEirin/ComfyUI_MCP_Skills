@@ -30,6 +30,7 @@ from comfyui_mcp_skills.domain.control_plane import (
 )
 from comfyui_mcp_skills.domain.errors import (
     AssetNotFound,
+    ExecutionFailed,
     ExecutionInProgress,
     IdempotencyConflict,
     ServerOffline,
@@ -527,6 +528,19 @@ class ExecutionService:
                     priority=priority,
                 )
             except Exception as exc:
+                if isinstance(exc, ExecutionFailed):
+                    # A deterministic upstream rejection (4xx validation) means
+                    # the submission was never accepted: keep the structured
+                    # node/field details and free the claim instead of reporting
+                    # an unknown outcome that invites pointless polling.
+                    self._runs.release_claim(
+                        server_id,
+                        idempotency_key,
+                        request_digest,
+                        lease_token,
+                        owner_id,
+                    )
+                    raise
                 if execution_identity is not None:
                     raise self._submission_unknown(
                         server_id,
@@ -655,21 +669,37 @@ class ExecutionService:
         identity: ExecutionIdentity | None,
         error: Exception,
     ) -> ExecutionInProgress:
+        persistence_failed = False
         try:
             self._runs.mark_submission_unknown(server_id, idempotency_key, lease_token, owner_id)
         except Exception:
-            pass
+            persistence_failed = True
+            logger.exception(
+                "failed to persist submission_unknown for idempotency key %s on server %s",
+                idempotency_key,
+                server_id,
+            )
         if identity is not None and self._planning is not None:
             try:
                 self._planning.mark_submission_unknown(identity, str(error))
             except Exception:
-                pass
-        return ExecutionInProgress(
+                persistence_failed = True
+                logger.exception(
+                    "failed to persist submission_unknown plan for idempotency key %s",
+                    idempotency_key,
+                )
+        message = (
             f"submission outcome is unknown for idempotency key "
             f"{idempotency_key!r} (job_id={getattr(identity, 'job_id', '') or 'pending'}) "
-            "on server {server_id!r}; poll job status or retry the same key with the "
-            "same arguments to reconcile".format(server_id=server_id)
+            f"on server {server_id!r}; poll job status or retry the same key with the "
+            f"same arguments to reconcile"
         )
+        if persistence_failed:
+            message += (
+                "; the unknown outcome could not be recorded, so automatic "
+                "reconciliation may be unavailable"
+            )
+        return ExecutionInProgress(message)
 
     @classmethod
     def _find_prompt_by_client_id(cls, gateway: ComfyUIGateway, client_id: str) -> str:

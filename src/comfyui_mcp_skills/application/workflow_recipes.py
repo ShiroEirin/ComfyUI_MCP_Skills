@@ -914,7 +914,20 @@ def declared_parameter(info: object, field: str, current: object) -> dict[str, A
             metadata[target] = value
     options = declared if isinstance(declared, list) else settings.get("options")
     if isinstance(options, list) and len(options) <= 200:
-        metadata["enum"] = list(options)
+        projected: list[Any] = []
+        for option in options:
+            # ComfyUI's dynamic combo advertises option objects; the value the
+            # node actually accepts is the option key, so never leak the whole
+            # object into a JSON Schema enum.
+            value = option.get("key") if isinstance(option, dict) else option
+            if not isinstance(value, (str, int, float, bool)) or isinstance(value, bool):
+                continue
+            if isinstance(value, str) and not value:
+                continue
+            if value not in projected:
+                projected.append(value)
+        if projected:
+            metadata["enum"] = projected
     description = settings.get("tooltip", settings.get("description"))
     if isinstance(description, str) and description:
         metadata["description"] = description

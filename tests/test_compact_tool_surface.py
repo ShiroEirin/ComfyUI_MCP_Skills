@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from comfyui_mcp_skills.adapters.mcp.server import resolve_canonical_tool_name
+from comfyui_mcp_skills.adapters.mcp.server import (
+    legacy_asset_alias_allowed,
+    resolve_canonical_tool_name,
+)
 from comfyui_mcp_skills.adapters.mcp.tooling import (
     ASSET_ACTIONS,
     LEGACY_ASSET_TOOL_NAMES,
@@ -10,6 +13,7 @@ from comfyui_mcp_skills.adapters.mcp.tooling import (
     fixed_tools,
     phase_l_tools,
 )
+from comfyui_mcp_skills.application.authorization import Scope, Toolset
 
 # `comfyui.asset.upload` lives on the fixed surface, not in phase_l_tools().
 PHASE_L_ASSET_NAMES = LEGACY_ASSET_TOOL_NAMES - {"comfyui.asset.upload"}
@@ -67,3 +71,64 @@ def test_portable_name_still_maps_to_its_canonical_name() -> None:
     mapping = {"comfyui_run_local_x": "comfyui.run.local.x"}
 
     assert resolve_canonical_tool_name("comfyui_run_local_x", mapping) == "comfyui.run.local.x"
+
+
+def _alias_allowed(
+    name: str,
+    *,
+    compact: bool = True,
+    toolset: Toolset = Toolset.EXECUTION,
+    scopes: frozenset[Scope] = frozenset({Scope.EXECUTE}),
+    asset_library_available: bool = True,
+) -> bool:
+    return legacy_asset_alias_allowed(
+        name,
+        compact=compact,
+        toolset=toolset,
+        scopes=scopes,
+        asset_library_available=asset_library_available,
+    )
+
+
+def test_legacy_alias_is_allowed_for_an_authorized_execution_principal() -> None:
+    assert _alias_allowed("comfyui.asset.list") is True
+
+
+def test_legacy_alias_is_rejected_without_the_execute_scope() -> None:
+    assert _alias_allowed("comfyui.asset.list", scopes=frozenset({Scope.OBSERVE})) is False
+
+
+def test_legacy_alias_is_rejected_on_other_surfaces() -> None:
+    """Hiding a tool must not become a permission bypass for another face."""
+    assert (
+        _alias_allowed(
+            "comfyui.asset.list",
+            toolset=Toolset.AUTHORING,
+            scopes=frozenset({Scope.OBSERVE, Scope.AUTHOR}),
+        )
+        is False
+    )
+    assert (
+        _alias_allowed(
+            "comfyui.asset.list",
+            toolset=Toolset.OPERATIONS,
+            scopes=frozenset({Scope.OBSERVE, Scope.OPERATE}),
+        )
+        is False
+    )
+
+
+def test_legacy_alias_is_rejected_outside_compact_mode() -> None:
+    assert _alias_allowed("comfyui.asset.list", compact=False) is False
+
+
+def test_legacy_alias_is_rejected_for_a_non_family_name() -> None:
+    assert _alias_allowed("comfyui.job.get") is False
+
+
+def test_legacy_alias_requires_the_asset_backend() -> None:
+    assert _alias_allowed("comfyui.asset.list", asset_library_available=False) is False
+
+
+def test_asset_upload_alias_does_not_require_the_asset_library() -> None:
+    assert _alias_allowed("comfyui.asset.upload", asset_library_available=False) is True

@@ -13,6 +13,7 @@ from comfyui_mcp_skills.application.diagnostic_ports import RetryRepository
 from comfyui_mcp_skills.application.planning import normalize_overrides
 from comfyui_mcp_skills.domain.control_plane import validate_control_plane_id
 from comfyui_mcp_skills.domain.errors import (
+    ComfyUISkillsError,
     RepairPlanConflict,
     RepairPlanNotFound,
     RetryNotAllowed,
@@ -262,6 +263,10 @@ class RetryService:
                 retry_of=str(plan["original_job_id"]),
                 **submit_options,
             )
+        except ComfyUISkillsError:
+            # Keep the actionable upstream error (node/field details) instead of
+            # flattening every failure into an opaque retry rejection.
+            raise
         except Exception as exc:
             raise RetryNotAllowed("Canonical retry Job could not be submitted") from exc
         retry_job_id = job.job_id if isinstance(job, Job) else str(getattr(job, "job_id", ""))

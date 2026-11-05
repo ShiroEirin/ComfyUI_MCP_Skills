@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
@@ -200,6 +201,9 @@ class WorkflowChangeService:
         parameter_schema["_output_contract"] = _complete_output_contract(after_semantic["outputs"])
         base_dependencies = _json_copy(base.get("dependency_contract"), "base dependencies")
         trusted_seconds = base_dependencies.get("trusted_seconds_per_run")
+        if isinstance(trusted_seconds, (int, float)) and not isinstance(trusted_seconds, bool):
+            if not math.isfinite(float(trusted_seconds)):
+                raise ValueError("Workflow revision runtime estimate is not finite")
         if (
             isinstance(trusted_seconds, bool)
             or not isinstance(trusted_seconds, (int, float))

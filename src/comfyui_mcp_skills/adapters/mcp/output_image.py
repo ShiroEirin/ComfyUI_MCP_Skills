@@ -262,15 +262,21 @@ def export_output_image(
         # Never leave an unusable payload behind under a renderable tag.
         destination.unlink(missing_ok=True)
         raise
-    size_bytes = int(transferred["size_bytes"])
-    if matched:
-        digest = str(transferred.get("sha256", ""))
-        if digest:
-            _verify_content(matched, size_bytes=size_bytes, sha256=digest)
-    final = _contained_destination(
-        Path(resolved_root), date_dir, f"{provisional}{_suffix_for(safe_filename, mime_type)}"
-    )
-    destination.replace(final)
+    try:
+        size_bytes = int(transferred["size_bytes"])
+        if matched:
+            digest = str(transferred.get("sha256", ""))
+            if digest:
+                _verify_content(matched, size_bytes=size_bytes, sha256=digest)
+        final = _contained_destination(
+            Path(resolved_root), date_dir, f"{provisional}{_suffix_for(safe_filename, mime_type)}"
+        )
+        destination.replace(final)
+    except BaseException:
+        # Any failure after the transfer must not leave a provisional file that
+        # the host could still pick up as a renderable image.
+        destination.unlink(missing_ok=True)
+        raise
     relative = f"{_UPLOAD_PREFIX}/{date_dir}/{final.name}"
     return OutputImageExport(
         document={
