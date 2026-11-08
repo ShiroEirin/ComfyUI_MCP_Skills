@@ -154,6 +154,8 @@ class ExecutionSubmitter(Protocol):
         retry_of: str = "",
         priority: float | None = None,
         targets: tuple[str, ...] = (),
+        overrides: dict[str, Any] | None = None,
+        allow_risky_nodes: bool = False,
     ) -> Job: ...
 
 

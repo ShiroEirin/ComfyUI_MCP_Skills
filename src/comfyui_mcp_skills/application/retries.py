@@ -10,6 +10,7 @@ from typing import Any
 
 from comfyui_mcp_skills.application.control_plane_ports import ExecutionSubmitter
 from comfyui_mcp_skills.application.diagnostic_ports import RetryRepository
+from comfyui_mcp_skills.application.execution_options import ExecutionOptions
 from comfyui_mcp_skills.application.planning import normalize_overrides
 from comfyui_mcp_skills.domain.control_plane import validate_control_plane_id
 from comfyui_mcp_skills.domain.errors import (
@@ -244,24 +245,26 @@ class RetryService:
             raise RetryNotAllowed("Repair plan operation is unsupported")
         submitted_arguments = _json_copy(plan["resulting_arguments"], "resulting_arguments")
         overrides = normalize_overrides(submitted_arguments.pop("_overrides", None))
-        submit_options: dict[str, Any] = {"overrides": overrides} if overrides else {}
+        submit_options = ExecutionOptions(
+            idempotency_key=(
+                f"{self._idempotency_prefix}:{repair_plan_id}"
+                if operation == self._operation
+                else f"{operation}:{repair_plan_id}"
+            ),
+            client_id=repair_plan_id,
+            revision_id=str(plan["pinned_revision_id"]),
+            deployment_id=str(plan["pinned_deployment_id"]),
+            content_digest=str(plan["pinned_content_digest"]),
+            retry_of=str(plan["original_job_id"]),
+            overrides=overrides,
+        )
         try:
             job = self._execution.submit(
                 str(plan["server_id"]),
                 str(plan["workflow_id"]),
                 submitted_arguments,
-                idempotency_key=(
-                    f"{self._idempotency_prefix}:{repair_plan_id}"
-                    if operation == self._operation
-                    else f"{operation}:{repair_plan_id}"
-                ),
                 owner_id=owner_id,
-                client_id=repair_plan_id,
-                revision_id=str(plan["pinned_revision_id"]),
-                deployment_id=str(plan["pinned_deployment_id"]),
-                content_digest=str(plan["pinned_content_digest"]),
-                retry_of=str(plan["original_job_id"]),
-                **submit_options,
+                **submit_options.submit_kwargs(),
             )
         except ComfyUISkillsError:
             # Keep the actionable upstream error (node/field details) instead of

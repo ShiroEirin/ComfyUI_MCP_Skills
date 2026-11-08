@@ -15,6 +15,7 @@ from comfyui_mcp_skills.domain.control_plane import (
     derive_legacy_job_id,
 )
 from comfyui_mcp_skills.domain.errors import RestartFenced
+from comfyui_mcp_skills.domain.job_failure import failure_from_json, failure_to_json
 from comfyui_mcp_skills.domain.models import Job
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 
@@ -239,13 +240,14 @@ class SQLiteRunRepository:
                         raise RuntimeError("migrated unknown submission cannot be reconciled")
                     connection.execute(
                         """
-                        UPDATE jobs SET status = ?, error = ?, outputs_json = ?
+                        UPDATE jobs SET status = ?, error = ?, outputs_json = ?, failure_json = ?
                         WHERE job_id = ? AND owner_id = ? AND workflow_id = ?
                         """,
                         (
                             job.status,
                             job.error,
                             _serialize_outputs(job.outputs),
+                            failure_to_json(job.failure),
                             migrated_job_id,
                             job.owner_id,
                             job.workflow_id,
@@ -292,11 +294,12 @@ class SQLiteRunRepository:
                     INSERT INTO jobs(
                         job_id, workflow_id, owner_id, server_id, status, created_at,
                         created_at_source, legacy_migrated, error, outputs_json,
-                        execution_origin
-                    ) VALUES (?, ?, ?, ?, ?, ?, 'runtime', 0, ?, ?, 'pre_g4_runtime')
+                        failure_json, execution_origin
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'runtime', 0, ?, ?, ?, 'pre_g4_runtime')
                     ON CONFLICT(job_id) DO UPDATE SET
                         status = excluded.status, error = excluded.error,
-                        outputs_json = excluded.outputs_json
+                        outputs_json = excluded.outputs_json,
+                        failure_json = excluded.failure_json
                     """,
                     (
                         job_id,
@@ -307,6 +310,7 @@ class SQLiteRunRepository:
                         datetime.now(timezone.utc).isoformat(),
                         job.error,
                         _serialize_outputs(job.outputs),
+                        failure_to_json(job.failure),
                     ),
                 )
             attempt_id = derive_legacy_attempt_id(job_id, job.server_id, 1)
@@ -482,7 +486,7 @@ class SQLiteRunRepository:
                        COALESCE(idempotency_records.key, ''), execution_attempts.client_id,
                        COALESCE(idempotency_records.request_digest, ''), jobs.owner_id,
                        jobs.job_id, jobs.plan_id, jobs.revision_id, jobs.deployment_id,
-                       COALESCE(execution_plans.plan_digest, '')
+                       COALESCE(execution_plans.plan_digest, ''), jobs.failure_json
                 FROM jobs
                 JOIN execution_attempts ON execution_attempts.job_id = jobs.job_id
                 LEFT JOIN execution_plans ON execution_plans.plan_id = jobs.plan_id
@@ -511,6 +515,7 @@ class SQLiteRunRepository:
             revision_id=row[12] or "",
             deployment_id=row[13] or "",
             plan_digest=row[14] or "",
+            failure=failure_from_json(row[15]),
         )
 
     def _delete_reserved(

@@ -11,6 +11,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from comfyui_mcp_skills.domain.job_failure import failure_from_json
 from comfyui_mcp_skills.infrastructure.persistence.control_plane import SQLiteControlPlaneStore
 
 _MAX_LIMIT = 64
@@ -84,7 +85,7 @@ class SQLiteDiagnosticRetryRepository:
         try:
             connection.execute("BEGIN")
             row = connection.execute(
-                "SELECT job_id,owner_id,workflow_id,server_id,status,error FROM jobs WHERE job_id=? AND owner_id=?",
+                "SELECT job_id,owner_id,workflow_id,server_id,status,error,failure_json FROM jobs WHERE job_id=? AND owner_id=?",
                 (job_id, owner_id),
             ).fetchone()
             return (
@@ -106,7 +107,7 @@ class SQLiteDiagnosticRetryRepository:
         try:
             connection.execute("BEGIN")
             row = connection.execute(
-                "SELECT job_id,owner_id,workflow_id,server_id,status,error FROM jobs WHERE owner_id=? AND server_id=? ORDER BY created_at DESC,job_id DESC LIMIT 1",
+                "SELECT job_id,owner_id,workflow_id,server_id,status,error,failure_json FROM jobs WHERE owner_id=? AND server_id=? ORDER BY created_at DESC,job_id DESC LIMIT 1",
                 (owner_id, server_id),
             ).fetchone()
             if row is None:
@@ -140,9 +141,19 @@ class SQLiteDiagnosticRetryRepository:
         event_limit: int,
         log_line_limit: int,
     ) -> dict[str, Any]:
-        job_id, owner_id, workflow_id, server_id, status, error = (str(item) for item in row)
+        job_id, owner_id, workflow_id, server_id, status, error, failure_json = (
+            str(item) for item in row
+        )
         subject_uri = f"comfyui://jobs/{job_id}"
-        classification_parts = [error]
+        failure = failure_from_json(failure_json) or {}
+        classification_parts = [error, str(failure.get("message", ""))]
+        # The node class and the failing input often carry the only stable
+        # keyword a classification rule can match when the engine message is
+        # generic, so both join the classification text.
+        for key in ("class_type", "input_name", "node_id"):
+            value = failure.get(key)
+            if isinstance(value, str) and value:
+                classification_parts.append(value)
         event_rows = connection.execute(
             "SELECT event_type,occurred_at,data_json FROM domain_events WHERE subject_uri=? AND principal_id=? ORDER BY sequence DESC LIMIT ?",
             (subject_uri, owner_id, event_limit),
@@ -160,6 +171,20 @@ class SQLiteDiagnosticRetryRepository:
                 }
             )
         logs = [_redact(line) for line in str(error).splitlines() if line][:log_line_limit]
+        failed_node = {
+            key: _redact(str(failure[key]))
+            for key in ("node_id", "class_type", "error_type", "message")
+            if isinstance(failure.get(key), str) and failure.get(key)
+        }
+        # The engine rejected this value in ``current_inputs``; the diagnostics
+        # layer only turns it into a model query when the rule classifies the
+        # failure as model-related, so a non-model input is not mislabelled here.
+        missing_models = failure.get("missing_models")
+        if not isinstance(missing_models, list):
+            missing_models = []
+        if not missing_models:
+            requested = failure.get("requested")
+            missing_models = requested if isinstance(requested, list) else []
         return {
             "job_id": job_id,
             "owner_id": owner_id,
@@ -168,7 +193,8 @@ class SQLiteDiagnosticRetryRepository:
             "status": status,
             "error": _redact(error),
             "classification_text": "\n".join(classification_parts)[:32768],
-            "failed_node": {},
+            "failed_node": failed_node,
+            "missing_models": missing_models,
             "events": events,
             "log_lines": logs,
         }

@@ -127,3 +127,4 @@ class Job:
     revision_id: str = ""
     deployment_id: str = ""
     plan_digest: str = ""
+    failure: dict[str, Any] | None = None

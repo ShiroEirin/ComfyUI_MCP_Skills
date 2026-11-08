@@ -2136,6 +2136,14 @@ _PHASE_R_RECOVERY_OPERATION_UP = (
 )
 
 
+_JOB_FAILURE_FACTS_UP = (
+    """
+    ALTER TABLE jobs ADD COLUMN failure_json TEXT NOT NULL DEFAULT ''
+    CHECK(typeof(failure_json) = 'text')
+    """,
+)
+
+
 _MIGRATIONS = (
     SchemaMigration(
         1,
@@ -2237,6 +2245,16 @@ _MIGRATIONS = (
         _PHASE_R_RECOVERY_OPERATION_UP,
         (),
         feasibility_note="forward-only persisted retry/regenerate operation identity",
+    ),
+    SchemaMigration(
+        15,
+        "job-failure-facts",
+        _JOB_FAILURE_FACTS_UP,
+        (),
+        feasibility_note=(
+            "forward-only bounded execution-failure facts captured from the engine "
+            "history so a Job can be diagnosed without re-querying a live server"
+        ),
     ),
 )
 

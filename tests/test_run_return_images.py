@@ -10,9 +10,13 @@ from typing import Any
 import pytest
 from mcp import Client
 
-import comfyui_mcp_skills.adapters.mcp.server as server_module
+import comfyui_mcp_skills.adapters.mcp.server as server_module  # noqa: F401  (import-time side effects)
 from comfyui_mcp_skills.adapters.mcp.server import create_server
 from comfyui_mcp_skills.adapters.mcp.tooling import EXECUTION_PROPERTY
+from comfyui_mcp_skills.application.execution_options import (
+    EXECUTION_FIELDS,
+    parse_execution_options,
+)
 
 _PNG = b"\x89PNG\r\n\x1a\nagent-result"
 
@@ -251,7 +255,7 @@ async def test_failed_run_never_attaches_an_image(tmp_path: Path) -> None:
 
 
 def test_execution_schema_matches_the_parser_contract() -> None:
-    assert set(EXECUTION_PROPERTY["properties"]) == set(server_module._EXECUTION_FIELDS)
+    assert set(EXECUTION_PROPERTY["properties"]) == set(EXECUTION_FIELDS)
     properties = EXECUTION_PROPERTY["properties"]
     assert properties["return_images"]["default"] is False
     assert properties["max_images"] == {
@@ -275,11 +279,11 @@ def test_execution_schema_matches_the_parser_contract() -> None:
 )
 def test_parser_refuses_unusable_image_requests(raw: dict[str, Any], message: str) -> None:
     with pytest.raises((TypeError, ValueError), match=message):
-        server_module.parse_execution_options(raw)
+        parse_execution_options(raw)
 
 
 def test_parser_defaults_keep_image_return_opt_in() -> None:
-    options = server_module.parse_execution_options({})
+    options = parse_execution_options({})
 
     assert options.return_images is False
     assert options.max_images == 1

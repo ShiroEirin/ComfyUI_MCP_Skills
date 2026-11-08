@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-import math
 import os
 import re
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -111,6 +109,10 @@ from comfyui_mcp_skills.application.capabilities import (
 from comfyui_mcp_skills.application.catalog import WorkflowCatalog
 from comfyui_mcp_skills.application.discovery import DiscoveryService
 from comfyui_mcp_skills.application.execution import ExecutionService
+from comfyui_mcp_skills.application.execution_options import (
+    ExecutionOptions,
+    parse_execution_options,
+)
 from comfyui_mcp_skills.application.experiment_orchestration import ExperimentAdvanceHandler
 from comfyui_mcp_skills.application.experiments import ExperimentService, get_experiment_variant
 from comfyui_mcp_skills.application.job_batch import BatchService
@@ -657,118 +659,7 @@ def legacy_asset_alias_allowed(
     return tool_visible(name, toolset, scopes)
 
 
-_EXECUTION_FIELDS = frozenset(
-    {
-        "idempotency_key",
-        "wait",
-        "wait_timeout_seconds",
-        "priority",
-        "partial_execution_targets",
-        "allow_risky_nodes",
-        "return_images",
-        "max_images",
-    }
-)
-_MAX_RETURNED_IMAGES = 4
 _MAX_IMAGE_ERROR_CHARS = 200
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutionRequest:
-    """One validated ``_execution`` block.
-
-    Every submission entry point parses the block here, so a caller cannot get a
-    weaker check just by choosing a different tool that reaches the same queue.
-    """
-
-    idempotency_key: str = ""
-    wait: bool = False
-    timeout_seconds: float = 120.0
-    priority: float | None = None
-    targets: tuple[str, ...] = ()
-    allow_risky_nodes: bool = False
-    return_images: bool = False
-    max_images: int = 1
-
-
-def parse_execution_options(raw: object) -> ExecutionRequest:
-    """Validate the shared ``_execution`` block; unknown fields are refused."""
-    if not isinstance(raw, dict):
-        raise TypeError("_execution must be an object")
-    unexpected = set(raw) - _EXECUTION_FIELDS
-    if unexpected:
-        raise ValueError("Unexpected _execution fields: " + ", ".join(sorted(unexpected)))
-
-    idempotency_key = raw.get("idempotency_key", "")
-    if not isinstance(idempotency_key, str):
-        raise TypeError("idempotency_key must be a string")
-    if len(idempotency_key) > 256:
-        raise ValueError("idempotency_key exceeds 256 characters")
-
-    wait = raw.get("wait", False)
-    if not isinstance(wait, bool):
-        raise TypeError("wait must be a boolean")
-
-    timeout_raw = raw.get("wait_timeout_seconds", 120)
-    if isinstance(timeout_raw, bool) or not isinstance(timeout_raw, (int, float)):
-        raise TypeError("wait_timeout_seconds must be a number")
-    timeout_seconds = float(timeout_raw)
-    if not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 300:
-        raise ValueError("wait_timeout_seconds must be between 0 and 300")
-
-    priority_raw = raw.get("priority")
-    priority: float | None = None
-    if priority_raw is not None:
-        if isinstance(priority_raw, bool) or not isinstance(priority_raw, (int, float)):
-            raise TypeError("priority must be a number")
-        priority = float(priority_raw)
-        if not math.isfinite(priority) or not -1000 <= priority <= 1000:
-            raise ValueError("priority must be between -1000 and 1000")
-
-    targets_raw = raw.get("partial_execution_targets")
-    targets: tuple[str, ...] = ()
-    if targets_raw is not None:
-        if not isinstance(targets_raw, list) or not targets_raw:
-            raise TypeError("partial_execution_targets must be a non-empty array")
-        if len(targets_raw) > 100:
-            raise ValueError("partial_execution_targets must not exceed 100 entries")
-        for item in targets_raw:
-            if (
-                not isinstance(item, str)
-                or not item
-                or len(item) > 128
-                or "\r" in item
-                or "\n" in item
-            ):
-                raise TypeError(
-                    "partial_execution_targets entries must be node IDs without line breaks"
-                )
-        targets = tuple(dict.fromkeys(targets_raw))
-
-    allow_risky_nodes = raw.get("allow_risky_nodes", False)
-    if not isinstance(allow_risky_nodes, bool):
-        raise TypeError("allow_risky_nodes must be a boolean")
-
-    return_images = raw.get("return_images", False)
-    if not isinstance(return_images, bool):
-        raise TypeError("return_images must be a boolean")
-
-    max_images = raw.get("max_images", 1)
-    if isinstance(max_images, bool) or not isinstance(max_images, int):
-        raise TypeError("max_images must be an integer")
-    if not 1 <= max_images <= _MAX_RETURNED_IMAGES:
-        raise ValueError(f"max_images must be between 1 and {_MAX_RETURNED_IMAGES}")
-
-    return ExecutionRequest(
-        idempotency_key=idempotency_key,
-        wait=wait,
-        timeout_seconds=timeout_seconds,
-        priority=priority,
-        targets=targets,
-        allow_risky_nodes=allow_risky_nodes,
-        return_images=return_images,
-        max_images=max_images,
-    )
 
 
 def _bounded_image_error(exc: BaseException) -> str:
@@ -847,7 +738,7 @@ def create_server(
         return global_servers.connection(server_id) if connection is None else connection
 
     async def job_result(
-        job: Job, *, owner_id: str, options: ExecutionRequest
+        job: Job, *, owner_id: str, options: ExecutionOptions
     ) -> CallToolResult:
         """Project a finished Job, attaching its own output images when asked.
 

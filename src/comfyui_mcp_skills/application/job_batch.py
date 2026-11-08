@@ -10,6 +10,12 @@ from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
 from comfyui_mcp_skills.application.control_plane_ports import ExecutionSubmitter
+from comfyui_mcp_skills.application.execution_options import (
+    ExecutionOptions,
+    parse_overrides,
+    parse_priority,
+    parse_targets,
+)
 from comfyui_mcp_skills.application.jobs import JobWaitTimeout
 from comfyui_mcp_skills.application.json_codec import canonical_json_bytes
 from comfyui_mcp_skills.domain.errors import ComfyUISkillsError, WorkflowArgumentsError
@@ -31,17 +37,17 @@ _OPTIONAL_SUBMIT_FIELDS = frozenset(
         "retry_of",
         "priority",
         "targets",
+        "allow_risky_nodes",
+        "_overrides",
     }
 )
-_STRING_SUBMIT_FIELDS = frozenset(
-    {
-        "idempotency_key",
-        "client_id",
-        "revision_id",
-        "deployment_id",
-        "content_digest",
-        "retry_of",
-    }
+_STRING_SUBMIT_FIELDS = (
+    "idempotency_key",
+    "client_id",
+    "revision_id",
+    "deployment_id",
+    "content_digest",
+    "retry_of",
 )
 
 
@@ -129,7 +135,7 @@ class BatchService:
                     workflow_id,
                     arguments,
                     owner_id=owner_id,
-                    **options,
+                    **options.submit_kwargs(),
                 )
                 _apply_job(item, job)
             except Exception as exc:
@@ -202,7 +208,7 @@ class BatchService:
     def _validate_descriptor(
         self,
         descriptor: object,
-    ) -> tuple[str, str, dict[str, Any], dict[str, Any]]:
+    ) -> tuple[str, str, dict[str, Any], ExecutionOptions]:
         if not isinstance(descriptor, Mapping):
             raise WorkflowArgumentsError("Job descriptor must be an object")
         allowed = {"server_id", "workflow_id", "arguments", *_OPTIONAL_SUBMIT_FIELDS}
@@ -223,29 +229,35 @@ class BatchService:
                 f"arguments must be at most {self._max_argument_bytes} UTF-8 JSON bytes"
             )
 
-        options: dict[str, Any] = {}
+        strings: dict[str, str] = {}
         for field in _STRING_SUBMIT_FIELDS:
             value = descriptor.get(field, "")
             if not isinstance(value, str):
                 raise WorkflowArgumentsError(f"{field} must be a string")
-            options[field] = value
-        priority = descriptor.get("priority")
-        if priority is not None and (
-            isinstance(priority, bool)
-            or not isinstance(priority, (int, float))
-            or not math.isfinite(priority)
-        ):
-            raise WorkflowArgumentsError("priority must be a finite number")
-        options["priority"] = priority
-        targets = descriptor.get("targets", ())
-        if not isinstance(targets, (list, tuple)) or len(targets) > 100:
-            raise WorkflowArgumentsError("targets must be an array of at most 100 node ids")
-        if any(
-            not isinstance(target, str) or not target or len(target) > 256
-            for target in targets
-        ):
-            raise WorkflowArgumentsError("targets must contain non-empty node ids")
-        options["targets"] = tuple(targets)
+            strings[field] = value
+        # The same parser the run surfaces use: a batch item may not accept a
+        # priority, target list, or override set that a single run would refuse.
+        try:
+            priority = parse_priority(descriptor.get("priority"))
+            targets = parse_targets(descriptor.get("targets"), field_name="targets")
+            overrides = parse_overrides(descriptor.get("_overrides"))
+        except (TypeError, ValueError) as exc:
+            raise WorkflowArgumentsError(str(exc)) from exc
+        allow_risky_nodes = descriptor.get("allow_risky_nodes", False)
+        if not isinstance(allow_risky_nodes, bool):
+            raise WorkflowArgumentsError("allow_risky_nodes must be a boolean")
+        options = ExecutionOptions(
+            idempotency_key=strings["idempotency_key"],
+            client_id=strings["client_id"],
+            revision_id=strings["revision_id"],
+            deployment_id=strings["deployment_id"],
+            content_digest=strings["content_digest"],
+            retry_of=strings["retry_of"],
+            priority=priority,
+            targets=targets,
+            allow_risky_nodes=allow_risky_nodes,
+            overrides=overrides,
+        )
         return server_id, workflow_id, dict(arguments), options
 
 

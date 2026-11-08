@@ -31,6 +31,7 @@ from comfyui_mcp_skills.domain.errors import (
     WorkflowArgumentsError,
 )
 from comfyui_mcp_skills.domain.identifiers import validate_identifier
+from comfyui_mcp_skills.domain.job_failure import summarize_failure
 from comfyui_mcp_skills.domain.media import validate_media_locator
 from comfyui_mcp_skills.domain.models import Job
 
@@ -238,6 +239,9 @@ class JobService:
                     prompt_id,
                     status,
                     error=self._format_errors(history),
+                    # Structured engine facts outlive the in-memory history, so a
+                    # later diagnose call can explain the failure while offline.
+                    failure=summarize_failure(history),
                     owner_id=owner_id,
                 )
             elif status_info.get("completed", False) or history.get("outputs"):
@@ -467,6 +471,7 @@ class JobService:
         *,
         outputs: tuple[dict[str, Any], ...] | None = None,
         error: str | None = None,
+        failure: dict[str, Any] | None = None,
         owner_id: str = "",
     ) -> Job:
         return Job(
@@ -485,6 +490,7 @@ class JobService:
             revision_id=saved.revision_id if saved else "",
             deployment_id=saved.deployment_id if saved else "",
             plan_digest=saved.plan_digest if saved else "",
+            failure=(saved.failure if saved else None) if failure is None else failure,
         )
 
     @staticmethod
